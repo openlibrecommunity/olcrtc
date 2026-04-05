@@ -9,7 +9,7 @@ import requests
 from urllib.parse import quote
 from aiortc import RTCPeerConnection, RTCSessionDescription, RTCIceCandidate, RTCConfiguration, RTCIceServer
 
-CONFERENCE_ID = "46984088311346"
+CONFERENCE_ID = "33734896687006"
 CONFERENCE_URL = f"https://telemost.yandex.ru/j/{CONFERENCE_ID}"
 API_BASE = "https://cloud-api.yandex.ru/telemost_front/v2/telemost"
 
