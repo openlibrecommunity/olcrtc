@@ -11,38 +11,29 @@ SOCKS_PORT="8808"
 echo "=== OlcRTC Client Deployment Script ==="
 echo ""
 
-if command -v podman &> /dev/null; then
-    RUNTIME="podman"
-    echo "[+] Using Podman"
-elif command -v docker &> /dev/null; then
-    RUNTIME="docker"
-    echo "[+] Using Docker"
-else
-    echo "[!] Installing container runtime..."
+if ! command -v podman &> /dev/null; then
+    echo "[!] Installing Podman..."
     
     if command -v apt &> /dev/null; then
         echo "[*] Detected apt (Debian/Ubuntu)"
         sudo apt update
         sudo apt install -y podman
-        RUNTIME="podman"
     elif command -v dnf &> /dev/null; then
         echo "[*] Detected dnf (Fedora/RHEL)"
         sudo dnf install -y podman
-        RUNTIME="podman"
     elif command -v yum &> /dev/null; then
         echo "[*] Detected yum (CentOS/RHEL)"
         sudo yum install -y podman
-        RUNTIME="podman"
     elif command -v pacman &> /dev/null; then
         echo "[*] Detected pacman (Arch)"
         sudo pacman -Sy --noconfirm podman
-        RUNTIME="podman"
     else
-        echo "[X] Unsupported package manager. Install podman or docker manually."
+        echo "[X] Unsupported package manager. Install podman manually."
         exit 1
     fi
 fi
 
+echo "[+] Using Podman"
 echo ""
 read -p "Enter Telemost Room ID: " ROOM_ID
 
@@ -65,8 +56,8 @@ SOCKS_PORT=${PORT_INPUT:-8808}
 
 echo ""
 echo "[*] Stopping old instance..."
-$RUNTIME stop $CONTAINER_NAME 2>/dev/null || true
-$RUNTIME rm $CONTAINER_NAME 2>/dev/null || true
+podman stop $CONTAINER_NAME 2>/dev/null || true
+podman rm $CONTAINER_NAME 2>/dev/null || true
 
 echo "[*] Cleaning workspace..."
 rm -rf $WORK_DIR
@@ -76,10 +67,10 @@ echo "[*] Cloning repository..."
 git clone --depth 1 $REPO_URL $WORK_DIR
 
 echo "[*] Pulling Go image..."
-$RUNTIME pull $IMAGE_NAME
+podman pull $IMAGE_NAME
 
 echo "[*] Building OlcRTC..."
-$RUNTIME run --rm \
+podman run --rm \
     -v $WORK_DIR:/app:Z \
     -w /app \
     $IMAGE_NAME \
@@ -91,7 +82,7 @@ if [ ! -f "$WORK_DIR/olcrtc" ]; then
 fi
 
 echo "[*] Starting OlcRTC client..."
-$RUNTIME run -d \
+podman run -d \
     --name $CONTAINER_NAME \
     --restart unless-stopped \
     -p 127.0.0.1:$SOCKS_PORT:$SOCKS_PORT \
@@ -110,10 +101,10 @@ echo "Room ID: $ROOM_ID"
 echo "SOCKS5 proxy: 127.0.0.1:$SOCKS_PORT"
 echo ""
 echo "View logs:"
-echo "  $RUNTIME logs -f $CONTAINER_NAME"
+echo "  podman logs -f $CONTAINER_NAME"
 echo ""
 echo "Stop client:"
-echo "  $RUNTIME stop $CONTAINER_NAME"
+echo "  podman stop $CONTAINER_NAME"
 echo ""
 echo "Test proxy:"
 echo "  export all_proxy=socks5h://127.0.0.1:$SOCKS_PORT"
