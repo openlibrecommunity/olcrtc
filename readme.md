@@ -14,8 +14,17 @@ olcRTC - out beyond
 
 Project that allows users to bypass blocking by parasitizing and tunneling on unblocked and whitelisted services in Russia, use telemost, Max, mail and API in the future
 
+## fast start
 
- 
+```bash
+# server
+./srv.sh
+
+# client
+./cnc.sh
+
+```
+
 <div align="center">
 
 ---
