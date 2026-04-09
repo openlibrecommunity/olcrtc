@@ -173,6 +173,11 @@ func (p *Peer) Send(data []byte) error {
 	if p.dc == nil || p.dc.ReadyState() != webrtc.DataChannelStateOpen {
 		return fmt.Errorf("datachannel not ready")
 	}
+	
+	for p.dc.BufferedAmount() > 1024*1024 {
+		time.Sleep(1 * time.Millisecond)
+	}
+	
 	return p.dc.Send(data)
 }
 
