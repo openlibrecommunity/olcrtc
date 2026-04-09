@@ -66,7 +66,7 @@ func Run(roomURL, keyHex string, socksPort int) error {
 
 	peer.SetReconnectCallback(func(dc *webrtc.DataChannel) {
 		log.Println("Client reconnected - resetting multiplexer state")
-		c.mux.Reset()
+		
 		c.mux.UpdateSendFunc(func(frame []byte) error {
 			encrypted, err := c.cipher.Encrypt(frame)
 			if err != nil {
@@ -74,6 +74,9 @@ func Run(roomURL, keyHex string, socksPort int) error {
 			}
 			return dc.Send(encrypted)
 		})
+		
+		c.mux.Reset()
+		
 		log.Println("Client multiplexer reset complete")
 	})
 

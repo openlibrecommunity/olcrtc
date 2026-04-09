@@ -62,11 +62,31 @@ func (p *Peer) Connect(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	
+	p.pcSub.OnConnectionStateChange(func(state webrtc.PeerConnectionState) {
+		log.Printf("Subscriber PeerConnection state: %s", state.String())
+		if state == webrtc.PeerConnectionStateFailed || state == webrtc.PeerConnectionStateDisconnected {
+			select {
+			case p.reconnectCh <- struct{}{}:
+			default:
+			}
+		}
+	})
 
 	p.pcPub, err = api.NewPeerConnection(config)
 	if err != nil {
 		return err
 	}
+	
+	p.pcPub.OnConnectionStateChange(func(state webrtc.PeerConnectionState) {
+		log.Printf("Publisher PeerConnection state: %s", state.String())
+		if state == webrtc.PeerConnectionStateFailed || state == webrtc.PeerConnectionStateDisconnected {
+			select {
+			case p.reconnectCh <- struct{}{}:
+			default:
+			}
+		}
+	})
 
 	p.dc, err = p.pcPub.CreateDataChannel("olcrtc", nil)
 	if err != nil {
@@ -75,7 +95,16 @@ func (p *Peer) Connect(ctx context.Context) error {
 
 	dcReady := make(chan struct{})
 	p.dc.OnOpen(func() {
+		log.Println("DataChannel opened")
 		close(dcReady)
+	})
+	
+	p.dc.OnClose(func() {
+		log.Println("DataChannel closed - triggering reconnect")
+		select {
+		case p.reconnectCh <- struct{}{}:
+		default:
+		}
 	})
 
 	p.dc.OnMessage(func(msg webrtc.DataChannelMessage) {
@@ -86,6 +115,13 @@ func (p *Peer) Connect(ctx context.Context) error {
 
 	p.pcSub.OnDataChannel(func(dc *webrtc.DataChannel) {
 		log.Printf("Received datachannel: %s", dc.Label())
+		dc.OnClose(func() {
+			log.Println("Received DataChannel closed - triggering reconnect")
+			select {
+			case p.reconnectCh <- struct{}{}:
+			default:
+			}
+		})
 		dc.OnMessage(func(msg webrtc.DataChannelMessage) {
 			if p.onData != nil && len(msg.Data) > 0 {
 				p.onData(msg.Data)
@@ -125,6 +161,9 @@ func (p *Peer) Connect(ctx context.Context) error {
 }
 
 func (p *Peer) Send(data []byte) error {
+	if p.dc == nil || p.dc.ReadyState() != webrtc.DataChannelStateOpen {
+		return fmt.Errorf("datachannel not ready")
+	}
 	return p.dc.Send(data)
 }
 
@@ -439,10 +478,7 @@ func (p *Peer) keepAlive() {
 func (p *Peer) reconnect(ctx context.Context) error {
 	log.Println("Reconnecting...")
 	
-	select {
-	case p.keepAliveCh <- struct{}{}:
-	default:
-	}
+	close(p.keepAliveCh)
 	
 	if p.ws != nil {
 		p.ws.Close()
@@ -454,7 +490,7 @@ func (p *Peer) reconnect(ctx context.Context) error {
 		p.pcPub.Close()
 	}
 	
-	time.Sleep(500 * time.Millisecond)
+	time.Sleep(2 * time.Second)
 	
 	p.keepAliveCh = make(chan struct{})
 	

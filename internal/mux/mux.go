@@ -160,8 +160,11 @@ func (m *Multiplexer) Reset() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	for _, stream := range m.streams {
+		stream.closed = true
+	}
+	
 	m.streams = make(map[uint16]*Stream)
-	m.nextID = 1
 }
 
 func (m *Multiplexer) UpdateSendFunc(onSend func([]byte) error) {

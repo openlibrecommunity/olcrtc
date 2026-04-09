@@ -77,12 +77,13 @@ func Run(roomURL, keyHex string) error {
 		
 		s.connMu.Lock()
 		for sid, conn := range s.connections {
-			conn.Close()
+			if conn != nil {
+				conn.Close()
+			}
 			delete(s.connections, sid)
 		}
 		s.connMu.Unlock()
 		
-		s.mux.Reset()
 		s.mux.UpdateSendFunc(func(frame []byte) error {
 			encrypted, err := s.cipher.Encrypt(frame)
 			if err != nil {
@@ -90,6 +91,9 @@ func Run(roomURL, keyHex string) error {
 			}
 			return dc.Send(encrypted)
 		})
+		
+		s.mux.Reset()
+		
 		log.Println("Server multiplexer reset complete")
 	})
 
