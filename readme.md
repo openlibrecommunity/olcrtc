@@ -27,8 +27,8 @@ see all info in [issues](https://github.com/openlibrecommunity/olcrtc/issues)
 # client
 ./cnc.sh
 
-# or native ( no podman )
-go build ./cmd/olcrtc
+# or native ( no podman ) linux
+GOOS=linux GOARCH=amd64 go build ./cmd/olcrtc
 
 # or native ( no podman ) android
 GOOS=android GOARCH=arm64 go build -ldflags="-checklinkname=0" -o build/olcrtc ./cmd/olcrtc
