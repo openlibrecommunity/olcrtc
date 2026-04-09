@@ -10,6 +10,7 @@ import (
 	"io"
 	"log"
 	"net"
+	"sync/atomic"
 	"time"
 
 	"github.com/pion/webrtc/v4"
@@ -21,13 +22,14 @@ import (
 )
 
 type Client struct {
-	peer     *telemost.Peer
+	peers    []*telemost.Peer
 	cipher   *crypto.Cipher
 	mux      *mux.Multiplexer
 	clientID uint32
+	peerIdx  atomic.Uint32
 }
 
-func Run(ctx context.Context, roomURL, keyHex string, socksPort int) error {
+func Run(ctx context.Context, roomURL, keyHex string, socksPort int, duo bool) error {
 	var key []byte
 	var err error
 
@@ -62,6 +64,13 @@ func Run(ctx context.Context, roomURL, keyHex string, socksPort int) error {
 	c := &Client{
 		cipher:   cipher,
 		clientID: clientID,
+		peers:    make([]*telemost.Peer, 0),
+	}
+
+	peerCount := 1
+	if duo {
+		peerCount = 2
+		log.Println("Duo mode: using 2 parallel channels")
 	}
 
 	c.mux = mux.New(c.clientID, func(frame []byte) error {
@@ -69,36 +78,43 @@ func Run(ctx context.Context, roomURL, keyHex string, socksPort int) error {
 		if err != nil {
 			return err
 		}
-		return c.peer.Send(encrypted)
+		
+		idx := c.peerIdx.Add(1) % uint32(len(c.peers))
+		return c.peers[idx].Send(encrypted)
 	})
 
-	peer, err := telemost.NewPeer(roomURL, names.Generate(), c.onData)
-	if err != nil {
-		return err
-	}
-	c.peer = peer
+	for i := 0; i < peerCount; i++ {
+		peer, err := telemost.NewPeer(roomURL, names.Generate(), c.onData)
+		if err != nil {
+			return err
+		}
+		c.peers = append(c.peers, peer)
 
-	peer.SetReconnectCallback(func(dc *webrtc.DataChannel) {
-		log.Println("Client reconnected - resetting multiplexer state")
-		
-		c.mux.UpdateSendFunc(func(frame []byte) error {
-			encrypted, err := c.cipher.Encrypt(frame)
-			if err != nil {
-				return err
-			}
-			return c.peer.Send(encrypted)
+		peer.SetReconnectCallback(func(dc *webrtc.DataChannel) {
+			log.Printf("Client peer %d reconnected - resetting multiplexer state", i)
+			
+			c.mux.UpdateSendFunc(func(frame []byte) error {
+				encrypted, err := c.cipher.Encrypt(frame)
+				if err != nil {
+					return err
+				}
+				idx := c.peerIdx.Add(1) % uint32(len(c.peers))
+				return c.peers[idx].Send(encrypted)
+			})
+			
+			c.mux.Reset()
+			
+			log.Println("Client multiplexer reset complete")
 		})
-		
-		c.mux.Reset()
-		
-		log.Println("Client multiplexer reset complete")
-	})
 
-	log.Println("Connecting to Telemost...")
-	if err := peer.Connect(ctx); err != nil {
-		return err
+		log.Printf("Connecting peer %d to Telemost...", i)
+		if err := peer.Connect(ctx); err != nil {
+			return err
+		}
+		log.Printf("Peer %d connected", i)
+
+		go peer.WatchConnection(ctx)
 	}
-	log.Println("Connected to Telemost")
 
 	time.Sleep(100 * time.Millisecond)
 	
@@ -107,10 +123,11 @@ func Run(ctx context.Context, roomURL, keyHex string, socksPort int) error {
 	binary.BigEndian.PutUint16(resetFrame[4:6], 0xFFFF)
 	binary.BigEndian.PutUint16(resetFrame[6:8], 0xFFFF)
 	encrypted, _ := cipher.Encrypt(resetFrame)
-	peer.Send(encrypted)
+	
+	for _, peer := range c.peers {
+		peer.Send(encrypted)
+	}
 	log.Printf("Sent reset signal to server (clientID=%d)", c.clientID)
-
-	go peer.WatchConnection(ctx)
 
 	return c.runSOCKS5(ctx, socksPort)
 }

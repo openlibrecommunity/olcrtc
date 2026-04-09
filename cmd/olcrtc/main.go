@@ -24,6 +24,7 @@ func main() {
 		keyHex    string
 		debug     bool
 		dataDir   string
+		duo       bool
 	)
 
 	flag.StringVar(&mode, "mode", "", "Mode: srv or cnc")
@@ -33,6 +34,7 @@ func main() {
 	flag.StringVar(&keyHex, "key", "", "Shared encryption key (hex)")
 	flag.BoolVar(&debug, "debug", false, "Enable verbose logging")
 	flag.StringVar(&dataDir, "data", "data", "Path to data directory")
+	flag.BoolVar(&duo, "duo", false, "Use dual channels for 2x throughput")
 	flag.Parse()
 
 	if debug {
@@ -74,9 +76,9 @@ func main() {
 	go func() {
 		switch mode {
 		case "srv":
-			errCh <- server.Run(ctx, roomURL, keyHex)
+			errCh <- server.Run(ctx, roomURL, keyHex, duo)
 		case "cnc":
-			errCh <- client.Run(ctx, roomURL, keyHex, socksPort)
+			errCh <- client.Run(ctx, roomURL, keyHex, socksPort, duo)
 		}
 	}()
 
