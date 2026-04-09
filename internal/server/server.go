@@ -209,9 +209,14 @@ func (s *Server) run(ctx context.Context) error {
 				}
 			}
 			s.connMu.Unlock()
-			for _, peer := range s.peers {
+			
+			log.Printf("Closing %d peer(s)...", len(s.peers))
+			for i, peer := range s.peers {
+				log.Printf("Closing peer %d...", i)
 				peer.Close()
 			}
+			log.Println("All peers closed")
+			
 			return nil
 		default:
 		}
