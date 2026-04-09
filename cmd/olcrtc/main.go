@@ -4,8 +4,8 @@ import (
 	"flag"
 	"log"
 
-	"github.com/zarazaex69/olcrtc/internal/client"
-	"github.com/zarazaex69/olcrtc/internal/server"
+	"github.com/openlibrecommunity/olcrtc/internal/client"
+	"github.com/openlibrecommunity/olcrtc/internal/server"
 )
 
 func main() {

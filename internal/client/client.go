@@ -13,9 +13,9 @@ import (
 	"time"
 
 	"github.com/pion/webrtc/v4"
-	"github.com/zarazaex69/olcrtc/internal/crypto"
-	"github.com/zarazaex69/olcrtc/internal/mux"
-	"github.com/zarazaex69/olcrtc/internal/telemost"
+	"github.com/openlibrecommunity/olcrtc/internal/crypto"
+	"github.com/openlibrecommunity/olcrtc/internal/mux"
+	"github.com/openlibrecommunity/olcrtc/internal/telemost"
 )
 
 type Client struct {
