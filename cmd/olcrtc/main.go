@@ -42,6 +42,10 @@ func main() {
 		log.Fatal("Room ID required")
 	}
 
+	if mode != "srv" && mode != "cnc" {
+		log.Fatal("Specify -mode srv or -mode cnc")
+	}
+
 	namesPath := filepath.Join(dataDir, "names")
 	surnamesPath := filepath.Join(dataDir, "surnames")
 
@@ -60,7 +64,5 @@ func main() {
 		if err := client.Run(roomURL, keyHex, socksPort); err != nil {
 			log.Fatal(err)
 		}
-	default:
-		log.Fatal("Specify -mode srv or -mode cnc")
 	}
 }

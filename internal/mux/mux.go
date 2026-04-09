@@ -18,19 +18,21 @@ type Stream struct {
 }
 
 type Multiplexer struct {
-	streams  map[uint16]*Stream
-	nextID   uint16
-	clientID uint32
-	onSend   func([]byte) error
-	mu       sync.RWMutex
+	streams    map[uint16]*Stream
+	nextID     uint16
+	clientID   uint32
+	onSend     func([]byte) error
+	mu         sync.RWMutex
+	maxStreams int
 }
 
 func New(clientID uint32, onSend func([]byte) error) *Multiplexer {
 	return &Multiplexer{
-		streams:  make(map[uint16]*Stream),
-		nextID:   1,
-		clientID: clientID,
-		onSend:   onSend,
+		streams:    make(map[uint16]*Stream),
+		nextID:     1,
+		clientID:   clientID,
+		onSend:     onSend,
+		maxStreams: 10000,
 	}
 }
 
@@ -135,6 +137,10 @@ func (m *Multiplexer) HandleFrame(frame []byte) {
 	m.mu.Lock()
 	stream, exists := m.streams[sid]
 	if !exists {
+		if len(m.streams) >= m.maxStreams {
+			m.mu.Unlock()
+			return
+		}
 		stream = &Stream{
 			ID:       sid,
 			ClientID: clientID,

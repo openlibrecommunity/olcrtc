@@ -48,9 +48,17 @@ func Run(roomURL, keyHex string) error {
 		if err != nil {
 			return err
 		}
+		if len(key) != 32 {
+			return fmt.Errorf("key must be 32 bytes, got %d", len(key))
+		}
 	}
 
-	cipher, err := crypto.NewCipher(string(key))
+	keyStr := string(key)
+	if len(keyStr) != 32 {
+		return fmt.Errorf("key string length must be 32, got %d", len(keyStr))
+	}
+
+	cipher, err := crypto.NewCipher(keyStr)
 	if err != nil {
 		return err
 	}
@@ -199,7 +207,8 @@ func (s *Server) handleConnect(sid uint16, req ConnectRequest) {
 	log.Printf("Connecting sid=%d to %s", sid, addr)
 
 	s.connMu.Lock()
-	if oldConn, exists := s.connections[sid]; exists && oldConn != nil {
+	oldConn, exists := s.connections[sid]
+	if exists && oldConn != nil {
 		log.Printf("Closing old connection for sid=%d", sid)
 		oldConn.Close()
 		delete(s.connections, sid)
@@ -219,14 +228,17 @@ func (s *Server) handleConnect(sid uint16, req ConnectRequest) {
 	log.Printf("Connected sid=%d", sid)
 
 	go func() {
+		defer func() {
+			s.mux.CloseStream(sid)
+			s.connMu.Lock()
+			delete(s.connections, sid)
+			s.connMu.Unlock()
+		}()
+		
 		buf := make([]byte, 4096)
 		for {
 			n, err := conn.Read(buf)
 			if err != nil {
-				s.mux.CloseStream(sid)
-				s.connMu.Lock()
-				delete(s.connections, sid)
-				s.connMu.Unlock()
 				return
 			}
 

@@ -2,20 +2,15 @@ package names
 
 import (
 	"bufio"
-	"math/rand"
+	"math/rand/v2"
 	"os"
 	"strings"
-	"time"
 )
 
 var (
 	firstNames []string
 	lastNames  []string
 )
-
-func init() {
-	rand.Seed(time.Now().UnixNano())
-}
 
 func loadNames(path string) ([]string, error) {
 	file, err := os.Open(path)
@@ -56,8 +51,8 @@ func Generate() string {
 		return "Unknown User"
 	}
 
-	first := firstNames[rand.Intn(len(firstNames))]
-	last := lastNames[rand.Intn(len(lastNames))]
+	first := firstNames[rand.IntN(len(firstNames))]
+	last := lastNames[rand.IntN(len(lastNames))]
 
 	return first + " " + last
 }

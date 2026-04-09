@@ -41,9 +41,17 @@ func Run(roomURL, keyHex string, socksPort int) error {
 		if err != nil {
 			return err
 		}
+		if len(key) != 32 {
+			return fmt.Errorf("key must be 32 bytes, got %d", len(key))
+		}
 	}
 
-	cipher, err := crypto.NewCipher(string(key))
+	keyStr := string(key)
+	if len(keyStr) != 32 {
+		return fmt.Errorf("key string length must be 32, got %d", len(keyStr))
+	}
+
+	cipher, err := crypto.NewCipher(keyStr)
 	if err != nil {
 		return err
 	}
@@ -95,9 +103,9 @@ func Run(roomURL, keyHex string, socksPort int) error {
 	time.Sleep(100 * time.Millisecond)
 	
 	resetFrame := make([]byte, 8)
-	binary.BigEndian.PutUint16(resetFrame[0:2], 0xFFFF)
-	binary.BigEndian.PutUint16(resetFrame[2:4], 0xFFFF)
-	binary.BigEndian.PutUint32(resetFrame[4:8], c.clientID)
+	binary.BigEndian.PutUint32(resetFrame[0:4], c.clientID)
+	binary.BigEndian.PutUint16(resetFrame[4:6], 0xFFFF)
+	binary.BigEndian.PutUint16(resetFrame[6:8], 0xFFFF)
 	encrypted, _ := cipher.Encrypt(resetFrame)
 	peer.Send(encrypted)
 	log.Printf("Sent reset signal to server (clientID=%d)", c.clientID)
@@ -205,7 +213,32 @@ func (c *Client) handleSOCKS5(conn net.Conn) {
 	reqData, _ := json.Marshal(req)
 	c.mux.SendData(sid, reqData)
 
-	time.Sleep(500 * time.Millisecond)
+	connected := make(chan bool, 1)
+	timeout := time.NewTimer(10 * time.Second)
+	defer timeout.Stop()
+
+	go func() {
+		for i := 0; i < 100; i++ {
+			time.Sleep(50 * time.Millisecond)
+			data := c.mux.ReadStream(sid)
+			if len(data) > 0 || c.mux.StreamClosed(sid) {
+				connected <- len(data) > 0
+				return
+			}
+		}
+		connected <- false
+	}()
+
+	select {
+	case success := <-connected:
+		if !success {
+			conn.Write([]byte{5, 4, 0, 1, 0, 0, 0, 0, 0, 0})
+			return
+		}
+	case <-timeout.C:
+		conn.Write([]byte{5, 4, 0, 1, 0, 0, 0, 0, 0, 0})
+		return
+	}
 
 	conn.Write([]byte{5, 0, 0, 1, 0, 0, 0, 0, 0, 0})
 
