@@ -105,7 +105,11 @@ func (p *Peer) Connect(ctx context.Context) error {
 	dcReady := make(chan struct{})
 	p.dc.OnOpen(func() {
 		log.Println("DataChannel opened")
-		go p.processSendQueue()
+		p.wg.Add(1)
+		go func() {
+			defer p.wg.Done()
+			p.processSendQueue()
+		}()
 		close(dcReady)
 	})
 	
@@ -156,7 +160,11 @@ func (p *Peer) Connect(ctx context.Context) error {
 	
 	ws.SetReadDeadline(time.Now().Add(60 * time.Second))
 
-	go p.keepAlive()
+	p.wg.Add(1)
+	go func() {
+		defer p.wg.Done()
+		p.keepAlive()
+	}()
 
 	if err := p.sendHello(); err != nil {
 		return err
