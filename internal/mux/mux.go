@@ -10,24 +10,27 @@ import (
 )
 
 type Stream struct {
-	ID     uint16
-	recvBuf []byte
-	closed bool
-	mu     sync.Mutex
+	ID       uint16
+	ClientID uint32
+	recvBuf  []byte
+	closed   bool
+	mu       sync.Mutex
 }
 
 type Multiplexer struct {
-	streams map[uint16]*Stream
-	nextID  uint16
-	onSend  func([]byte) error
-	mu      sync.RWMutex
+	streams  map[uint16]*Stream
+	nextID   uint16
+	clientID uint32
+	onSend   func([]byte) error
+	mu       sync.RWMutex
 }
 
-func New(onSend func([]byte) error) *Multiplexer {
+func New(clientID uint32, onSend func([]byte) error) *Multiplexer {
 	return &Multiplexer{
-		streams: make(map[uint16]*Stream),
-		nextID:  1,
-		onSend:  onSend,
+		streams:  make(map[uint16]*Stream),
+		nextID:   1,
+		clientID: clientID,
+		onSend:   onSend,
 	}
 }
 
@@ -63,10 +66,11 @@ func (m *Multiplexer) SendData(sid uint16, data []byte) error {
 		}
 
 		chunk := data[i:end]
-		frame := make([]byte, 4+len(chunk))
-		binary.BigEndian.PutUint16(frame[0:2], sid)
-		binary.BigEndian.PutUint16(frame[2:4], uint16(len(chunk)))
-		copy(frame[4:], chunk)
+		frame := make([]byte, 8+len(chunk))
+		binary.BigEndian.PutUint32(frame[0:4], m.clientID)
+		binary.BigEndian.PutUint16(frame[4:6], sid)
+		binary.BigEndian.PutUint16(frame[6:8], uint16(len(chunk)))
+		copy(frame[8:], chunk)
 
 		if err := m.onSend(frame); err != nil {
 			return err
@@ -84,57 +88,63 @@ func (m *Multiplexer) CloseStream(sid uint16) error {
 		stream.closed = true
 	}
 
-	frame := make([]byte, 4)
-	binary.BigEndian.PutUint16(frame[0:2], sid)
-	binary.BigEndian.PutUint16(frame[2:4], 0)
+	frame := make([]byte, 8)
+	binary.BigEndian.PutUint32(frame[0:4], m.clientID)
+	binary.BigEndian.PutUint16(frame[4:6], sid)
+	binary.BigEndian.PutUint16(frame[6:8], 0)
 
 	return m.onSend(frame)
 }
 
 func (m *Multiplexer) HandleFrame(frame []byte) {
-	if len(frame) < 4 {
+	if len(frame) < 8 {
 		return
 	}
 
-	sid := binary.BigEndian.Uint16(frame[0:2])
-	length := binary.BigEndian.Uint16(frame[2:4])
+	clientID := binary.BigEndian.Uint32(frame[0:4])
+	sid := binary.BigEndian.Uint16(frame[4:6])
+	length := binary.BigEndian.Uint16(frame[6:8])
 
 	if sid == 0xFFFF && length == 0xFFFF {
 		m.mu.Lock()
-		for _, stream := range m.streams {
-			stream.closed = true
+		for streamSid, stream := range m.streams {
+			if stream.ClientID == clientID {
+				stream.closed = true
+				delete(m.streams, streamSid)
+			}
 		}
-		m.streams = make(map[uint16]*Stream)
-		m.nextID = 1
 		m.mu.Unlock()
 		return
 	}
 
 	if length == 0 {
 		m.mu.Lock()
-		if stream, exists := m.streams[sid]; exists {
+		if stream, exists := m.streams[sid]; exists && stream.ClientID == clientID {
 			stream.closed = true
 		}
 		m.mu.Unlock()
 		return
 	}
 
-	if len(frame) < 4+int(length) {
+	if len(frame) < 8+int(length) {
 		return
 	}
 
-	data := frame[4 : 4+length]
+	data := frame[8 : 8+length]
 
 	m.mu.Lock()
 	stream, exists := m.streams[sid]
 	if !exists {
 		stream = &Stream{
-			ID:     sid,
-			recvBuf: make([]byte, 0),
+			ID:       sid,
+			ClientID: clientID,
+			recvBuf:  make([]byte, 0),
 		}
 		m.streams[sid] = stream
 	}
-	stream.recvBuf = append(stream.recvBuf, data...)
+	if stream.ClientID == clientID {
+		stream.recvBuf = append(stream.recvBuf, data...)
+	}
 	m.mu.Unlock()
 }
 
@@ -169,6 +179,12 @@ func (m *Multiplexer) GetStreams() []uint16 {
 		sids = append(sids, sid)
 	}
 	return sids
+}
+
+func (m *Multiplexer) GetStream(sid uint16) *Stream {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.streams[sid]
 }
 
 func (m *Multiplexer) Reset() {

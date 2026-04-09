@@ -20,9 +20,10 @@ import (
 )
 
 type Client struct {
-	peer   *telemost.Peer
-	cipher *crypto.Cipher
-	mux    *mux.Multiplexer
+	peer     *telemost.Peer
+	cipher   *crypto.Cipher
+	mux      *mux.Multiplexer
+	clientID uint32
 }
 
 func Run(roomURL, keyHex string, socksPort int) error {
@@ -47,11 +48,14 @@ func Run(roomURL, keyHex string, socksPort int) error {
 		return err
 	}
 
+	clientID := uint32(time.Now().UnixNano() & 0xFFFFFFFF)
+
 	c := &Client{
-		cipher: cipher,
+		cipher:   cipher,
+		clientID: clientID,
 	}
 
-	c.mux = mux.New(func(frame []byte) error {
+	c.mux = mux.New(c.clientID, func(frame []byte) error {
 		encrypted, err := c.cipher.Encrypt(frame)
 		if err != nil {
 			return err
@@ -90,12 +94,13 @@ func Run(roomURL, keyHex string, socksPort int) error {
 
 	time.Sleep(100 * time.Millisecond)
 	
-	resetFrame := make([]byte, 4)
+	resetFrame := make([]byte, 8)
 	binary.BigEndian.PutUint16(resetFrame[0:2], 0xFFFF)
 	binary.BigEndian.PutUint16(resetFrame[2:4], 0xFFFF)
+	binary.BigEndian.PutUint32(resetFrame[4:8], c.clientID)
 	encrypted, _ := cipher.Encrypt(resetFrame)
 	peer.Send(encrypted)
-	log.Println("Sent reset signal to server")
+	log.Printf("Sent reset signal to server (clientID=%d)", c.clientID)
 
 	go peer.WatchConnection(ctx)
 

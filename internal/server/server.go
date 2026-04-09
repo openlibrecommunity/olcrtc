@@ -60,7 +60,7 @@ func Run(roomURL, keyHex string) error {
 		connections: make(map[uint16]net.Conn),
 	}
 
-	s.mux = mux.New(func(frame []byte) error {
+	s.mux = mux.New(0, func(frame []byte) error {
 		encrypted, err := s.cipher.Encrypt(frame)
 		if err != nil {
 			return err
@@ -119,18 +119,22 @@ func (s *Server) onData(data []byte) {
 		return
 	}
 
-	if len(plaintext) >= 4 {
-		sid := binary.BigEndian.Uint16(plaintext[0:2])
-		length := binary.BigEndian.Uint16(plaintext[2:4])
+	if len(plaintext) >= 8 {
+		clientID := binary.BigEndian.Uint32(plaintext[0:4])
+		sid := binary.BigEndian.Uint16(plaintext[4:6])
+		length := binary.BigEndian.Uint16(plaintext[6:8])
 		
 		if sid == 0xFFFF && length == 0xFFFF {
-			log.Println("Received reset signal from client - cleaning up")
+			log.Printf("Received reset signal from client (clientID=%d) - cleaning up", clientID)
 			s.connMu.Lock()
-			for sid, conn := range s.connections {
-				if conn != nil {
-					conn.Close()
+			for streamSid, conn := range s.connections {
+				stream := s.mux.GetStream(streamSid)
+				if stream != nil && stream.ClientID == clientID {
+					if conn != nil {
+						conn.Close()
+					}
+					delete(s.connections, streamSid)
 				}
-				delete(s.connections, sid)
 			}
 			s.connMu.Unlock()
 		}
