@@ -174,7 +174,7 @@ func (p *Peer) Send(data []byte) error {
 		return fmt.Errorf("datachannel not ready")
 	}
 	
-	for p.dc.BufferedAmount() > 1024*1024 {
+	for p.dc.BufferedAmount() > 256*1024 {
 		time.Sleep(1 * time.Millisecond)
 	}
 	
