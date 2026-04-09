@@ -10,6 +10,7 @@ import (
 	"syscall"
 
 	"github.com/openlibrecommunity/olcrtc/internal/client"
+	"github.com/openlibrecommunity/olcrtc/internal/logger"
 	"github.com/openlibrecommunity/olcrtc/internal/names"
 	"github.com/openlibrecommunity/olcrtc/internal/server"
 )
@@ -30,11 +31,14 @@ func main() {
 	flag.StringVar(&provider, "provider", "telemost", "Provider (telemost only)")
 	flag.IntVar(&socksPort, "socks-port", 1080, "SOCKS5 port (client only)")
 	flag.StringVar(&keyHex, "key", "", "Shared encryption key (hex)")
-	flag.BoolVar(&debug, "debug", false, "Enable debug logging")
+	flag.BoolVar(&debug, "debug", false, "Enable verbose logging")
 	flag.StringVar(&dataDir, "data", "data", "Path to data directory")
 	flag.Parse()
 
-	if !debug {
+	if debug {
+		log.SetFlags(log.Ltime | log.Lshortfile)
+		logger.SetVerbose(true)
+	} else {
 		log.SetFlags(log.Ltime)
 	}
 

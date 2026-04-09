@@ -7,6 +7,8 @@ package mux
 import (
 	"encoding/binary"
 	"sync"
+
+	"github.com/openlibrecommunity/olcrtc/internal/logger"
 )
 
 type Stream struct {
@@ -74,8 +76,11 @@ func (m *Multiplexer) SendData(sid uint16, data []byte) error {
 	m.mu.RUnlock()
 
 	if !exists || stream.closed {
+		logger.Debug("SendData: stream %d not exists or closed", sid)
 		return nil
 	}
+
+	logger.Verbose("SendData: sid=%d, size=%d bytes", sid, len(data))
 
 	const chunkSize = 7168
 	for i := 0; i < len(data); i += chunkSize {

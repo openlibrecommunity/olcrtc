@@ -14,6 +14,7 @@ import (
 
 	"github.com/pion/webrtc/v4"
 	"github.com/openlibrecommunity/olcrtc/internal/crypto"
+	"github.com/openlibrecommunity/olcrtc/internal/logger"
 	"github.com/openlibrecommunity/olcrtc/internal/mux"
 	"github.com/openlibrecommunity/olcrtc/internal/names"
 	"github.com/openlibrecommunity/olcrtc/internal/telemost"
@@ -123,8 +124,11 @@ func Run(ctx context.Context, roomURL, keyHex string) error {
 func (s *Server) onData(data []byte) {
 	plaintext, err := s.cipher.Decrypt(data)
 	if err != nil {
+		logger.Debug("Decrypt error: %v", err)
 		return
 	}
+
+	logger.Verbose("Received %d bytes from client", len(plaintext))
 
 	if len(plaintext) >= 8 {
 		clientID := binary.BigEndian.Uint32(plaintext[0:4])
@@ -216,6 +220,7 @@ func (s *Server) run(ctx context.Context) error {
 
 func (s *Server) handleConnect(sid uint16, req ConnectRequest) {
 	addr := fmt.Sprintf("%s:%d", req.Addr, req.Port)
+	logger.Verbose("Handling connect request sid=%d to %s", sid, addr)
 	log.Printf("Connecting sid=%d to %s", sid, addr)
 
 	s.connMu.Lock()

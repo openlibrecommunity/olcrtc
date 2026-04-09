@@ -14,6 +14,7 @@ import (
 
 	"github.com/pion/webrtc/v4"
 	"github.com/openlibrecommunity/olcrtc/internal/crypto"
+	"github.com/openlibrecommunity/olcrtc/internal/logger"
 	"github.com/openlibrecommunity/olcrtc/internal/mux"
 	"github.com/openlibrecommunity/olcrtc/internal/names"
 	"github.com/openlibrecommunity/olcrtc/internal/telemost"
@@ -117,9 +118,11 @@ func Run(ctx context.Context, roomURL, keyHex string, socksPort int) error {
 func (c *Client) onData(data []byte) {
 	plaintext, err := c.cipher.Decrypt(data)
 	if err != nil {
+		logger.Debug("Decrypt error: %v", err)
 		return
 	}
 
+	logger.Verbose("Received %d bytes from server", len(plaintext))
 	c.mux.HandleFrame(plaintext)
 }
 
@@ -211,6 +214,7 @@ func (c *Client) handleSOCKS5(conn net.Conn) {
 	port := binary.BigEndian.Uint16(buf[:2])
 
 	sid := c.mux.OpenStream()
+	logger.Verbose("SOCKS5 opened stream sid=%d for %s:%d", sid, addr, port)
 	log.Printf("SOCKS5 connect sid=%d %s:%d", sid, addr, port)
 
 	req := map[string]interface{}{
