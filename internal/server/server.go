@@ -154,7 +154,26 @@ func (s *Server) onData(data []byte) {
 
 	logger.Verbose("Received %d bytes from client", len(plaintext))
 
-	if len(plaintext) >= 8 {
+	if len(plaintext) >= 12 {
+		clientID := binary.BigEndian.Uint32(plaintext[0:4])
+		sid := binary.BigEndian.Uint16(plaintext[4:6])
+		length := binary.BigEndian.Uint16(plaintext[6:8])
+		
+		if sid == 0xFFFF && length == 0xFFFF {
+			log.Printf("Received reset signal from client (clientID=%d) - cleaning up", clientID)
+			s.connMu.Lock()
+			for streamSid, conn := range s.connections {
+				stream := s.mux.GetStream(streamSid)
+				if stream != nil && stream.ClientID == clientID {
+					if conn != nil {
+						conn.Close()
+					}
+					delete(s.connections, streamSid)
+				}
+			}
+			s.connMu.Unlock()
+		}
+	} else if len(plaintext) >= 8 {
 		clientID := binary.BigEndian.Uint32(plaintext[0:4])
 		sid := binary.BigEndian.Uint16(plaintext[4:6])
 		length := binary.BigEndian.Uint16(plaintext[6:8])

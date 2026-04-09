@@ -124,10 +124,11 @@ func Run(ctx context.Context, roomURL, keyHex string, socksPort int, duo bool) e
 
 	time.Sleep(100 * time.Millisecond)
 	
-	resetFrame := make([]byte, 8)
+	resetFrame := make([]byte, 12)
 	binary.BigEndian.PutUint32(resetFrame[0:4], c.clientID)
 	binary.BigEndian.PutUint16(resetFrame[4:6], 0xFFFF)
 	binary.BigEndian.PutUint16(resetFrame[6:8], 0xFFFF)
+	binary.BigEndian.PutUint32(resetFrame[8:12], 0)
 	encrypted, _ := cipher.Encrypt(resetFrame)
 	
 	for _, peer := range c.peers {
