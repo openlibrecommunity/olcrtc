@@ -68,14 +68,23 @@ if [ ! -f "$WORK_DIR/olcrtc" ]; then
     exit 1
 fi
 
-echo "[*] Generating encryption key..."
-KEY=$(openssl rand -hex 32)
-echo ""
-echo "=========================================="
-echo "ENCRYPTION KEY (save this!):"
-echo "$KEY"
-echo "=========================================="
-echo ""
+KEY_FILE="$HOME/.olcrtc_key"
+
+if [ -f "$KEY_FILE" ]; then
+    echo "[*] Loading existing encryption key..."
+    KEY=$(cat "$KEY_FILE")
+else
+    echo "[*] Generating new encryption key..."
+    KEY=$(openssl rand -hex 32)
+    echo "$KEY" > "$KEY_FILE"
+    chmod 600 "$KEY_FILE"
+    echo ""
+    echo "=========================================="
+    echo "NEW ENCRYPTION KEY (saved to $KEY_FILE):"
+    echo "$KEY"
+    echo "=========================================="
+    echo ""
+fi
 
 echo "[*] Starting OlcRTC server..."
 podman run -d \
