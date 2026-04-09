@@ -14,19 +14,22 @@ import (
 )
 
 type Peer struct {
-	roomURL      string
-	name         string
-	conn         *ConnectionInfo
-	ws           *websocket.Conn
-	wsMu         sync.Mutex
-	pcSub        *webrtc.PeerConnection
-	pcPub        *webrtc.PeerConnection
-	dc           *webrtc.DataChannel
-	onData       func([]byte)
-	onReconnect  func(*webrtc.DataChannel)
-	reconnectCh  chan struct{}
-	closeCh      chan struct{}
-	keepAliveCh  chan struct{}
+	roomURL         string
+	name            string
+	conn            *ConnectionInfo
+	ws              *websocket.Conn
+	wsMu            sync.Mutex
+	pcSub           *webrtc.PeerConnection
+	pcPub           *webrtc.PeerConnection
+	dc              *webrtc.DataChannel
+	onData          func([]byte)
+	onReconnect     func(*webrtc.DataChannel)
+	reconnectCh     chan struct{}
+	closeCh         chan struct{}
+	keepAliveCh     chan struct{}
+	lastReconnect   time.Time
+	reconnectCount  int
+	reconnectMu     sync.Mutex
 }
 
 func NewPeer(roomURL, name string, onData func([]byte)) (*Peer, error) {
@@ -417,17 +420,43 @@ func (p *Peer) setupICEHandlers() {
 	})
 }
 
-func (p *Peer) Close() error {
-	close(p.closeCh)
+func (p *Peer) sendLeave() {
+	p.wsMu.Lock()
+	defer p.wsMu.Unlock()
+	
 	if p.ws != nil {
-		p.ws.Close()
+		leave := map[string]interface{}{
+			"uid":   uuid.New().String(),
+			"leave": map[string]interface{}{},
+		}
+		if err := p.ws.WriteJSON(leave); err == nil {
+			log.Println("Sent leave message to server")
+			time.Sleep(200 * time.Millisecond)
+		}
 	}
-	if p.pcSub != nil {
-		p.pcSub.Close()
+}
+
+func (p *Peer) Close() error {
+	p.sendLeave()
+	
+	close(p.closeCh)
+	
+	if p.dc != nil {
+		p.dc.Close()
 	}
+	
 	if p.pcPub != nil {
 		p.pcPub.Close()
 	}
+	
+	if p.pcSub != nil {
+		p.pcSub.Close()
+	}
+	
+	if p.ws != nil {
+		p.ws.Close()
+	}
+	
 	return nil
 }
 
@@ -482,19 +511,27 @@ func (p *Peer) keepAlive() {
 func (p *Peer) reconnect(ctx context.Context) error {
 	log.Println("Reconnecting...")
 	
+	p.sendLeave()
+	
 	close(p.keepAliveCh)
 	
-	if p.ws != nil {
-		p.ws.Close()
+	if p.dc != nil {
+		p.dc.Close()
 	}
-	if p.pcSub != nil {
-		p.pcSub.Close()
-	}
+	
 	if p.pcPub != nil {
 		p.pcPub.Close()
 	}
 	
-	time.Sleep(2 * time.Second)
+	if p.pcSub != nil {
+		p.pcSub.Close()
+	}
+	
+	if p.ws != nil {
+		p.ws.Close()
+	}
+	
+	time.Sleep(3 * time.Second)
 	
 	p.keepAliveCh = make(chan struct{})
 	
@@ -520,13 +557,37 @@ func (p *Peer) SetReconnectCallback(cb func(*webrtc.DataChannel)) {
 }
 
 func (p *Peer) WatchConnection(ctx context.Context) {
+	const maxReconnects = 10
+	const reconnectWindow = 5 * time.Minute
+	
 	for {
 		select {
 		case <-p.reconnectCh:
+			p.reconnectMu.Lock()
+			now := time.Now()
+			if now.Sub(p.lastReconnect) > reconnectWindow {
+				p.reconnectCount = 0
+			}
+			
+			if p.reconnectCount >= maxReconnects {
+				log.Printf("Max reconnect attempts (%d) reached, stopping", maxReconnects)
+				p.reconnectMu.Unlock()
+				return
+			}
+			
+			p.reconnectCount++
+			p.lastReconnect = now
+			p.reconnectMu.Unlock()
+			
+			backoff := time.Duration(p.reconnectCount) * 2 * time.Second
+			if backoff > 30*time.Second {
+				backoff = 30 * time.Second
+			}
+			
 			for {
 				if err := p.reconnect(ctx); err != nil {
-					log.Printf("Reconnect failed: %v, retrying in 5s...", err)
-					time.Sleep(5 * time.Second)
+					log.Printf("Reconnect failed: %v, retrying in %v...", err, backoff)
+					time.Sleep(backoff)
 					continue
 				}
 				log.Println("Reconnected successfully")
