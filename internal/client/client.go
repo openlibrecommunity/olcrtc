@@ -269,10 +269,11 @@ func (c *Client) handleSOCKS5(conn net.Conn) {
 
 	go func() {
 		defer close(streamClosed)
-		dataReady := c.mux.WaitForData(sid)
 		defer c.mux.CleanupDataChannel(sid)
 
 		for {
+			dataReady := c.mux.WaitForData(sid)
+			
 			select {
 			case <-done:
 				return
@@ -290,7 +291,14 @@ func (c *Client) handleSOCKS5(conn net.Conn) {
 				if c.mux.StreamClosed(sid) {
 					return
 				}
-			case <-time.After(100 * time.Millisecond):
+			case <-time.After(10 * time.Millisecond):
+				data := c.mux.ReadStream(sid)
+				if len(data) > 0 {
+					if _, err := conn.Write(data); err != nil {
+						return
+					}
+				}
+				
 				if c.mux.StreamClosed(sid) {
 					return
 				}
