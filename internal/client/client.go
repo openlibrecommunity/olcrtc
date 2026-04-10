@@ -14,12 +14,12 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/pion/webrtc/v4"
 	"github.com/openlibrecommunity/olcrtc/internal/crypto"
 	"github.com/openlibrecommunity/olcrtc/internal/logger"
 	"github.com/openlibrecommunity/olcrtc/internal/mux"
 	"github.com/openlibrecommunity/olcrtc/internal/names"
 	"github.com/openlibrecommunity/olcrtc/internal/telemost"
+	"github.com/pion/webrtc/v4"
 )
 
 type Client struct {
@@ -303,17 +303,24 @@ func (c *Client) handleSOCKS5(conn net.Conn) {
 	case <-dataReady:
 		stream := c.mux.GetStream(sid)
 		if stream == nil || len(stream.RecvBuf()) == 0 {
-			conn.Write([]byte{5, 4, 0, 1, 0, 0, 0, 0, 0, 0})
+			if _, err := conn.Write([]byte{5, 4, 0, 1, 0, 0, 0, 0, 0, 0}); err != nil {
+				log.Printf("Error writing timeout response: %v", err)
+			}
 			return
 		}
 	case <-timeout.C:
-		conn.Write([]byte{5, 4, 0, 1, 0, 0, 0, 0, 0, 0})
+		if _, err := conn.Write([]byte{5, 4, 0, 1, 0, 0, 0, 0, 0, 0}); err != nil {
+			log.Printf("Error writing timeout response: %v", err)
+		}
 		return
 	}
 
 	c.mux.ReadStream(sid)
 
-	conn.Write([]byte{5, 0, 0, 1, 0, 0, 0, 0, 0, 0})
+	if _, err := conn.Write([]byte{5, 0, 0, 1, 0, 0, 0, 0, 0, 0}); err != nil {
+		log.Printf("Error writing success response: %v", err)
+		return
+	}
 
 	done := make(chan struct{})
 	streamClosed := make(chan struct{})
