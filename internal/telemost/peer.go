@@ -175,11 +175,15 @@ func (p *Peer) Connect(ctx context.Context) error {
 	p.ws = ws
 
 	ws.SetPongHandler(func(string) error {
-		ws.SetReadDeadline(time.Now().Add(60 * time.Second))
+		if err := ws.SetReadDeadline(time.Now().Add(60 * time.Second)); err != nil {
+			log.Printf("Error setting read deadline: %v", err)
+		}
 		return nil
 	})
 	
-	ws.SetReadDeadline(time.Now().Add(60 * time.Second))
+	if err := ws.SetReadDeadline(time.Now().Add(60 * time.Second)); err != nil {
+		log.Printf("Error setting read deadline: %v", err)
+	}
 
 	p.wg.Add(1)
 	go func() {
