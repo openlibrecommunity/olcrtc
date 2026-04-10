@@ -2,6 +2,7 @@ package names
 
 import (
 	"bufio"
+	"log"
 	"math/rand/v2"
 	"os"
 	"strings"
