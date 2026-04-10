@@ -11,7 +11,6 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
-	"github.com/openlibrecommunity/olcrtc/internal/logger"
 	"github.com/pion/webrtc/v4"
 )
 
@@ -726,30 +725,23 @@ func (p *Peer) processSendQueue(workerID int) {
 			
 			start := time.Now()
 			
-			for p.dc.BufferedAmount() > 64*1024 {
-				time.Sleep(10 * time.Millisecond)
-				if time.Since(start) > 3*time.Second {
+			for p.dc.BufferedAmount() > 16*1024 {
+				time.Sleep(5 * time.Millisecond)
+				if time.Since(start) > 5*time.Second {
 					log.Printf("[WORKER-%d] Buffer wait timeout, dropping packet size=%d", workerID, len(data))
 					break
 				}
 			}
 			
-			if time.Since(start) > 3*time.Second {
+			if time.Since(start) > 5*time.Second {
 				continue
 			}
 			
-			sendStart := time.Now()
 			if err := p.dc.Send(data); err != nil {
 				log.Printf("[WORKER-%d] Send error: %v", workerID, err)
-			} else {
-				elapsed := time.Since(sendStart)
-				if elapsed > 50*time.Millisecond {
-					log.Printf("[WORKER-%d] Sent %d bytes in %v (buffered: %d)", 
-						workerID, len(data), elapsed, p.dc.BufferedAmount())
-				} else {
-					logger.Verbose("[WORKER-%d] Sent %d bytes (buffered: %d)", 
-						workerID, len(data), p.dc.BufferedAmount())
-				}
+			} else if time.Since(start) > 100*time.Millisecond {
+				log.Printf("[WORKER-%d] Sent %d bytes in %v (buffered: %d)", 
+					workerID, len(data), time.Since(start), p.dc.BufferedAmount())
 			}
 			
 		case <-p.closeCh:

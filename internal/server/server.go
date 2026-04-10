@@ -182,8 +182,6 @@ func (s *Server) onData(data []byte) {
 		return
 	}
 
-	logger.Verbose("Received %d bytes from client", len(plaintext))
-
 	if len(plaintext) >= 12 {
 		clientID := binary.BigEndian.Uint32(plaintext[0:4])
 		sid := binary.BigEndian.Uint16(plaintext[4:6])
@@ -342,9 +340,7 @@ func (s *Server) handleConnect(sid uint16, req ConnectRequest) {
 	
 	log.Printf("[SERVER] sid=%d CONNECT_SUCCESS dial_time=%v", sid, dialElapsed)
 
-	sendStart := time.Now()
 	s.mux.SendData(sid, []byte{0x00})
-	log.Printf("[SERVER] sid=%d RESPONSE_SENT send_time=%v total_elapsed=%v", sid, time.Since(sendStart), time.Since(startTime))
 
 	go func() {
 		defer func() {
@@ -355,9 +351,15 @@ func (s *Server) handleConnect(sid uint16, req ConnectRequest) {
 		}()
 		
 		buf := make([]byte, 16384)
+		totalSent := uint64(0)
+		lastLog := time.Now()
+		
 		for {
 			n, err := conn.Read(buf)
 			if err != nil {
+				if totalSent > 1024*1024 {
+					log.Printf("[SERVER] sid=%d TRANSFER_COMPLETE total=%d MB", sid, totalSent/(1024*1024))
+				}
 				return
 			}
 			
@@ -367,6 +369,12 @@ func (s *Server) handleConnect(sid uint16, req ConnectRequest) {
 
 			if err := s.mux.SendData(sid, buf[:n]); err != nil {
 				return
+			}
+			
+			totalSent += uint64(n)
+			if time.Since(lastLog) > 5*time.Second {
+				log.Printf("[SERVER] sid=%d TRANSFER_PROGRESS sent=%d MB", sid, totalSent/(1024*1024))
+				lastLog = time.Now()
 			}
 		}
 	}()

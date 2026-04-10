@@ -48,7 +48,7 @@ func New(clientID uint32, onSend func([]byte) error) *Multiplexer {
 		clientID:      clientID,
 		onSend:        onSend,
 		maxStreams:    10000,
-		maxBufferSize: 1024 * 1024,
+		maxBufferSize: 16 * 1024 * 1024,
 		dataReady:     make(map[uint16]chan struct{}),
 		sendSeq:       make(map[uint16]uint32),
 	}
@@ -83,13 +83,16 @@ func (m *Multiplexer) SendData(sid uint16, data []byte) error {
 	m.mu.RUnlock()
 
 	if !exists || stream.closed {
-		logger.Debug("SendData: stream %d not exists or closed", sid)
 		return nil
 	}
 
-	logger.Verbose("SendData: sid=%d, size=%d bytes", sid, len(data))
+	const chunkSize = 7168
+	totalChunks := (len(data) + chunkSize - 1) / chunkSize
+	
+	if totalChunks > 10 {
+		logger.Debug("SendData: sid=%d, size=%d bytes, chunks=%d", sid, len(data), totalChunks)
+	}
 
-	const chunkSize = 4096
 	for i := 0; i < len(data); i += chunkSize {
 		end := i + chunkSize
 		if end > len(data) {
@@ -111,7 +114,6 @@ func (m *Multiplexer) SendData(sid uint16, data []byte) error {
 		copy(frame[12:], chunk)
 
 		if err := m.onSend(frame); err != nil {
-			logger.Debug("[MUX] sid=%d onSend error: %v", sid, err)
 			return err
 		}
 	}
@@ -165,8 +167,6 @@ func (m *Multiplexer) HandleFrame(frame []byte) {
 	sid := binary.BigEndian.Uint16(frame[4:6])
 	length := binary.BigEndian.Uint16(frame[6:8])
 	seq := binary.BigEndian.Uint32(frame[8:12])
-	
-	logger.Verbose("[MUX] HandleFrame sid=%d len=%d seq=%d", sid, length, seq)
 
 	if sid == 0xFFFF && length == 0xFFFF {
 		m.mu.Lock()
@@ -236,7 +236,6 @@ func (m *Multiplexer) HandleFrame(frame []byte) {
 				stream.recvBuf = append(stream.recvBuf, nextData...)
 				delete(stream.outOfOrder, stream.nextSeq)
 				stream.nextSeq++
-				logger.Verbose("Applied out-of-order packet sid=%d seq=%d", sid, stream.nextSeq-1)
 			} else {
 				break
 			}
@@ -253,10 +252,7 @@ func (m *Multiplexer) HandleFrame(frame []byte) {
 	} else if seq > stream.nextSeq {
 		if len(stream.outOfOrder) < 100 {
 			stream.outOfOrder[seq] = append([]byte(nil), data...)
-			logger.Verbose("Buffered out-of-order packet sid=%d seq=%d (expected %d)", sid, seq, stream.nextSeq)
 		}
-	} else {
-		logger.Verbose("Dropped duplicate packet sid=%d seq=%d (expected %d)", sid, seq, stream.nextSeq)
 	}
 }
 
