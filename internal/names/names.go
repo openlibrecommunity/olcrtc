@@ -29,7 +29,11 @@ func loadNames(path string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer file.Close()
+	defer func() {
+		if err := file.Close(); err != nil {
+			log.Printf("Error closing file: %v", err)
+		}
+	}()
 
 	var names []string
 	scanner := bufio.NewScanner(file)
