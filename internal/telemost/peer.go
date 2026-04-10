@@ -737,8 +737,11 @@ func (p *Peer) processSendQueue(workerID int) {
 			// downloads like Instagram/Twitter assets would hang forever
 			// waiting for the missing bytes. Backpressure already propagates
 			// upstream via CanSend() / the sendQueue length.
+			// Threshold is high (4MB) because a tight limit serialises sends:
+			// workers would pause on every frame, turning throughput into
+			// one chunk per 10ms drain cycle (~400KB/s).
 			waitStart := time.Now()
-			for p.dc.BufferedAmount() > 64*1024 {
+			for p.dc.BufferedAmount() > 4*1024*1024 {
 				if p.dc.ReadyState() != webrtc.DataChannelStateOpen {
 					break
 				}
@@ -784,7 +787,7 @@ func (p *Peer) monitorQueue() {
 			if p.dc != nil {
 				buffered = p.dc.BufferedAmount()
 			}
-			if queueLen > 500 || buffered > 50*1024 {
+			if queueLen > 1000 || buffered > 3*1024*1024 {
 				log.Printf("[QUEUE_MONITOR] queue_len=%d dc_buffered=%d", queueLen, buffered)
 			}
 		case <-p.closeCh:
