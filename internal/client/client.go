@@ -195,7 +195,9 @@ func (c *Client) runSOCKS5(ctx context.Context, port int) error {
 				log.Println("SOCKS5 listener closed")
 				
 				for _, peer := range c.peers {
-					peer.Close()
+					if err := peer.Close(); err != nil {
+						log.Printf("Error closing peer: %v", err)
+					}
 				}
 				
 				return nil
