@@ -1,0 +1,17 @@
+version: "2"
+
+linters:
+  enable:
+    - errcheck
+    - govet
+    - staticcheck
+    - unused
+
+linters-settings:
+  errcheck:
+    check-blank: true
+    check-type-assertions: false
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
