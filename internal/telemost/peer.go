@@ -347,13 +347,15 @@ func (p *Peer) handleSignaling() {
 			}
 
 			p.wsMu.Lock()
-			p.ws.WriteJSON(map[string]interface{}{
+			if err := p.ws.WriteJSON(map[string]interface{}{
 				"uid": uuid.New().String(),
 				"subscriberSdpAnswer": map[string]interface{}{
 					"pcSeq": int(pcSeq),
 					"sdp":   answer.SDP,
 				},
-			})
+			}); err != nil {
+				log.Printf("Error writing subscriber SDP answer: %v", err)
+			}
 			p.wsMu.Unlock()
 
 			p.sendAck(uid)
@@ -371,13 +373,15 @@ func (p *Peer) handleSignaling() {
 			}
 
 			p.wsMu.Lock()
-			p.ws.WriteJSON(map[string]interface{}{
+			if err := p.ws.WriteJSON(map[string]interface{}{
 				"uid": uuid.New().String(),
 				"publisherSdpOffer": map[string]interface{}{
 					"pcSeq": 1,
 					"sdp":   pubOffer.SDP,
 				},
-			})
+			}); err != nil {
+				log.Printf("Error writing publisher SDP offer: %v", err)
+			}
 			p.wsMu.Unlock()
 
 			pubSent = true
@@ -420,9 +424,13 @@ func (p *Peer) handleICE(cand map[string]interface{}) {
 	}
 
 	if target == "SUBSCRIBER" {
-		p.pcSub.AddICECandidate(init)
+		if err := p.pcSub.AddICECandidate(init); err != nil {
+			log.Printf("Error adding ICE candidate to subscriber: %v", err)
+		}
 	} else if target == "PUBLISHER" {
-		p.pcPub.AddICECandidate(init)
+		if err := p.pcPub.AddICECandidate(init); err != nil {
+			log.Printf("Error adding ICE candidate to publisher: %v", err)
+		}
 	}
 }
 
@@ -430,24 +438,28 @@ func (p *Peer) sendAck(uid string) {
 	p.wsMu.Lock()
 	defer p.wsMu.Unlock()
 	
-	p.ws.WriteJSON(map[string]interface{}{
+	if err := p.ws.WriteJSON(map[string]interface{}{
 		"uid": uid,
 		"ack": map[string]interface{}{
 			"status": map[string]interface{}{
 				"code": "OK",
 			},
 		},
-	})
+	}); err != nil {
+		log.Printf("Error writing ACK: %v", err)
+	}
 }
 
 func (p *Peer) sendPong(uid string) {
 	p.wsMu.Lock()
 	defer p.wsMu.Unlock()
 	
-	p.ws.WriteJSON(map[string]interface{}{
+	if err := p.ws.WriteJSON(map[string]interface{}{
 		"uid": uid,
 		"pong": map[string]interface{}{},
-	})
+	}); err != nil {
+		log.Printf("Error writing PONG: %v", err)
+	}
 }
 
 func (p *Peer) setupICEHandlers() {
@@ -458,7 +470,7 @@ func (p *Peer) setupICEHandlers() {
 
 		init := c.ToJSON()
 		p.wsMu.Lock()
-		p.ws.WriteJSON(map[string]interface{}{
+		if err := p.ws.WriteJSON(map[string]interface{}{
 			"uid": uuid.New().String(),
 			"webrtcIceCandidate": map[string]interface{}{
 				"candidate":    init.Candidate,
@@ -467,7 +479,9 @@ func (p *Peer) setupICEHandlers() {
 				"target":       "SUBSCRIBER",
 				"pcSeq":        1,
 			},
-		})
+		}); err != nil {
+			log.Printf("Error writing ICE candidate: %v", err)
+		}
 		p.wsMu.Unlock()
 	})
 
@@ -478,7 +492,7 @@ func (p *Peer) setupICEHandlers() {
 
 		init := c.ToJSON()
 		p.wsMu.Lock()
-		p.ws.WriteJSON(map[string]interface{}{
+		if err := p.ws.WriteJSON(map[string]interface{}{
 			"uid": uuid.New().String(),
 			"webrtcIceCandidate": map[string]interface{}{
 				"candidate":    init.Candidate,
@@ -487,7 +501,9 @@ func (p *Peer) setupICEHandlers() {
 				"target":       "PUBLISHER",
 				"pcSeq":        1,
 			},
-		})
+		}); err != nil {
+			log.Printf("Error writing ICE candidate: %v", err)
+		}
 		p.wsMu.Unlock()
 	})
 }
@@ -548,24 +564,34 @@ func (p *Peer) Close() error {
 	
 	if p.dc != nil {
 		log.Println("Closing DataChannel...")
-		p.dc.Close()
+		if err := p.dc.Close(); err != nil {
+			log.Printf("Error closing DataChannel: %v", err)
+		}
 	}
 	
 	if p.pcPub != nil {
 		log.Println("Closing Publisher PeerConnection...")
-		p.pcPub.Close()
+		if err := p.pcPub.Close(); err != nil {
+			log.Printf("Error closing Publisher PeerConnection: %v", err)
+		}
 	}
 	
 	if p.pcSub != nil {
 		log.Println("Closing Subscriber PeerConnection...")
-		p.pcSub.Close()
+		if err := p.pcSub.Close(); err != nil {
+			log.Printf("Error closing Subscriber PeerConnection: %v", err)
+		}
 	}
 	
 	if p.ws != nil {
 		log.Println("Closing WebSocket...")
 		p.wsMu.Lock()
-		p.ws.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""), time.Now().Add(time.Second))
-		p.ws.Close()
+		if err := p.ws.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""), time.Now().Add(time.Second)); err != nil {
+			log.Printf("Error writing close message: %v", err)
+		}
+		if err := p.ws.Close(); err != nil {
+			log.Printf("Error closing WebSocket: %v", err)
+		}
 		p.wsMu.Unlock()
 	}
 	
@@ -630,21 +656,31 @@ func (p *Peer) reconnect(ctx context.Context) error {
 	close(p.keepAliveCh)
 	
 	if p.dc != nil {
-		p.dc.Close()
+		if err := p.dc.Close(); err != nil {
+			log.Printf("Error closing DataChannel: %v", err)
+		}
 	}
 	
 	if p.pcPub != nil {
-		p.pcPub.Close()
+		if err := p.pcPub.Close(); err != nil {
+			log.Printf("Error closing Publisher PeerConnection: %v", err)
+		}
 	}
 	
 	if p.pcSub != nil {
-		p.pcSub.Close()
+		if err := p.pcSub.Close(); err != nil {
+			log.Printf("Error closing Subscriber PeerConnection: %v", err)
+		}
 	}
 	
 	if p.ws != nil {
 		p.wsMu.Lock()
-		p.ws.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""), time.Now().Add(time.Second))
-		p.ws.Close()
+		if err := p.ws.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""), time.Now().Add(time.Second)); err != nil {
+			log.Printf("Error writing close message: %v", err)
+		}
+		if err := p.ws.Close(); err != nil {
+			log.Printf("Error closing WebSocket: %v", err)
+		}
 		p.wsMu.Unlock()
 	}
 	
