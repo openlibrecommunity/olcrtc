@@ -293,7 +293,9 @@ func (p *Peer) handleSignaling() {
 		
 		p.wsMu.Lock()
 		if p.ws != nil {
-			p.ws.SetReadDeadline(time.Now().Add(60 * time.Second))
+			if err := p.ws.SetReadDeadline(time.Now().Add(60 * time.Second)); err != nil {
+				log.Printf("Error setting read deadline: %v", err)
+			}
 		}
 		p.wsMu.Unlock()
 
