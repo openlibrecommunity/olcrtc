@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"sync"
+	"time"
 
 	"github.com/openlibrecommunity/olcrtc/internal/client"
 	"github.com/openlibrecommunity/olcrtc/internal/logger"
@@ -27,7 +28,9 @@ type LogWriter interface {
 var (
 	mu     sync.Mutex
 	cancel context.CancelFunc
-	done   chan error
+	done   chan struct{}
+	ready  chan struct{}
+	runErr error
 )
 
 // SetProtector sets the Android VPN socket protector.
@@ -84,17 +87,75 @@ func Start(roomID, keyHex string, socksPort int, duo bool, socksUser, socksPass 
 
 	ctx, c := context.WithCancel(context.Background())
 	cancel = c
-	done = make(chan error, 1)
+	done = make(chan struct{})
+	ready = make(chan struct{})
+	localReady := ready
+	runErr = nil
+
+	var readyOnce sync.Once
 
 	go func() {
-		err := client.Run(ctx, roomURL, keyHex, socksPort, duo, socksUser, socksPass)
+		err := client.RunWithReady(ctx, roomURL, keyHex, socksPort, duo, socksUser, socksPass, func() {
+			readyOnce.Do(func() {
+				close(localReady)
+			})
+		})
 		mu.Lock()
 		cancel = nil
+		runErr = err
 		mu.Unlock()
-		done <- err
+		close(done)
 	}()
 
 	return nil
+}
+
+// WaitReady blocks until the Telemost peers are connected and the local SOCKS5 listener is ready.
+func WaitReady(timeoutMillis int) error {
+	mu.Lock()
+	r := ready
+	d := done
+	err := runErr
+	running := cancel != nil
+	mu.Unlock()
+
+	if r == nil {
+		if err != nil {
+			return err
+		}
+		return fmt.Errorf("olcRTC is not running")
+	}
+
+	select {
+	case <-r:
+		return nil
+	default:
+	}
+
+	if !running {
+		if err != nil {
+			return err
+		}
+		return fmt.Errorf("olcRTC stopped before becoming ready")
+	}
+
+	timer := time.NewTimer(time.Duration(timeoutMillis) * time.Millisecond)
+	defer timer.Stop()
+
+	select {
+	case <-r:
+		return nil
+	case <-d:
+		mu.Lock()
+		err := runErr
+		mu.Unlock()
+		if err != nil {
+			return err
+		}
+		return fmt.Errorf("olcRTC stopped before becoming ready")
+	case <-timer.C:
+		return fmt.Errorf("olcRTC start timed out")
+	}
 }
 
 // Stop gracefully stops the olcRTC client.

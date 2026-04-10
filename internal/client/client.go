@@ -32,6 +32,10 @@ type Client struct {
 }
 
 func Run(ctx context.Context, roomURL, keyHex string, socksPort int, duo bool, socksUser, socksPass string) error {
+	return RunWithReady(ctx, roomURL, keyHex, socksPort, duo, socksUser, socksPass, nil)
+}
+
+func RunWithReady(ctx context.Context, roomURL, keyHex string, socksPort int, duo bool, socksUser, socksPass string, onReady func()) error {
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
@@ -159,7 +163,7 @@ func Run(ctx context.Context, roomURL, keyHex string, socksPort int, duo bool, s
 		log.Printf("Sent reset signal to server (clientID=%d)", c.clientID)
 	}
 
-	err = c.runSOCKS5(runCtx, socksPort, socksUser, socksPass)
+	err = c.runSOCKS5(runCtx, socksPort, socksUser, socksPass, onReady)
 
 	log.Println("Waiting for client goroutines...")
 	c.wg.Wait()
@@ -178,13 +182,16 @@ func (c *Client) onData(data []byte) {
 	c.mux.HandleFrame(plaintext)
 }
 
-func (c *Client) runSOCKS5(ctx context.Context, port int, username, password string) error {
+func (c *Client) runSOCKS5(ctx context.Context, port int, username, password string, onReady func()) error {
 	listener, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
 	if err != nil {
 		return err
 	}
 
 	log.Printf("SOCKS5 proxy listening on 127.0.0.1:%d (auth=%v)", port, username != "")
+	if onReady != nil {
+		onReady()
+	}
 
 	go func() {
 		<-ctx.Done()
