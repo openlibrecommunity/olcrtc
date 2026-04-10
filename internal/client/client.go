@@ -268,7 +268,9 @@ func (c *Client) handleSOCKS5(conn net.Conn) {
 		}
 		addr = string(buf[:length])
 	default:
-		conn.Write([]byte{5, 8, 0, 1, 0, 0, 0, 0, 0, 0})
+		if _, err := conn.Write([]byte{5, 8, 0, 1, 0, 0, 0, 0, 0, 0}); err != nil {
+			log.Printf("Error writing SOCKS5 address type error: %v", err)
+		}
 		return
 	}
 
