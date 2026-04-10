@@ -70,7 +70,9 @@ func main() {
 	namesPath := filepath.Join(dataDir, "names")
 	surnamesPath := filepath.Join(dataDir, "surnames")
 
-	names.LoadNameFiles(namesPath, surnamesPath)
+	if err := names.LoadNameFiles(namesPath, surnamesPath); err != nil {
+		log.Fatalf("Failed to load name files: %v", err)
+	}
 
 	roomURL := "https://telemost.yandex.ru/j/" + roomID
 
