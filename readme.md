@@ -27,10 +27,10 @@ or wait for the release or at least a beta
 ## fast start
 
 ```bash
-# server
+# server ( podman, pre configured, easy )
 ./srv.sh
 
-# client
+# client ( podman, pre configured, easy   
 ./cnc.sh
 
 # or native ( no podman ) linux
