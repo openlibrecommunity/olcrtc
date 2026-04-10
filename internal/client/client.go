@@ -146,7 +146,9 @@ func Run(ctx context.Context, roomURL, keyHex string, socksPort int, duo bool) e
 	encrypted, _ := cipher.Encrypt(resetFrame)
 	
 	for _, peer := range c.peers {
-		peer.Send(encrypted)
+		if err := peer.Send(encrypted); err != nil {
+			log.Printf("Failed to send reset signal: %v", err)
+		}
 	}
 	log.Printf("Sent reset signal to server (clientID=%d)", c.clientID)
 
