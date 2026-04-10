@@ -319,7 +319,7 @@ func (s *Server) run(ctx context.Context) error {
 
 func (s *Server) handleConnect(sid uint16, req ConnectRequest) {
 	startTime := time.Now()
-	addr := fmt.Sprintf("%s:%d", req.Addr, req.Port)
+	addr := net.JoinHostPort(req.Addr, fmt.Sprintf("%d", req.Port))
 	logger.Verbose("Handling connect request sid=%d to %s", sid, addr)
 	log.Printf("[SERVER] sid=%d CONNECT_START %s", sid, addr)
 
