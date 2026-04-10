@@ -243,7 +243,9 @@ func (c *Client) handleSOCKS5(conn net.Conn) {
 	}
 
 	if buf[1] != 1 {
-		conn.Write([]byte{5, 7, 0, 1, 0, 0, 0, 0, 0, 0})
+		if _, err := conn.Write([]byte{5, 7, 0, 1, 0, 0, 0, 0, 0, 0}); err != nil {
+			log.Printf("Error writing SOCKS5 error response: %v", err)
+		}
 		return
 	}
 
