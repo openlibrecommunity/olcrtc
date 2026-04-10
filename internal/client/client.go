@@ -290,7 +290,10 @@ func (c *Client) handleSOCKS5(conn net.Conn) {
 	}
 
 	reqData, _ := json.Marshal(req)
-	c.mux.SendData(sid, reqData)
+	if err := c.mux.SendData(sid, reqData); err != nil {
+		log.Printf("Error sending connect request: %v", err)
+		return
+	}
 
 	dataReady := c.mux.WaitForData(sid)
 	timeout := time.NewTimer(10 * time.Second)
