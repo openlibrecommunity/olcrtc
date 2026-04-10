@@ -423,11 +423,12 @@ func (p *Peer) handleICE(cand map[string]interface{}) {
 		SDPMLineIndex: func() *uint16 { v := uint16(sdpMLineIndex); return &v }(),
 	}
 
-	if target == "SUBSCRIBER" {
+	switch target {
+	case "SUBSCRIBER":
 		if err := p.pcSub.AddICECandidate(init); err != nil {
 			log.Printf("Error adding ICE candidate to subscriber: %v", err)
 		}
-	} else if target == "PUBLISHER" {
+	case "PUBLISHER":
 		if err := p.pcPub.AddICECandidate(init); err != nil {
 			log.Printf("Error adding ICE candidate to publisher: %v", err)
 		}
