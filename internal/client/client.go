@@ -324,7 +324,9 @@ func (c *Client) handleSOCKS5(conn net.Conn) {
 		for {
 			n, err := conn.Read(buf)
 			if err != nil {
-				c.mux.CloseStream(sid)
+				if err := c.mux.CloseStream(sid); err != nil {
+					log.Printf("Error closing stream: %v", err)
+				}
 				return
 			}
 			if err := c.mux.SendData(sid, buf[:n]); err != nil {
