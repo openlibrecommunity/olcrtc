@@ -233,7 +233,10 @@ func (c *Client) handleSOCKS5(conn net.Conn) {
 		return
 	}
 
-	conn.Write([]byte{5, 0})
+	if _, err := conn.Write([]byte{5, 0}); err != nil {
+		log.Printf("Error writing SOCKS5 response: %v", err)
+		return
+	}
 
 	if _, err := io.ReadFull(conn, buf[:4]); err != nil {
 		return
