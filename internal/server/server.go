@@ -131,7 +131,9 @@ func Run(ctx context.Context, roomURL, keyHex string, duo bool, dnsServer string
 			s.connMu.Lock()
 			for sid, conn := range s.connections {
 				if conn != nil {
-					conn.Close()
+					if err := conn.Close(); err != nil {
+						log.Printf("Error closing connection: %v", err)
+					}
 				}
 				delete(s.connections, sid)
 			}
