@@ -725,15 +725,15 @@ func (p *Peer) processSendQueue(workerID int) {
 			
 			start := time.Now()
 			
-			for p.dc.BufferedAmount() > 16*1024 {
-				time.Sleep(5 * time.Millisecond)
-				if time.Since(start) > 5*time.Second {
+			for p.dc.BufferedAmount() > 4*1024*1024 {
+				time.Sleep(10 * time.Millisecond)
+				if time.Since(start) > 10*time.Second {
 					log.Printf("[WORKER-%d] Buffer wait timeout, dropping packet size=%d", workerID, len(data))
 					break
 				}
 			}
 			
-			if time.Since(start) > 5*time.Second {
+			if time.Since(start) > 10*time.Second {
 				continue
 			}
 			
