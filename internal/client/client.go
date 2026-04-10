@@ -182,7 +182,9 @@ func (c *Client) runSOCKS5(ctx context.Context, port int) error {
 	go func() {
 		<-ctx.Done()
 		log.Println("Closing SOCKS5 listener...")
-		listener.Close()
+		if err := listener.Close(); err != nil {
+			log.Printf("Error closing listener: %v", err)
+		}
 	}()
 
 	for {
