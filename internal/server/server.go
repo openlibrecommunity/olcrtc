@@ -30,7 +30,6 @@ type Server struct {
 	peerIdx     atomic.Uint32
 	wg          sync.WaitGroup
 	dnsServer   string
-	dnsCache    sync.Map
 	resolver    *net.Resolver
 }
 
