@@ -212,7 +212,11 @@ func (c *Client) runSOCKS5(ctx context.Context, port int) error {
 }
 
 func (c *Client) handleSOCKS5(conn net.Conn) {
-	defer conn.Close()
+	defer func() {
+		if err := conn.Close(); err != nil {
+			log.Printf("Error closing connection: %v", err)
+		}
+	}()
 
 	buf := make([]byte, 256)
 
