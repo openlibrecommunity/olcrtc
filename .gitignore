@@ -243,3 +243,5 @@ go.work.sum
 # .idea/
 # .vscode/
 build/
+.vscode/settings.json
+.editorconfig
