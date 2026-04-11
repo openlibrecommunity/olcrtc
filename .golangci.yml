@@ -1,0 +1,271 @@
+version: "2"
+
+run:
+  timeout: 5m
+  tests: true
+  build-tags:
+    - race
+
+linters:
+  enable:
+    - errcheck
+    - govet
+    - staticcheck
+    - unused
+    - ineffassign
+    - asasalint
+    - asciicheck
+    - bidichk
+    - bodyclose
+    - canonicalheader
+    - containedctx
+    - contextcheck
+    - copyloopvar
+    - cyclop
+    - decorder
+    - dogsled
+    - dupl
+    - dupword
+    - durationcheck
+    - err113
+    - errchkjson
+    - errname
+    - errorlint
+    - exhaustive
+    - fatcontext
+    - forbidigo
+    - forcetypeassert
+    - gocheckcompilerdirectives
+    - gochecknoglobals
+    - gochecknoinits
+    - gochecksumtype
+    - gocognit
+    - goconst
+    - gocritic
+    - gocyclo
+    - godot
+    - godox
+    - goprintffuncname
+    - gosec
+    - grouper
+    - iface
+    - inamedparam
+    - interfacebloat
+    - intrange
+    - ireturn
+    - lll
+    - loggercheck
+    - maintidx
+    - makezero
+    - mirror
+    - misspell
+    - musttag
+    - nakedret
+    - nestif
+    - nilerr
+    - nilnesserr
+    - nilnil
+    - noctx
+    - nolintlint
+    - nonamedreturns
+    - nosprintfhostport
+    - perfsprint
+    - prealloc
+    - predeclared
+    - promlinter
+    - reassign
+    - recvcheck
+    - revive
+    - rowserrcheck
+    - sloglint
+    - spancheck
+    - sqlclosecheck
+    - tagalign
+    - tagliatelle
+    - testableexamples
+    - testifylint
+    - thelper
+    - tparallel
+    - unconvert
+    - unparam
+    - usestdlibvars
+    - wastedassign
+    - whitespace
+    - wrapcheck
+    - zerologlint
+
+linters-settings:
+  errcheck:
+    check-blank: true
+    check-type-assertions: true
+    exclude-functions:
+      - (io.Closer).Close
+
+  govet:
+    enable-all: true
+    settings:
+      shadow:
+        strict: true
+
+  gosec:
+    severity: medium
+    confidence: medium
+    excludes:
+      - G104
+      - G114
+
+  gocritic:
+    enabled-tags:
+      - diagnostic
+      - style
+      - performance
+      - experimental
+      - opinionated
+
+  revive:
+    severity: warning
+    enable-all-rules: false
+    rules:
+      - name: atomic
+      - name: blank-imports
+      - name: bool-literal-in-expr
+      - name: call-to-gc
+      - name: constant-logical-expr
+      - name: context-as-argument
+      - name: context-keys-type
+      - name: datarace
+      - name: defer
+      - name: dot-imports
+      - name: duplicated-imports
+      - name: early-return
+      - name: empty-block
+      - name: empty-lines
+      - name: error-naming
+      - name: error-return
+      - name: error-strings
+      - name: errorf
+      - name: exported
+      - name: identical-branches
+      - name: if-return
+      - name: increment-decrement
+      - name: indent-error-flow
+      - name: modifies-parameter
+      - name: modifies-value-receiver
+      - name: range
+      - name: range-val-address
+      - name: range-val-in-closure
+      - name: receiver-naming
+      - name: redefines-builtin-id
+      - name: string-of-int
+      - name: struct-tag
+      - name: superfluous-else
+      - name: time-equal
+      - name: time-naming
+      - name: unconditional-recursion
+      - name: unexported-naming
+      - name: unexported-return
+      - name: unhandled-error
+      - name: unnecessary-stmt
+      - name: unreachable-code
+      - name: unused-parameter
+      - name: unused-receiver
+      - name: use-any
+      - name: useless-break
+      - name: var-declaration
+      - name: var-naming
+      - name: waitgroup-by-value
+
+  stylecheck:
+    checks: ["all"]
+
+  staticcheck:
+    checks: ["all"]
+
+  unparam:
+    check-exported: true
+
+  nakedret:
+    max-func-lines: 0
+
+  cyclop:
+    max-complexity: 10
+
+  gocyclo:
+    min-complexity: 10
+
+  gocognit:
+    min-complexity: 15
+
+  nestif:
+    min-complexity: 4
+
+  lll:
+    line-length: 120
+
+  maintidx:
+    under: 20
+
+  funlen:
+    lines: 80
+    statements: 50
+
+  gochecknoglobals:
+    check-no-globals: true
+
+  goconst:
+    min-len: 3
+    min-occurrences: 3
+
+  dupl:
+    threshold: 100
+
+  forbidigo:
+    forbid:
+      - ^print.*$
+      - ^fmt\.Print.*$
+
+  tagliatelle:
+    case:
+      rules:
+        json: snake
+        yaml: snake
+        xml: camel
+        bson: camel
+        avro: snake
+        mapstructure: kebab
+
+  varnamelen:
+    min-name-length: 2
+    ignore-names:
+      - err
+      - i
+      - j
+      - k
+      - v
+      - id
+      - ok
+      - db
+      - tx
+      - wg
+      - mu
+
+  ireturn:
+    allow:
+      - anon
+      - error
+      - empty
+      - stdlib
+
+  wrapcheck:
+    ignoreSigs:
+      - .Errorf(
+      - errors.New(
+      - errors.Unwrap(
+      - .Wrap(
+      - .Wrapf(
+      - .WithMessage(
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
+  exclude-use-default: false
