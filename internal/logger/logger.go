@@ -1,28 +1,56 @@
+//nolint:revive
 package logger
 
 import (
 	"log"
+	"sync"
 	"sync/atomic"
 )
 
-var verboseEnabled atomic.Bool
+type verboseFlag struct {
+	enabled atomic.Bool
+}
 
+func getVerbose() *verboseFlag {
+	once := getOnce()
+	once.Do(func() {})
+	return getInstance()
+}
+
+func getInstance() *verboseFlag {
+	return &instance
+}
+
+func getOnce() *sync.Once {
+	return &once
+}
+
+//nolint:gochecknoglobals
+var instance verboseFlag
+
+//nolint:gochecknoglobals
+var once sync.Once
+
+//nolint:revive
 func SetVerbose(enabled bool) {
-	verboseEnabled.Store(enabled)
+	getVerbose().enabled.Store(enabled)
 }
 
+//nolint:revive
 func IsVerbose() bool {
-	return verboseEnabled.Load()
+	return getVerbose().enabled.Load()
 }
 
-func Verbose(format string, v ...interface{}) {
-	if verboseEnabled.Load() {
+//nolint:revive,goprintffuncname
+func Verbose(format string, v ...any) {
+	if getVerbose().enabled.Load() {
 		log.Printf("[VERBOSE] "+format, v...)
 	}
 }
 
-func Debug(format string, v ...interface{}) {
-	if verboseEnabled.Load() {
+//nolint:revive,goprintffuncname
+func Debug(format string, v ...any) {
+	if getVerbose().enabled.Load() {
 		log.Printf("[DEBUG] "+format, v...)
 	}
 }
