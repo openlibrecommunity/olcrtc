@@ -33,6 +33,14 @@ or wait for the release or at least a beta
 # client ( podman, pre configured, easy   
 ./script/cnc.sh
 
+
+# Also there's a client UI version (currently in beta)
+./script/ui.sh
+
+# And then
+./build/olcrtc-ui
+
+
 # or native ( no podman ) linux
 GOOS=linux GOARCH=amd64 go build ./cmd/olcrtc
 
@@ -42,12 +50,6 @@ GOOS=android GOARCH=arm64 go build -ldflags="-checklinkname=0" -o build/olcrtc .
 # or native ( no podman ) windows
 GOOS=windows GOARCH=amd64 go build ./cmd/olcrtc
 
-
-# Also there's a client UI version (currently in beta)
-./script/ui.sh
-
-# And then
-./build/olcrtc-ui
 
 ```
 
