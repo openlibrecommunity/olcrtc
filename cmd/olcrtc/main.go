@@ -27,6 +27,8 @@ func main() {
 		dataDir   string
 		duo       bool
 		dnsServer string
+		socksProxyAddr  string
+		socksProxyPort  int
 	)
 
 	flag.StringVar(&mode, "mode", "", "Mode: srv or cnc")
@@ -38,6 +40,8 @@ func main() {
 	flag.StringVar(&dataDir, "data", "data", "Path to data directory")
 	flag.BoolVar(&duo, "duo", false, "Use dual channels for 2x throughput")
 	flag.StringVar(&dnsServer, "dns", "1.1.1.1:53", "DNS server (default: Cloudflare 1.1.1.1)")
+	flag.StringVar(&socksProxyAddr, "socks-proxy", "", "SOCKS5 proxy address (server only)")
+	flag.IntVar(&socksProxyPort, "socks-proxy-port", 1080, "SOCKS5 proxy port (server only)")
 	flag.Parse()
 
 	if debug {
@@ -85,7 +89,7 @@ func main() {
 	go func() {
 		switch mode {
 		case "srv":
-			errCh <- server.Run(ctx, roomURL, keyHex, duo, dnsServer)
+			errCh <- server.Run(ctx, roomURL, keyHex, duo, dnsServer, socksProxyAddr, socksProxyPort)
 		case "cnc":
 			errCh <- client.Run(ctx, roomURL, keyHex, socksPort, duo)
 		}
