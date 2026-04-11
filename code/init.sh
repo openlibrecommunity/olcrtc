@@ -1,8 +1,7 @@
-#!/usr/bin/fish
-
+#!/bin/bash  
 
 python -m venv venv
 
-source venv/bin/activate.fish
+source venv/bin/activate
 
 pip install -r requirements.txt
