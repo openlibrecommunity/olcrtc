@@ -41,6 +41,7 @@ func (p *Program) Run() {
 	w := p.App.NewWindow("OlcRTC")
 	w.CenterOnScreen()
 	w.Resize(fyne.NewSize(1280, 700))
+	w.SetOnClosed(p.olcrtcStop)
 	p.ParentWindow = w
 
 	settingsBtn := widget.NewButtonWithIcon("Settings", theme.SettingsIcon(), func() {
