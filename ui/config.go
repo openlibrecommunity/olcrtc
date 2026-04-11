@@ -2,8 +2,10 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -13,6 +15,18 @@ type Config struct {
 	EncryptionKey string `json:"encryption_key"`
 	SocksPort     string `json:"socks_port"`
 	ConferenceID  string `json:"conference_id"`
+}
+
+func isValidPort(portStr string) bool {
+	portStr = strings.TrimSpace(portStr)
+	if portStr == "" {
+		return false
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		return false
+	}
+	return port > 0 && port <= 65535
 }
 
 func (p *Program) getConfigPath() string {
@@ -53,6 +67,10 @@ func (p *Program) loadConfig() *Config {
 		return cfg
 	}
 	cfg.ConferenceID = strings.ReplaceAll(cfg.ConferenceID, " ", "")
+	if !isValidPort(cfg.SocksPort) {
+		log("WARNING: Invalid port in config, using default: 1080")
+		cfg.SocksPort = "1080"
+	}
 	log("Config loaded successfully")
 	return cfg
 }
@@ -61,6 +79,12 @@ func (p *Program) saveConfig(dns, encryptionKey, socksPort, conferenceID string)
 	log("Saving configuration...")
 
 	conferenceID = strings.ReplaceAll(conferenceID, " ", "")
+
+	if !isValidPort(socksPort) {
+		log("ERROR: Invalid port: %s", socksPort)
+		p.showError(fmt.Errorf("invalid port: must be between 1 and 65535"))
+		return
+	}
 
 	p.Config = &Config{
 		DNS:           dns,
