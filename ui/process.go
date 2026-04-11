@@ -22,40 +22,64 @@ func (p *Program) olcrtcRun() {
 	} else {
 		cmd = exec.Command("sh", "-c", p.RunString)
 	}
+
+	p.CmdMu.Lock()
 	p.Cmd = cmd
 	err := p.Cmd.Start()
+	pid := 0
+	if err == nil && p.Cmd.Process != nil {
+		pid = p.Cmd.Process.Pid
+	}
+	p.CmdMu.Unlock()
+
 	if err != nil {
 		log("ERROR: Failed to start olcrtc: %v", err)
 		p.showError(err)
+		p.CmdMu.Lock()
 		p.Cmd = nil
+		p.CmdMu.Unlock()
 		p.MarkUncheck()
 	} else {
-		log("olcrtc process started (PID: %d)", p.Cmd.Process.Pid)
+		log("olcrtc process started (PID: %d)", pid)
 		go func() {
-			err = p.Cmd.Wait()
-			if err != nil {
-				log("olcrtc process exited with error: %v", err)
-				p.MarkUncheck()
-			} else {
-				log("olcrtc process exited successfully")
+			p.CmdMu.Lock()
+			cmd := p.Cmd
+			p.CmdMu.Unlock()
+
+			if cmd != nil {
+				err = cmd.Wait()
+				if err != nil {
+					log("olcrtc process exited with error: %v", err)
+					p.MarkUncheck()
+				} else {
+					log("olcrtc process exited successfully")
+				}
 			}
+
+			p.CmdMu.Lock()
 			p.Cmd = nil
+			p.CmdMu.Unlock()
 		}()
 	}
 }
 
 func (p *Program) olcrtcStop() {
 	log("%s - Stopping olcrtc process...", time.Now().Format("2006-01-02 15:04:05"))
-	if p.Cmd == nil || p.Cmd.Process == nil {
+
+	p.CmdMu.Lock()
+	cmd := p.Cmd
+	p.CmdMu.Unlock()
+
+	if cmd == nil || cmd.Process == nil {
 		log("WARNING: No active olcrtc process to stop")
 		return
 	}
 
 	var err error
 	if p.Config.Os == "windows" {
-		err = p.Cmd.Process.Kill()
+		err = cmd.Process.Kill()
 	} else {
-		err = p.Cmd.Process.Signal(os.Interrupt)
+		err = cmd.Process.Signal(os.Interrupt)
 	}
 	if err != nil {
 		log("ERROR: Failed to signal olcrtc: %v", err)
@@ -63,20 +87,20 @@ func (p *Program) olcrtcStop() {
 		return
 	}
 
-	log("olcrtc process termination signal sent (PID: %d)", p.Cmd.Process.Pid)
+	log("olcrtc process termination signal sent (PID: %d)", cmd.Process.Pid)
 
 	done := make(chan error, 1)
 	go func() {
-		done <- p.Cmd.Wait()
+		done <- cmd.Wait()
 	}()
 
 	select {
 	case <-time.After(5 * time.Second):
 		log("WARNING: Process did not exit gracefully, forcing kill...")
-		if err := p.Cmd.Process.Kill(); err != nil {
+		if err := cmd.Process.Kill(); err != nil {
 			log("ERROR: Failed to kill olcrtc: %v", err)
 		} else {
-			log("olcrtc process forcefully killed (PID: %d)", p.Cmd.Process.Pid)
+			log("olcrtc process forcefully killed (PID: %d)", cmd.Process.Pid)
 		}
 	case err := <-done:
 		if err != nil {

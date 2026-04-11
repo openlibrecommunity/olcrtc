@@ -3,6 +3,7 @@ package main
 import (
 	"os/exec"
 	"runtime"
+	"sync"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
@@ -18,6 +19,7 @@ type Program struct {
 	RunCheck     *widget.Check
 	Config       *Config
 	Cmd          *exec.Cmd
+	CmdMu        sync.Mutex
 }
 
 func main() {
