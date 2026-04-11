@@ -51,7 +51,12 @@ func (p *Program) olcrtcStop() {
 		return
 	}
 
-	err := p.Cmd.Process.Signal(os.Interrupt)
+	var err error
+	if p.Config.Os == "windows" {
+		err = p.Cmd.Process.Kill()
+	} else {
+		err = p.Cmd.Process.Signal(os.Interrupt)
+	}
 	if err != nil {
 		log("ERROR: Failed to signal olcrtc: %v", err)
 		p.showError(err)
