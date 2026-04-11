@@ -14,6 +14,7 @@ type Program struct {
 	App          fyne.App
 	ParentWindow fyne.Window
 	RunString    string
+	RunCheck     *widget.Check
 	Config       *Config
 	Cmd          *exec.Cmd
 }
@@ -47,7 +48,7 @@ func (p *Program) Run() {
 		p.settingsWindow()
 	})
 
-	runCheck := widget.NewCheck("Run", func(b bool) {
+	p.RunCheck = widget.NewCheck("Run", func(b bool) {
 		if b {
 			log("Run enabled")
 			p.olcrtcRun()
@@ -59,7 +60,7 @@ func (p *Program) Run() {
 
 	w.SetContent(container.NewBorder(
 		settingsBtn,
-		runCheck, nil, nil,
+		p.RunCheck, nil, nil,
 	))
 	log("Window created and running...")
 	w.ShowAndRun()

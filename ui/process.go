@@ -12,6 +12,7 @@ func (p *Program) olcrtcRun() {
 	if p.RunString == "" {
 		log("ERROR: Run string is empty. Please configure settings first.")
 		p.showError(fmt.Errorf("run string is empty - please configure settings"))
+		p.MarkUncheck()
 		return
 	}
 
@@ -21,12 +22,14 @@ func (p *Program) olcrtcRun() {
 		log("ERROR: Failed to start olcrtc: %v", err)
 		p.showError(err)
 		p.Cmd = nil
+		p.MarkUncheck()
 	} else {
 		log("olcrtc process started (PID: %d)", p.Cmd.Process.Pid)
 		go func() {
-			err := p.Cmd.Wait()
+			err = p.Cmd.Wait()
 			if err != nil {
 				log("olcrtc process exited with error: %v", err)
+				p.MarkUncheck()
 			} else {
 				log("olcrtc process exited successfully")
 			}

@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 
+	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/theme"
@@ -67,4 +68,11 @@ func (p *Program) buildRunString(conferenceId, encryptionKey, socksPort, dns str
 
 func (p *Program) showError(err error) {
 	dialog.ShowError(err, p.ParentWindow)
+}
+
+// fyne.Do used here to execute function in the main context frame
+// we can just paste p.RunCheck.SetChecked(false) and that'll work. but if so
+// there'll be a bunch of warnings(thread safety)
+func (p *Program) MarkUncheck() {
+	fyne.Do(func() { p.RunCheck.SetChecked(false) })
 }
