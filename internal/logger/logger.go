@@ -1,27 +1,27 @@
-package logger
+package logger //nolint:revive
 
 import (
 	"log"
 	"sync/atomic"
 )
 
-var verboseEnabled atomic.Bool
+var verboseEnabled atomic.Bool //nolint:gochecknoglobals
 
-func SetVerbose(enabled bool) {
+func SetVerbose(enabled bool) { //nolint:revive
 	verboseEnabled.Store(enabled)
 }
 
-func IsVerbose() bool {
+func IsVerbose() bool { //nolint:revive
 	return verboseEnabled.Load()
 }
 
-func Verbose(format string, v ...interface{}) {
+func Verbose(format string, v ...interface{}) { //nolint:revive
 	if verboseEnabled.Load() {
 		log.Printf("[VERBOSE] "+format, v...)
 	}
 }
 
-func Debug(format string, v ...interface{}) {
+func Debug(format string, v ...interface{}) { //nolint:revive
 	if verboseEnabled.Load() {
 		log.Printf("[DEBUG] "+format, v...)
 	}
