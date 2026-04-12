@@ -1,3 +1,4 @@
+// Package server implements the olcrtc tunnel server logic.
 package server
 
 import (
@@ -5,10 +6,12 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
 	"net"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -21,7 +24,24 @@ import (
 	"github.com/pion/webrtc/v4"
 )
 
-type Server struct {
+var (
+	// ErrKeySize is returned when the encryption key is not 32 bytes.
+	ErrKeySize = errors.New("key must be 32 bytes")
+	// ErrKeyStringLength is returned when the encryption key string length is not 32.
+	ErrKeyStringLength = errors.New("key string length must be 32")
+	// ErrSocks5AuthFailed is returned when SOCKS5 authentication fails.
+	ErrSocks5AuthFailed = errors.New("SOCKS5 auth failed")
+	// ErrSocks5ConnectFailed is returned when SOCKS5 connection fails.
+	ErrSocks5ConnectFailed = errors.New("SOCKS5 connect failed")
+	// ErrNoPeers is returned when no peers are available.
+	ErrNoPeers = errors.New("no peers available")
+	// ErrDialProxy is returned when dialing the proxy fails.
+	ErrDialProxy = errors.New("failed to dial proxy")
+	// ErrEncryptFailed is returned when encryption fails.
+	ErrEncryptFailed = errors.New("encrypt failed")
+)
+
+type Server struct { //nolint:revive
 	peers          []*telemost.Peer
 	cipher         *crypto.Cipher
 	mux            *mux.Multiplexer
@@ -33,48 +53,32 @@ type Server struct {
 	activeClients  atomic.Int32
 	wg             sync.WaitGroup
 	dnsServer      string
-	dnsCache       sync.Map
 	resolver       *net.Resolver
 	socksProxyAddr string
 	socksProxyPort int
 }
 
-type ConnectRequest struct {
+type ConnectRequest struct { //nolint:revive
 	Cmd  string `json:"cmd"`
 	Addr string `json:"addr"`
 	Port int    `json:"port"`
 }
 
-func Run(ctx context.Context, roomURL, keyHex string, dnsServer, socksProxyAddr string, socksProxyPort int) error {
+// Run starts the olcrtc server and listens for client connections.
+func Run(
+	ctx context.Context,
+	roomURL,
+	keyHex string,
+	dnsServer,
+	socksProxyAddr string,
+	socksProxyPort int,
+) error {
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	var key []byte
-	var err error
 
-	if keyHex == "" {
-		key = make([]byte, 32)
-		if _, err := rand.Read(key); err != nil {
-			return err
-		}
-		log.Printf("Generated key: %x", key)
-	} else {
-		key, err = hex.DecodeString(keyHex)
-		if err != nil {
-			return err
-		}
-		if len(key) != 32 {
-			return fmt.Errorf("key must be 32 bytes, got %d", len(key))
-		}
-	}
-
-	keyStr := string(key)
-	if len(keyStr) != 32 {
-		return fmt.Errorf("key string length must be 32, got %d", len(keyStr))
-	}
-
-	cipher, err := crypto.NewCipher(keyStr)
+	cipher, err := setupCipher(keyHex)
 	if err != nil {
-		return err
+		return fmt.Errorf("setupCipher failed: %w", err)
 	}
 
 	s := &Server{
@@ -87,20 +91,72 @@ func Run(ctx context.Context, roomURL, keyHex string, dnsServer, socksProxyAddr 
 		socksProxyPort: socksProxyPort,
 	}
 
-	if dnsServer == "" {
-		dnsServer = "1.1.1.1:53"
+	if s.dnsServer == "" {
+		s.dnsServer = "1.1.1.1:53"
 	}
 
+	s.setupResolver()
+	s.setupMux()
+
+	const peerCount = 1
+	for i := range peerCount {
+		if err := s.addPeer(runCtx, roomURL, i, cancel); err != nil {
+			return fmt.Errorf("addPeer failed: %w", err)
+		}
+	}
+
+	err = s.runLoop(runCtx)
+
+	log.Println("Waiting for server goroutines...")
+	s.wg.Wait()
+	log.Println("Server goroutines finished")
+
+	return err
+}
+
+func setupCipher(keyHex string) (*crypto.Cipher, error) {
+	var key []byte
+	var err error
+
+	if keyHex == "" {
+		key = make([]byte, 32)
+		if _, err := rand.Read(key); err != nil {
+			return nil, fmt.Errorf("failed to generate key: %w", err)
+		}
+		log.Printf("Generated key: %x", key)
+	} else {
+		key, err = hex.DecodeString(keyHex)
+		if err != nil {
+			return nil, fmt.Errorf("failed to decode key: %w", err)
+		}
+		if len(key) != 32 {
+			return nil, fmt.Errorf("%w, got %d", ErrKeySize, len(key))
+		}
+	}
+
+	keyStr := string(key)
+	if len(keyStr) != 32 {
+		return nil, fmt.Errorf("%w, got %d", ErrKeyStringLength, len(keyStr))
+	}
+
+	cipher, err := crypto.NewCipher(keyStr)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create cipher: %w", err)
+	}
+	return cipher, nil
+}
+
+func (s *Server) setupResolver() {
 	s.resolver = &net.Resolver{
 		PreferGo: true,
-		Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
+		Dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
 			d := net.Dialer{Timeout: 3 * time.Second}
-			return d.DialContext(ctx, network, dnsServer)
+			return d.DialContext(ctx, network, s.dnsServer)
 		},
 	}
+}
 
-	peerCount := 1
-
+func (s *Server) setupMux() {
 	s.mux = mux.New(0, func(frame []byte) error {
 		for {
 			canSend := true
@@ -118,110 +174,118 @@ func Run(ctx context.Context, roomURL, keyHex string, dnsServer, socksProxyAddr 
 
 		encrypted, err := s.cipher.Encrypt(frame)
 		if err != nil {
-			return err
+			return fmt.Errorf("%w: %w", ErrEncryptFailed, err)
 		}
-		idx := s.peerIdx.Add(1) % uint32(len(s.peers))
+		if len(s.peers) == 0 {
+			return ErrNoPeers
+		}
+		idx := s.peerIdx.Add(1) % uint32(len(s.peers)) //nolint:gosec
 		return s.peers[idx].Send(encrypted)
 	})
+}
 
-	for i := 0; i < peerCount; i++ {
-		peerID := i
-		peer, err := telemost.NewPeer(roomURL, names.Generate(), s.onData)
-		if err != nil {
-			return err
-		}
-		peer.SetEndedCallback(func(reason string) {
-			log.Printf("Server peer %d reported conference end: %s", peerID, reason)
-			cancel()
-		})
-		s.peers = append(s.peers, peer)
-
-		peer.SetReconnectCallback(func(dc *webrtc.DataChannel) {
-			if dc == nil {
-				log.Printf("Server peer %d channel closed - resetting multiplexer state", peerID)
-			} else {
-				log.Printf("Server peer %d reconnected - resetting multiplexer state", peerID)
-			}
-
-			s.connMu.Lock()
-			for sid, conn := range s.connections {
-				if conn != nil {
-					conn.Close()
-				}
-				delete(s.connections, sid)
-			}
-			s.connMu.Unlock()
-
-			if dc != nil {
-				s.mux.UpdateSendFunc(func(frame []byte) error {
-					encrypted, err := s.cipher.Encrypt(frame)
-					if err != nil {
-						return err
-					}
-					idx := s.peerIdx.Add(1) % uint32(len(s.peers))
-					return s.peers[idx].Send(encrypted)
-				})
-			}
-
-			s.mux.Reset()
-
-			log.Println("Server multiplexer reset complete")
-		})
-
-		peer.SetShouldReconnect(func() bool {
-			return s.activeClients.Load() > 0
-		})
-
-		log.Printf("Connecting peer %d to Telemost...", peerID)
-		if err := peer.Connect(runCtx); err != nil {
-			return err
-		}
-		log.Printf("Peer %d connected", peerID)
-
-		s.wg.Add(1)
-		go func() {
-			defer s.wg.Done()
-			peer.WatchConnection(runCtx)
-		}()
+func (s *Server) addPeer(ctx context.Context, roomURL string, peerID int, cancel context.CancelFunc) error {
+	peer, err := telemost.NewPeer(ctx, roomURL, names.Generate(), s.onData)
+	if err != nil {
+		return fmt.Errorf("failed to create peer: %w", err)
 	}
 
-	err = s.run(runCtx)
+	peer.SetEndedCallback(func(reason string) {
+		log.Printf("Server peer %d reported conference end: %s", peerID, reason)
+		cancel()
+	})
+	s.peers = append(s.peers, peer)
 
-	log.Println("Waiting for server goroutines...")
-	s.wg.Wait()
-	log.Println("Server goroutines finished")
+	peer.SetReconnectCallback(func(dc *webrtc.DataChannel) {
+		s.handlePeerReconnect(peerID, dc)
+	})
 
-	return err
+	peer.SetShouldReconnect(func() bool {
+		return s.activeClients.Load() > 0
+	})
+
+	log.Printf("Connecting peer %d to Telemost...", peerID)
+	if err := peer.Connect(ctx); err != nil {
+		return fmt.Errorf("failed to connect peer: %w", err)
+	}
+	log.Printf("Peer %d connected", peerID)
+
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		peer.WatchConnection(ctx)
+	}()
+	return nil
+}
+
+func (s *Server) handlePeerReconnect(peerID int, dc *webrtc.DataChannel) {
+	if dc == nil {
+		log.Printf("Server peer %d channel closed - resetting mux state", peerID)
+	} else {
+		log.Printf("Server peer %d reconnected - resetting mux state", peerID)
+	}
+
+	s.connMu.Lock()
+	for sid, conn := range s.connections {
+		if conn != nil {
+			_ = conn.Close()
+		}
+		delete(s.connections, sid)
+	}
+	s.connMu.Unlock()
+
+	if dc != nil {
+		s.mux.UpdateSendFunc(func(frame []byte) error {
+			encrypted, err := s.cipher.Encrypt(frame)
+			if err != nil {
+				return fmt.Errorf("%w: %w", ErrEncryptFailed, err)
+			}
+			if len(s.peers) == 0 {
+				return ErrNoPeers
+			}
+			idx := s.peerIdx.Add(1) % uint32(len(s.peers)) //nolint:gosec
+			return s.peers[idx].Send(encrypted)
+		})
+	}
+
+	s.mux.Reset()
+	log.Println("Server multiplexer reset complete")
 }
 
 func (s *Server) socks5Connect(conn net.Conn, targetAddr string, targetPort int) error {
 	if _, err := conn.Write([]byte{5, 1, 0}); err != nil {
-		return err
+		return fmt.Errorf("failed to write socks5 auth: %w", err)
 	}
 
 	resp := make([]byte, 2)
 	if _, err := io.ReadFull(conn, resp); err != nil {
-		return err
+		return fmt.Errorf("failed to read socks5 auth resp: %w", err)
 	}
 	if resp[0] != 5 || resp[1] != 0 {
-		return fmt.Errorf("SOCKS5 auth failed")
+		return ErrSocks5AuthFailed
 	}
 
-	req := []byte{5, 1, 0, 3}
-	req = append(req, byte(len(targetAddr)))
+	addrLen := len(targetAddr)
+	if addrLen > 255 {
+		addrLen = 255
+		targetAddr = targetAddr[:255]
+	}
+
+	req := make([]byte, 0, 7+addrLen)
+	req = append(req, 5, 1, 0, 3, byte(addrLen))
 	req = append(req, []byte(targetAddr)...)
-	req = append(req, byte(targetPort>>8), byte(targetPort))
+	req = append(req, byte(targetPort>>8), byte(targetPort)) //nolint:gosec
 
 	if _, err := conn.Write(req); err != nil {
-		return err
+		return fmt.Errorf("failed to write socks5 connect req: %w", err)
 	}
 
 	resp = make([]byte, 10)
 	if _, err := io.ReadFull(conn, resp); err != nil {
-		return err
+		return fmt.Errorf("failed to read socks5 connect resp: %w", err)
 	}
 	if resp[0] != 5 || resp[1] != 0 {
-		return fmt.Errorf("SOCKS5 connect failed: %d", resp[1])
+		return fmt.Errorf("%w: %d", ErrSocks5ConnectFailed, resp[1])
 	}
 
 	return nil
@@ -230,12 +294,12 @@ func (s *Server) socks5Connect(conn net.Conn, targetAddr string, targetPort int)
 func (s *Server) onData(data []byte) {
 	plaintext, err := s.cipher.Decrypt(data)
 	if err != nil {
-		logger.Debug("Decrypt error: %v", err)
+		logger.Debugf("Decrypt error: %v", err)
 		return
 	}
 
 	if control, ok := mux.ParseControlFrame(plaintext); ok && control.Type == mux.ControlResetClient {
-		log.Printf("Received reset signal from client (clientID=%d) - cleaning up", control.ClientID)
+		log.Printf("Received reset signal from client (clientID=%d)", control.ClientID)
 		s.closeClientConnections(control.ClientID)
 	}
 
@@ -250,63 +314,67 @@ func (s *Server) closeClientConnections(clientID uint32) {
 		stream := s.mux.GetStream(streamSid)
 		if stream != nil && stream.ClientID == clientID {
 			if conn != nil {
-				conn.Close()
+				_ = conn.Close()
 			}
 			delete(s.connections, streamSid)
 		}
 	}
 }
 
-func (s *Server) run(ctx context.Context) error {
+func (s *Server) runLoop(ctx context.Context) error {
 	ticker := time.NewTicker(10 * time.Millisecond)
 	defer ticker.Stop()
 
 	for {
 		select {
 		case <-ctx.Done():
-			log.Println("Server shutting down...")
-			s.connMu.Lock()
-			for _, conn := range s.connections {
-				if conn != nil {
-					conn.Close()
-				}
-			}
-			s.connMu.Unlock()
-
-			log.Printf("Closing %d peer(s)...", len(s.peers))
-			for i, peer := range s.peers {
-				log.Printf("Closing peer %d...", i)
-				peer.Close()
-			}
-			log.Println("All peers closed")
-
+			s.shutdown()
 			return nil
-
 		case <-ticker.C:
+			s.processMuxStreams(ctx)
 		}
-		sids := s.mux.GetStreams()
+	}
+}
 
-		for _, sid := range sids {
-			if s.mux.StreamClosed(sid) {
-				s.closeStreamConnection(sid)
-				continue
-			}
+func (s *Server) shutdown() {
+	log.Println("Server shutting down...")
+	s.connMu.Lock()
+	for _, conn := range s.connections {
+		if conn != nil {
+			_ = conn.Close()
+		}
+	}
+	s.connMu.Unlock()
 
-			if s.hasConnection(sid) {
-				continue
-			}
+	for i, peer := range s.peers {
+		log.Printf("Closing peer %d...", i)
+		_ = peer.Close()
+	}
+	log.Println("All peers closed")
+}
 
-			data := s.mux.ReadStream(sid)
-			if len(data) == 0 {
-				continue
-			}
+func (s *Server) processMuxStreams(ctx context.Context) {
+	sids := s.mux.GetStreams()
+	for _, sid := range sids {
+		if s.mux.StreamClosed(sid) {
+			s.closeStreamConnection(sid)
+			continue
+		}
 
-			var req ConnectRequest
-			if err := json.Unmarshal(data, &req); err == nil && req.Cmd == "connect" {
-				log.Printf("[SERVER] sid=%d RECEIVED_CONNECT_REQUEST %s:%d", sid, req.Addr, req.Port)
-				s.closeStreamConnection(sid)
-				go s.handleConnect(ctx, sid, req)
-			}
+		if s.hasConnection(sid) {
+			continue
+		}
+
+		data := s.mux.ReadStream(sid)
+		if len(data) == 0 {
+			continue
+		}
+
+		var req ConnectRequest
+		if err := json.Unmarshal(data, &req); err == nil && req.Cmd == "connect" {
+			log.Printf("[SERVER] sid=%d RECV_CONNECT %s:%d", sid, req.Addr, req.Port)
+			s.closeStreamConnection(sid)
+			go s.handleConnect(ctx, sid, req)
 		}
 	}
 }
@@ -314,15 +382,14 @@ func (s *Server) run(ctx context.Context) error {
 func (s *Server) hasConnection(sid uint16) bool {
 	s.connMu.RLock()
 	defer s.connMu.RUnlock()
-	conn := s.connections[sid]
-	return conn != nil
+	return s.connections[sid] != nil
 }
 
 func (s *Server) closeStreamConnection(sid uint16) {
 	s.connMu.Lock()
 	conn := s.connections[sid]
 	if conn != nil {
-		conn.Close()
+		_ = conn.Close()
 		delete(s.connections, sid)
 	}
 	s.connMu.Unlock()
@@ -332,7 +399,7 @@ func (s *Server) closeStreamConnectionIfCurrent(sid uint16, expected net.Conn) {
 	s.connMu.Lock()
 	conn := s.connections[sid]
 	if conn == expected {
-		conn.Close()
+		_ = conn.Close()
 		delete(s.connections, sid)
 	}
 	s.connMu.Unlock()
@@ -344,7 +411,7 @@ func (s *Server) markStreamPump(sid uint16, conn net.Conn) bool {
 	if current := s.streamPumps[sid]; current == conn {
 		return false
 	} else if current != nil {
-		current.Close()
+		_ = current.Close()
 	}
 	s.streamPumps[sid] = conn
 	return true
@@ -360,102 +427,103 @@ func (s *Server) unmarkStreamPump(sid uint16, conn net.Conn) {
 
 func (s *Server) handleConnect(ctx context.Context, sid uint16, req ConnectRequest) {
 	startTime := time.Now()
-	addr := fmt.Sprintf("%s:%d", req.Addr, req.Port)
-	logger.Verbose("Handling connect request sid=%d to %s", sid, addr)
+	addr := net.JoinHostPort(req.Addr, strconv.Itoa(req.Port))
 	log.Printf("[SERVER] sid=%d CONNECT_START %s", sid, addr)
 
-	s.connMu.Lock()
-	oldConn, exists := s.connections[sid]
-	if exists && oldConn != nil {
-		log.Printf("Closing old connection for sid=%d", sid)
-		oldConn.Close()
-		delete(s.connections, sid)
-	}
-	s.connMu.Unlock()
+	s.closeStreamConnection(sid)
 
 	dialStart := time.Now()
-	var conn net.Conn
-	var err error
+	conn, err := s.dial(req)
+	dialElapsed := time.Since(dialStart)
 
+	if err != nil {
+		log.Printf("[SERVER] sid=%d CONNECT_FAILED dial=%v total=%v err=%v",
+			sid, dialElapsed, time.Since(startTime), err)
+		_ = s.mux.CloseStream(sid)
+		return
+	}
+
+	s.connMu.Lock()
+	s.connections[sid] = conn
+	s.connMu.Unlock()
+
+	log.Printf("[SERVER] sid=%d CONNECT_SUCCESS dial=%v", sid, dialElapsed)
+
+	s.activeClients.Add(1)
+	_ = s.mux.SendData(sid, []byte{0x00})
+	s.startStreamPump(ctx, sid, conn)
+
+	go s.pumpToMux(sid, conn)
+}
+
+func (s *Server) dial(req ConnectRequest) (net.Conn, error) {
+	addr := net.JoinHostPort(req.Addr, strconv.Itoa(req.Port))
 	if s.socksProxyAddr == "" {
 		dialer := &net.Dialer{
 			Timeout:   10 * time.Second,
 			KeepAlive: 30 * time.Second,
 			Resolver:  s.resolver,
 		}
-		conn, err = dialer.Dial("tcp4", addr)
-		logger.Verbose("TCP dial took %v for sid=%d (direct)", time.Since(dialStart), sid)
-	} else {
-		proxyAddr := fmt.Sprintf("%s:%d", s.socksProxyAddr, s.socksProxyPort)
-		dialer := &net.Dialer{
-			Timeout:   10 * time.Second,
-			KeepAlive: 30 * time.Second,
+		conn, err := dialer.Dial("tcp4", addr)
+		if err != nil {
+			return nil, fmt.Errorf("dial failed: %w", err)
 		}
-		conn, err = dialer.Dial("tcp4", proxyAddr)
-		if err == nil {
-			if err := s.socks5Connect(conn, req.Addr, req.Port); err != nil {
-				conn.Close()
-				err = fmt.Errorf("SOCKS5 connect failed: %v", err)
-			}
-		}
-		logger.Verbose("SOCKS5 proxy dial took %v for sid=%d", time.Since(dialStart), sid)
+		return conn, nil
 	}
-	dialElapsed := time.Since(dialStart)
 
+	proxyAddr := net.JoinHostPort(s.socksProxyAddr, strconv.Itoa(s.socksProxyPort))
+	dialer := &net.Dialer{
+		Timeout:   10 * time.Second,
+		KeepAlive: 30 * time.Second,
+	}
+	conn, err := dialer.Dial("tcp4", proxyAddr)
 	if err != nil {
-		log.Printf("[SERVER] sid=%d CONNECT_FAILED dial_time=%v total_elapsed=%v err=%v", sid, dialElapsed, time.Since(startTime), err)
-		go s.mux.CloseStream(sid)
-		return
+		return nil, fmt.Errorf("failed to dial proxy: %w", err)
 	}
 
-	logger.Verbose("TCP dial took %v for sid=%d", dialElapsed, sid)
-	s.connMu.Lock()
-	s.connections[sid] = conn
-	s.connMu.Unlock()
+	if err := s.socks5Connect(conn, req.Addr, req.Port); err != nil {
+		_ = conn.Close()
+		return nil, err
+	}
+	return conn, nil
+}
 
-	log.Printf("[SERVER] sid=%d CONNECT_SUCCESS dial_time=%v", sid, dialElapsed)
-
-	s.activeClients.Add(1)
-	s.mux.SendData(sid, []byte{0x00})
-	s.startStreamPump(ctx, sid, conn)
-
-	go func() {
-		defer func() {
-			s.activeClients.Add(-1)
-			s.mux.CloseStream(sid)
-			s.connMu.Lock()
-			delete(s.connections, sid)
-			s.connMu.Unlock()
-		}()
-
-		buf := make([]byte, 16384)
-		totalSent := uint64(0)
-		lastLog := time.Now()
-
-		for {
-			n, err := conn.Read(buf)
-			if err != nil {
-				if totalSent > 1024*1024 {
-					log.Printf("[SERVER] sid=%d TRANSFER_COMPLETE total=%d MB", sid, totalSent/(1024*1024))
-				}
-				return
-			}
-
-			for !s.canSendData() {
-				time.Sleep(20 * time.Millisecond)
-			}
-
-			if err := s.mux.SendData(sid, buf[:n]); err != nil {
-				return
-			}
-
-			totalSent += uint64(n)
-			if time.Since(lastLog) > 5*time.Second {
-				log.Printf("[SERVER] sid=%d TRANSFER_PROGRESS sent=%d MB", sid, totalSent/(1024*1024))
-				lastLog = time.Now()
-			}
-		}
+func (s *Server) pumpToMux(sid uint16, conn net.Conn) {
+	defer func() {
+		s.activeClients.Add(-1)
+		_ = s.mux.CloseStream(sid)
+		s.connMu.Lock()
+		delete(s.connections, sid)
+		s.connMu.Unlock()
 	}()
+
+	buf := make([]byte, 16384)
+	totalSent := uint64(0)
+	lastLog := time.Now()
+
+	for {
+		n, err := conn.Read(buf)
+		if err != nil {
+			if totalSent > 1024*1024 {
+				log.Printf("[SERVER] sid=%d TRANSFER_DONE total=%d MB", sid, totalSent/(1024*1024))
+			}
+			return
+		}
+
+		for !s.canSendData() {
+			time.Sleep(20 * time.Millisecond)
+		}
+
+		if err := s.mux.SendData(sid, buf[:n]); err != nil {
+			return
+		}
+
+		totalSent += uint64(n) //nolint:gosec
+		if time.Since(lastLog) > 5*time.Second {
+			log.Printf("[SERVER] sid=%d TRANSFER_UP sent=%d MB", sid, totalSent/(1024*1024))
+			lastLog = time.Now()
+		}
+	}
 }
 
 func (s *Server) startStreamPump(ctx context.Context, sid uint16, conn net.Conn) {
@@ -479,7 +547,7 @@ func (s *Server) startStreamPump(ctx context.Context, sid uint16, conn net.Conn)
 				data := s.mux.ReadStream(sid)
 				if len(data) > 0 {
 					if _, err := conn.Write(data); err != nil {
-						s.mux.CloseStream(sid)
+						_ = s.mux.CloseStream(sid)
 						s.closeStreamConnectionIfCurrent(sid, conn)
 						return
 					}

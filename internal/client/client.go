@@ -72,7 +72,7 @@ func RunWithReady(
 
 	key, err := decodeKey(keyHex)
 	if err != nil {
-		return err
+		return fmt.Errorf("decodeKey failed: %w", err)
 	}
 
 	keyStr := string(key)
@@ -95,7 +95,7 @@ func RunWithReady(
 
 	for peerID := range 1 {
 		if err := c.addPeer(runCtx, roomURL, peerID, cancel); err != nil {
-			return err
+			return fmt.Errorf("addPeer failed: %w", err)
 		}
 	}
 
@@ -109,10 +109,6 @@ func RunWithReady(
 	log.Println("Client goroutines finished")
 
 	return err
-}
-
-func peerCount() int {
-	return 1
 }
 
 func decodeKey(keyHex string) ([]byte, error) {
@@ -193,7 +189,7 @@ func (c *Client) addPeer(
 	peerID int,
 	cancel context.CancelFunc,
 ) error {
-	peer, err := telemost.NewPeer(roomURL, names.Generate(), c.onData)
+	peer, err := telemost.NewPeer(runCtx, roomURL, names.Generate(), c.onData)
 	if err != nil {
 		return fmt.Errorf("create peer %d: %w", peerID, err)
 	}
@@ -257,7 +253,7 @@ func (c *Client) sendResetSignal() {
 func (c *Client) onData(data []byte) {
 	plaintext, err := c.cipher.Decrypt(data)
 	if err != nil {
-		logger.Debug("Decrypt error: %v", err)
+		logger.Debugf("Decrypt error: %v", err)
 		return
 	}
 
@@ -292,7 +288,7 @@ func (c *Client) runSOCKS5(
 		<-ctx.Done()
 		log.Println("Closing SOCKS5 listener...")
 		if err := listener.Close(); err != nil {
-			logger.Debug("SOCKS5 listener close error: %v", err)
+			logger.Debugf("SOCKS5 listener close error: %v", err)
 		}
 	}()
 
@@ -317,7 +313,7 @@ func (c *Client) runSOCKS5(
 func (c *Client) closePeers() {
 	for _, peer := range c.peers {
 		if err := peer.Close(); err != nil {
-			logger.Debug("Peer close error: %v", err)
+			logger.Debugf("Peer close error: %v", err)
 		}
 	}
 }
@@ -326,7 +322,7 @@ func (c *Client) closePeers() {
 func (c *Client) handleSOCKS5(conn net.Conn, username, password string) {
 	defer func() {
 		if err := conn.Close(); err != nil {
-			logger.Debug("SOCKS5 connection close error: %v", err)
+			logger.Debugf("SOCKS5 connection close error: %v", err)
 		}
 	}()
 
@@ -362,7 +358,7 @@ func (c *Client) handleSOCKS5(conn net.Conn, username, password string) {
 	}
 
 	sid := c.mux.OpenStream()
-	logger.Verbose("SOCKS5 opened stream sid=%d for %s:%d", sid, addr, port)
+	logger.Verbosef("SOCKS5 opened stream sid=%d for %s:%d", sid, addr, port)
 	log.Printf("[CLIENT] sid=%d SOCKS5_START %s:%d", sid, addr, port)
 
 	if !c.sendConnectRequest(sid, addr, port) {
@@ -481,12 +477,12 @@ func (c *Client) sendConnectRequest(sid uint16, addr string, port uint16) bool {
 		Port: port,
 	})
 	if err != nil {
-		logger.Debug("Connect request marshal error: %v", err)
+		logger.Debugf("Connect request marshal error: %v", err)
 		return false
 	}
 
 	if err := c.mux.SendData(sid, reqData); err != nil {
-		logger.Debug("Connect request send error: %v", err)
+		logger.Debugf("Connect request send error: %v", err)
 		return false
 	}
 
@@ -525,7 +521,7 @@ func (c *Client) proxyStream(conn net.Conn, sid uint16) {
 			n, err := conn.Read(buf)
 			if err != nil {
 				if err := c.mux.CloseStream(sid); err != nil {
-					logger.Debug("Close stream error: %v", err)
+					logger.Debugf("Close stream error: %v", err)
 				}
 				return
 			}
@@ -579,7 +575,7 @@ func writeStreamData(conn net.Conn, data []byte) bool {
 
 func writeResponse(conn net.Conn, response []byte) {
 	if _, err := conn.Write(response); err != nil {
-		logger.Debug("SOCKS5 response write error: %v", err)
+		logger.Debugf("SOCKS5 response write error: %v", err)
 	}
 }
 

@@ -1,7 +1,9 @@
+// Package protect provides functions to protect sockets from VPN routing.
 package protect
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"net/http"
 	"syscall"
@@ -10,18 +12,21 @@ import (
 
 // Protector is called with a socket file descriptor before connect.
 // On Android, this calls VpnService.protect(fd) to bypass VPN routing.
-var Protector func(fd int) bool
+var Protector func(fd int) bool //nolint:gochecknoglobals
 
-func controlFunc(network, address string, c syscall.RawConn) error {
+func controlFunc(network, _ string, c syscall.RawConn) error {
 	if Protector == nil {
 		return nil
 	}
 	var err error
-	c.Control(func(fd uintptr) {
-		if !Protector(int(fd)) {
+	controlErr := c.Control(func(fd uintptr) {
+		if !Protector(int(fd)) { //nolint:gosec
 			err = &net.OpError{Op: "protect", Net: network, Err: net.ErrClosed}
 		}
 	})
+	if controlErr != nil {
+		return fmt.Errorf("control failed: %w", controlErr)
+	}
 	return err
 }
 
@@ -50,17 +55,27 @@ func NewHTTPClient() *http.Client {
 
 // DialContext dials using a protected socket.
 func DialContext(ctx context.Context, network, address string) (net.Conn, error) {
-	return NewDialer().DialContext(ctx, network, address)
+	conn, err := NewDialer().DialContext(ctx, network, address)
+	if err != nil {
+		return nil, fmt.Errorf("dial failed: %w", err)
+	}
+	return conn, nil
 }
 
-// proxyDialer implements golang.org/x/net/proxy.Dialer for pion ICE.
-type proxyDialer struct{}
+// ProxyDialer implements golang.org/x/net/proxy.Dialer for pion ICE.
+type ProxyDialer struct{}
 
-func (d *proxyDialer) Dial(network, addr string) (net.Conn, error) {
-	return NewDialer().Dial(network, addr)
+// Dial connects to the address on the named network using a protected socket.
+func (d *ProxyDialer) Dial(network, addr string) (net.Conn, error) {
+	conn, err := NewDialer().Dial(network, addr)
+	if err != nil {
+		return nil, fmt.Errorf("dial failed: %w", err)
+	}
+	return conn, nil
 }
 
 // NewProxyDialer returns a proxy.Dialer that protects ICE sockets.
-func NewProxyDialer() *proxyDialer {
-	return &proxyDialer{}
+func NewProxyDialer() *ProxyDialer {
+	return &ProxyDialer{}
 }
+
