@@ -27,6 +27,13 @@ const (
 	defaultTelemetryInterval    = 20 * time.Second
 )
 
+var (
+	ErrDataChannelTimeout  = fmt.Errorf("datachannel timeout")
+	ErrDataChannelNotReady = fmt.Errorf("datachannel not ready")
+	ErrSendQueueClosed     = fmt.Errorf("send queue closed")
+	ErrSendQueueTimeout    = fmt.Errorf("send queue timeout")
+)
+
 type TrafficShape struct {
 	MaxMessageSize int
 	MinDelay       time.Duration
@@ -313,19 +320,19 @@ func (p *Peer) Connect(ctx context.Context) error {
 	case <-dcReady:
 		return nil
 	case <-time.After(15 * time.Second):
-		return fmt.Errorf("datachannel timeout")
+		return ErrDataChannelTimeout
 	case <-ctx.Done():
-		return ctx.Err()
+		return fmt.Errorf("connect context cancelled: %w", ctx.Err())
 	}
 }
 
 func (p *Peer) Send(data []byte) error {
 	if p.dc == nil || p.dc.ReadyState() != webrtc.DataChannelStateOpen {
-		return fmt.Errorf("datachannel not ready")
+		return ErrDataChannelNotReady
 	}
 
 	if p.sendQueueClosed.Load() {
-		return fmt.Errorf("send queue closed")
+		return ErrSendQueueClosed
 	}
 
 	select {
@@ -334,7 +341,7 @@ func (p *Peer) Send(data []byte) error {
 	case <-time.After(50 * time.Millisecond):
 		queueLen := len(p.sendQueue)
 		log.Printf("[SEND_QUEUE] Timeout! queue_len=%d, dropping packet size=%d", queueLen, len(data))
-		return fmt.Errorf("send queue timeout")
+		return ErrSendQueueTimeout
 	}
 }
 
