@@ -98,7 +98,7 @@ podman run -d \
     -v $WORK_DIR:/app:Z \
     -w /app \
     $IMAGE_NAME \
-    ./olcrtc -mode cnc -id "$ROOM_ID" -key "$KEY" -socks-port $SOCKS_PORT
+    ./olcrtc -mode cnc -id "$ROOM_ID" -key "$KEY" -socks-port $SOCKS_PORT -socks-host 0.0.0.0
 
 sleep 2
 
