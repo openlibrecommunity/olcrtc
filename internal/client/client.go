@@ -104,9 +104,7 @@ func RunWithReady(
 
 	err = c.runSOCKS5(runCtx, socksHost, socksPort, socksUser, socksPass, onReady)
 
-	log.Println("Waiting for client goroutines...")
 	c.wg.Wait()
-	log.Println("Client goroutines finished")
 
 	return err
 }
@@ -222,15 +220,13 @@ func (c *Client) addPeer(
 
 func (c *Client) onReconnect(peerID int, dc *webrtc.DataChannel) {
 	if dc == nil {
-		log.Printf("Client peer %d channel closed - resetting multiplexer state", peerID)
+		log.Printf("peer %d channel closed", peerID)
 	} else {
-		log.Printf("Client peer %d reconnected - resetting multiplexer state", peerID)
+		log.Printf("peer %d reconnected", peerID)
 	}
 
 	c.mux.UpdateSendFunc(c.sendFrame)
 	c.mux.Reset()
-
-	log.Println("Client multiplexer reset complete")
 }
 
 func (c *Client) sendResetSignal() {
@@ -286,7 +282,6 @@ func (c *Client) runSOCKS5(
 
 	go func() {
 		<-ctx.Done()
-		log.Println("Closing SOCKS5 listener...")
 		if err := listener.Close(); err != nil {
 			logger.Debugf("SOCKS5 listener close error: %v", err)
 		}
@@ -297,11 +292,10 @@ func (c *Client) runSOCKS5(
 		if err != nil {
 			select {
 			case <-ctx.Done():
-				log.Println("SOCKS5 listener closed")
 				c.closePeers()
 				return nil
 			default:
-				log.Printf("Accept error: %v", err)
+				log.Printf("accept error: %v", err)
 				continue
 			}
 		}
@@ -359,7 +353,7 @@ func (c *Client) handleSOCKS5(conn net.Conn, username, password string) {
 
 	sid := c.mux.OpenStream()
 	logger.Verbosef("SOCKS5 opened stream sid=%d for %s:%d", sid, addr, port)
-	log.Printf("[CLIENT] sid=%d SOCKS5_START %s:%d", sid, addr, port)
+	log.Printf("sid=%d socks5 %s:%d", sid, addr, port)
 
 	if !c.sendConnectRequest(sid, addr, port) {
 		return

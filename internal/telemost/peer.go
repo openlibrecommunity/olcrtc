@@ -148,7 +148,6 @@ func (p *Peer) queueReconnect() {
 		return
 	}
 	if p.shouldReconnect != nil && !p.shouldReconnect() {
-		log.Println("Reconnect skipped: shouldReconnect returned false")
 		return
 	}
 	select {
@@ -248,7 +247,6 @@ func (p *Peer) setupPeerConnections(config webrtc.Configuration) error {
 }
 
 func (p *Peer) onConnectionStateChange(state webrtc.PeerConnectionState) {
-	log.Printf("PeerConnection state: %s", state.String())
 	if !p.closed.Load() && (state == webrtc.PeerConnectionStateFailed ||
 		state == webrtc.PeerConnectionStateDisconnected) {
 		p.queueReconnect()
@@ -257,7 +255,6 @@ func (p *Peer) onConnectionStateChange(state webrtc.PeerConnectionState) {
 
 func (p *Peer) setupDataChannelHandlers(dcReady chan struct{}, sessionCloseCh chan struct{}) {
 	p.dc.OnOpen(func() {
-		log.Println("DataChannel opened")
 		numWorkers := 4
 		for i := range numWorkers {
 			p.wg.Add(1)
@@ -278,7 +275,6 @@ func (p *Peer) setupDataChannelHandlers(dcReady chan struct{}, sessionCloseCh ch
 	p.dc.OnMessage(p.onDataChannelMessage)
 
 	p.pcSub.OnDataChannel(func(dc *webrtc.DataChannel) {
-		log.Printf("Received datachannel: %s", dc.Label())
 		dc.OnClose(func() {
 			if !p.closed.Load() {
 				p.queueReconnect()
@@ -289,7 +285,6 @@ func (p *Peer) setupDataChannelHandlers(dcReady chan struct{}, sessionCloseCh ch
 }
 
 func (p *Peer) onDataChannelClose() {
-	log.Println("DataChannel closed")
 	if p.onReconnect != nil {
 		p.onReconnect(nil)
 	}
@@ -355,8 +350,6 @@ func (p *Peer) Send(data []byte) error { //nolint:revive
 	case p.sendQueue <- data:
 		return nil
 	case <-time.After(50 * time.Millisecond):
-		queueLen := len(p.sendQueue)
-		log.Printf("[SEND_QUEUE] Timeout! len=%d size=%d", queueLen, len(data))
 		return ErrSendQueueTimeout
 	}
 }
@@ -415,7 +408,7 @@ func (p *Peer) handleSignaling(ctx context.Context) { //nolint:cyclop
 	for {
 		var msg map[string]interface{}
 		if err := p.ws.ReadJSON(&msg); err != nil {
-			log.Printf("WS read error: %v", err)
+			logger.Debugf("ws read error: %v", err)
 			if !p.closed.Load() {
 				p.queueReconnect()
 			}
@@ -443,7 +436,7 @@ func (p *Peer) handleSignaling(ctx context.Context) { //nolint:cyclop
 
 		if offer, ok := msg["subscriberSdpOffer"].(map[string]interface{}); ok && !pubSent {
 			if err := p.handleSdpOffer(offer, uid); err != nil {
-				log.Printf("SDP offer error: %v", err)
+				logger.Debugf("sdp offer error: %v", err)
 				continue
 			}
 			pubSent = true
@@ -542,7 +535,7 @@ func (p *Peer) handleSdpAnswer(answer map[string]interface{}, uid string) {
 		Type: webrtc.SDPTypeAnswer,
 		SDP:  sdp,
 	}); err != nil {
-		log.Printf("SetRemoteDescription error: %v", err)
+		logger.Debugf("SetRemoteDescription error: %v", err)
 	}
 	p.sendAck(uid)
 }
@@ -744,7 +737,6 @@ func (p *Peer) sendTelemetry(ctx context.Context, endpoint, event string) {
 }
 
 func (p *Peer) signalEnded(reason string) {
-	log.Printf("Conference ended: %s", reason)
 	p.closed.Store(true)
 	p.stopTelemetry()
 	if p.onEnded != nil {
@@ -837,16 +829,13 @@ func (p *Peer) sendLeave(uid string) bool {
 	}
 
 	if err := p.ws.WriteJSON(leave); err != nil {
-		log.Printf("Failed to send leave: %v", err)
 		return false
 	}
-	log.Println("Sent leave message")
 	return true
 }
 
 // Close closes the peer connection and cleans up resources.
 func (p *Peer) Close() error {
-	log.Println("Closing peer...")
 	alreadyClosing := p.closed.Swap(true)
 	p.sendQueueClosed.Store(true)
 
@@ -872,7 +861,6 @@ func (p *Peer) Close() error {
 	select {
 	case <-done:
 	case <-time.After(2 * time.Second):
-		log.Println("Wait timeout")
 	}
 
 	if p.dc != nil {
@@ -925,7 +913,7 @@ func (p *Peer) sendWSPing() bool {
 	defer p.wsMu.Unlock()
 	if p.ws != nil {
 		if err := p.ws.WriteControl(websocket.PingMessage, []byte{}, time.Now().Add(10*time.Second)); err != nil {
-			log.Printf("WS Ping error: %v", err)
+			logger.Debugf("ws ping error: %v", err)
 			p.queueReconnect()
 			return false
 		}
@@ -941,7 +929,7 @@ func (p *Peer) sendAppPing() bool {
 			"uid":  uuid.New().String(),
 			"ping": map[string]interface{}{},
 		}); err != nil {
-			log.Printf("App Ping error: %v", err)
+			logger.Debugf("app ping error: %v", err)
 			p.queueReconnect()
 			return false
 		}
@@ -1019,7 +1007,6 @@ func (p *Peer) WatchConnection(ctx context.Context) { //nolint:revive,cyclop
 			p.lastReconnect = time.Now()
 
 			if p.reconnectCount > maxReconnects {
-				log.Printf("Max reconnects reached (%d)", maxReconnects)
 				p.signalEnded("reconnect limit reached")
 				return
 			}
@@ -1031,7 +1018,7 @@ func (p *Peer) WatchConnection(ctx context.Context) { //nolint:revive,cyclop
 
 			for {
 				if err := p.reconnect(ctx); err != nil {
-					log.Printf("Reconnect failed: %v", err)
+					logger.Debugf("reconnect failed: %v", err)
 					select {
 					case <-ctx.Done():
 						return
@@ -1056,8 +1043,7 @@ func (p *Peer) processSendQueue(workerID int, sessionCloseCh <-chan struct{}) {
 			return
 		case data := <-p.sendQueue:
 			if len(data) > p.trafficShape.MaxMessageSize {
-				log.Printf("[WORKER-%d] Refusing oversized message size=%d limit=%d",
-					workerID, len(data), p.trafficShape.MaxMessageSize)
+				logger.Debugf("oversized message size=%d limit=%d", len(data), p.trafficShape.MaxMessageSize)
 				continue
 			}
 
@@ -1070,7 +1056,7 @@ func (p *Peer) processSendQueue(workerID int, sessionCloseCh <-chan struct{}) {
 			}
 
 			if err := p.dc.Send(data); err != nil {
-				log.Printf("[WORKER-%d] Send error: %v", workerID, err)
+				logger.Debugf("send error: %v", err)
 				p.queueReconnect()
 				return
 			}
@@ -1092,7 +1078,7 @@ func (p *Peer) waitBufferedAmount(workerID int, sessionCloseCh <-chan struct{}) 
 			return 0, ErrPeerClosed
 		case <-time.After(10 * time.Millisecond):
 			if time.Since(start) > 5*time.Second {
-				log.Printf("[WORKER-%d] Buffer wait timeout", workerID)
+				logger.Debugf("buffer wait timeout worker=%d", workerID)
 				return time.Since(start), nil
 			}
 		}
@@ -1124,8 +1110,7 @@ func (p *Peer) monitorQueue(sessionCloseCh <-chan struct{}) {
 			queueLen := len(p.sendQueue)
 			buffered := p.dc.BufferedAmount()
 			if queueLen > 100 || buffered > 1024*1024 {
-				log.Printf("[MONITOR] queue=%d, buffered=%d MB",
-					queueLen, buffered/(1024*1024))
+				log.Printf("queue=%d buf=%dMB", queueLen, buffered/(1024*1024))
 			}
 		}
 	}

@@ -107,9 +107,7 @@ func Run(
 
 	err = s.runLoop(runCtx)
 
-	log.Println("Waiting for server goroutines...")
 	s.wg.Wait()
-	log.Println("Server goroutines finished")
 
 	return err
 }
@@ -220,9 +218,9 @@ func (s *Server) addPeer(ctx context.Context, roomURL string, peerID int, cancel
 
 func (s *Server) handlePeerReconnect(peerID int, dc *webrtc.DataChannel) {
 	if dc == nil {
-		log.Printf("Server peer %d channel closed - resetting mux state", peerID)
+		log.Printf("peer %d channel closed", peerID)
 	} else {
-		log.Printf("Server peer %d reconnected - resetting mux state", peerID)
+		log.Printf("peer %d reconnected", peerID)
 	}
 
 	s.connMu.Lock()
@@ -249,7 +247,6 @@ func (s *Server) handlePeerReconnect(peerID int, dc *webrtc.DataChannel) {
 	}
 
 	s.mux.Reset()
-	log.Println("Server multiplexer reset complete")
 }
 
 func (s *Server) socks5Connect(conn net.Conn, targetAddr string, targetPort int) error {
@@ -337,7 +334,6 @@ func (s *Server) runLoop(ctx context.Context) error {
 }
 
 func (s *Server) shutdown() {
-	log.Println("Server shutting down...")
 	s.connMu.Lock()
 	for _, conn := range s.connections {
 		if conn != nil {
@@ -347,10 +343,9 @@ func (s *Server) shutdown() {
 	s.connMu.Unlock()
 
 	for i, peer := range s.peers {
-		log.Printf("Closing peer %d...", i)
+		log.Printf("closing peer %d", i)
 		_ = peer.Close()
 	}
-	log.Println("All peers closed")
 }
 
 func (s *Server) processMuxStreams(ctx context.Context) {
@@ -372,7 +367,7 @@ func (s *Server) processMuxStreams(ctx context.Context) {
 
 		var req ConnectRequest
 		if err := json.Unmarshal(data, &req); err == nil && req.Cmd == "connect" {
-			log.Printf("[SERVER] sid=%d RECV_CONNECT %s:%d", sid, req.Addr, req.Port)
+			log.Printf("sid=%d connect %s:%d", sid, req.Addr, req.Port)
 			s.closeStreamConnection(sid)
 			go s.handleConnect(ctx, sid, req)
 		}
@@ -426,9 +421,7 @@ func (s *Server) unmarkStreamPump(sid uint16, conn net.Conn) {
 }
 
 func (s *Server) handleConnect(ctx context.Context, sid uint16, req ConnectRequest) {
-	startTime := time.Now()
 	addr := net.JoinHostPort(req.Addr, strconv.Itoa(req.Port))
-	log.Printf("[SERVER] sid=%d CONNECT_START %s", sid, addr)
 
 	s.closeStreamConnection(sid)
 
@@ -437,8 +430,7 @@ func (s *Server) handleConnect(ctx context.Context, sid uint16, req ConnectReque
 	dialElapsed := time.Since(dialStart)
 
 	if err != nil {
-		log.Printf("[SERVER] sid=%d CONNECT_FAILED dial=%v total=%v err=%v",
-			sid, dialElapsed, time.Since(startTime), err)
+		log.Printf("sid=%d dial %s failed (%v): %v", sid, addr, dialElapsed, err)
 		_ = s.mux.CloseStream(sid)
 		return
 	}
@@ -447,7 +439,7 @@ func (s *Server) handleConnect(ctx context.Context, sid uint16, req ConnectReque
 	s.connections[sid] = conn
 	s.connMu.Unlock()
 
-	log.Printf("[SERVER] sid=%d CONNECT_SUCCESS dial=%v", sid, dialElapsed)
+	log.Printf("sid=%d connected %s in %v", sid, addr, dialElapsed)
 
 	s.activeClients.Add(1)
 	_ = s.mux.SendData(sid, []byte{0x00})
@@ -505,7 +497,7 @@ func (s *Server) pumpToMux(sid uint16, conn net.Conn) {
 		n, err := conn.Read(buf)
 		if err != nil {
 			if totalSent > 1024*1024 {
-				log.Printf("[SERVER] sid=%d TRANSFER_DONE total=%d MB", sid, totalSent/(1024*1024))
+				log.Printf("sid=%d done total=%dMB", sid, totalSent/(1024*1024))
 			}
 			return
 		}
@@ -520,7 +512,7 @@ func (s *Server) pumpToMux(sid uint16, conn net.Conn) {
 
 		totalSent += uint64(n) //nolint:gosec
 		if time.Since(lastLog) > 5*time.Second {
-			log.Printf("[SERVER] sid=%d TRANSFER_UP sent=%d MB", sid, totalSent/(1024*1024))
+			log.Printf("sid=%d sent=%dMB", sid, totalSent/(1024*1024))
 			lastLog = time.Now()
 		}
 	}
