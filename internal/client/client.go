@@ -41,7 +41,7 @@ type Client struct {
 	wg       sync.WaitGroup
 }
 
-const defaultSOCKSListenHost = "127.0.0.1"
+const defaultSOCKSListenHost = "0.0.0.0"
 
 // Run starts the client and listens for SOCKS5 traffic.
 func Run(
