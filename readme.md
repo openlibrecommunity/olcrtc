@@ -24,6 +24,38 @@ issues? contact us at [@openlibrecommunity](https://t.me/openlibrecommunity)
 or wait for the release or at least a beta
 
 
+## magefile
+
+```bash
+# install mage first
+go install github.com/magefile/mage@latest
+
+# build cli + ui
+mage build
+
+# build cli only
+mage buildCLI
+
+# build ui only
+mage buildUI
+
+# cross-compile for linux / windows / darwin
+mage cross
+
+# android aar via gomobile
+mage mobile
+
+# container image
+mage podman
+mage docker
+
+# lint / test / clean
+mage lint
+mage test
+mage clean
+```
+
+
 ## fast start
 
 ```bash
@@ -45,8 +77,6 @@ or wait for the release or at least a beta
 
 # and then
 ./build/olcrtc-ui
-
-
 
 
 # or native ( no podman ) linux
