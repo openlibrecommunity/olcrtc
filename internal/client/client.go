@@ -49,12 +49,11 @@ func Run(
 	roomURL,
 	keyHex string,
 	socksPort int,
-	duo bool,
 	socksHost,
 	socksUser,
 	socksPass string,
 ) error {
-	return RunWithReady(ctx, roomURL, keyHex, socksPort, duo, socksHost, socksUser, socksPass, nil)
+	return RunWithReady(ctx, roomURL, keyHex, socksPort, socksHost, socksUser, socksPass, nil)
 }
 
 // RunWithReady starts the client and invokes onReady once the local SOCKS5 listener is accepting connections.
@@ -63,7 +62,6 @@ func RunWithReady(
 	roomURL,
 	keyHex string,
 	socksPort int,
-	duo bool,
 	socksHost,
 	socksUser,
 	socksPass string,
@@ -90,12 +88,12 @@ func RunWithReady(
 	c := &Client{
 		cipher:   cipher,
 		clientID: uint32(time.Now().UnixNano() & 0xFFFFFFFF),
-		peers:    make([]*telemost.Peer, 0, peerCount(duo)),
+		peers:    make([]*telemost.Peer, 0, 1),
 	}
 
 	c.mux = mux.New(c.clientID, c.sendFrame)
 
-	for peerID := range peerCount(duo) {
+	for peerID := range 1 {
 		if err := c.addPeer(runCtx, roomURL, peerID, cancel); err != nil {
 			return err
 		}
@@ -113,12 +111,7 @@ func RunWithReady(
 	return err
 }
 
-func peerCount(duo bool) int {
-	if duo {
-		log.Println("Duo mode: using 2 parallel channels")
-		return 2
-	}
-
+func peerCount() int {
 	return 1
 }
 

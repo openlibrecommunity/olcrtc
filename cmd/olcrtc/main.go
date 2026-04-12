@@ -28,7 +28,6 @@ type config struct {
 	keyHex         string
 	debug          bool
 	dataDir        string
-	duo            bool
 	dnsServer      string
 	socksProxyAddr string
 	socksProxyPort int
@@ -94,7 +93,6 @@ func parseFlags() config {
 	flag.StringVar(&cfg.keyHex, "key", "", "Shared encryption key (hex)")
 	flag.BoolVar(&cfg.debug, "debug", false, "Enable verbose logging")
 	flag.StringVar(&cfg.dataDir, "data", "data", "Path to data directory")
-	flag.BoolVar(&cfg.duo, "duo", false, "Use dual channels for 2x throughput")
 	flag.StringVar(&cfg.dnsServer, "dns", "1.1.1.1:53", "DNS server (default: Cloudflare 1.1.1.1)")
 	flag.StringVar(&cfg.socksProxyAddr, "socks-proxy", "", "SOCKS5 proxy address (server only)")
 	flag.IntVar(&cfg.socksProxyPort, "socks-proxy-port", 1080, "SOCKS5 proxy port (server only)")
@@ -158,7 +156,6 @@ func runMode(ctx context.Context, cfg config, errCh chan<- error) {
 			ctx,
 			roomURL,
 			cfg.keyHex,
-			cfg.duo,
 			cfg.dnsServer,
 			cfg.socksProxyAddr,
 			cfg.socksProxyPort,
@@ -169,7 +166,6 @@ func runMode(ctx context.Context, cfg config, errCh chan<- error) {
 			roomURL,
 			cfg.keyHex,
 			cfg.socksPort,
-			cfg.duo,
 			cfg.socksHost,
 			"",
 			"",

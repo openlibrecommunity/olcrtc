@@ -77,9 +77,8 @@ func SetDebug(enabled bool) {
 // roomID: Telemost room ID (e.g. "xxx-xxx-xxx")
 // keyHex: 64-char hex encryption key
 // socksPort: local SOCKS5 proxy port (e.g. 10808)
-// duo: use dual channels for higher throughput
 // socksUser/socksPass: SOCKS5 credentials (empty = no auth).
-func Start(roomID, keyHex string, socksPort int, duo bool, socksUser, socksPass string) error {
+func Start(roomID, keyHex string, socksPort int, socksUser, socksPass string) error {
 	mu.Lock()
 	defer mu.Unlock()
 
@@ -110,7 +109,6 @@ func Start(roomID, keyHex string, socksPort int, duo bool, socksUser, socksPass 
 			roomURL,
 			keyHex,
 			socksPort,
-			duo,
 			"",
 			socksUser,
 			socksPass,

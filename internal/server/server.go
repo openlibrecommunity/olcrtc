@@ -45,7 +45,7 @@ type ConnectRequest struct {
 	Port int    `json:"port"`
 }
 
-func Run(ctx context.Context, roomURL, keyHex string, duo bool, dnsServer, socksProxyAddr string, socksProxyPort int) error {
+func Run(ctx context.Context, roomURL, keyHex string, dnsServer, socksProxyAddr string, socksProxyPort int) error {
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	var key []byte
@@ -100,10 +100,6 @@ func Run(ctx context.Context, roomURL, keyHex string, duo bool, dnsServer, socks
 	}
 
 	peerCount := 1
-	if duo {
-		peerCount = 2
-		log.Println("Duo mode: using 2 parallel channels")
-	}
 
 	s.mux = mux.New(0, func(frame []byte) error {
 		for {
