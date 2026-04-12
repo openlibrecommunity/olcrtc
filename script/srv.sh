@@ -15,19 +15,25 @@ echo ""
 if ! command -v podman &> /dev/null; then
     echo "[!] Installing Podman..."
 
+    if [ "$(id -u)" -eq 0 ]; then
+        SUDO=""
+    else
+        SUDO="sudo"
+    fi
+
     if command -v apt &> /dev/null; then
         echo "[*] Detected apt (Debian/Ubuntu)"
-        sudo apt update
-        sudo apt install -y podman
+        $SUDO apt update
+        $SUDO apt install -y podman
     elif command -v dnf &> /dev/null; then
         echo "[*] Detected dnf (Fedora/RHEL)"
-        sudo dnf install -y podman
+        $SUDO dnf install -y podman
     elif command -v yum &> /dev/null; then
         echo "[*] Detected yum (CentOS/RHEL)"
-        sudo yum install -y podman
+        $SUDO yum install -y podman
     elif command -v pacman &> /dev/null; then
         echo "[*] Detected pacman (Arch)"
-        sudo pacman -Sy --noconfirm podman
+        $SUDO pacman -Sy --noconfirm podman
     else
         echo "[X] Unsupported package manager. Install podman manually."
         exit 1
