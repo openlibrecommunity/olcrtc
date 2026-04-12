@@ -129,9 +129,14 @@ func buildBinary(name, pkg, os_, arch string) error {
 		"CGO_ENABLED": "0",
 	}
 
+	flags := ldflags
+	if os_ == "android" {
+		flags += " -checklinkname=0"
+	}
+
 	return sh.RunWithV(env, goexe, "build",
 		"-trimpath",
-		"-ldflags", ldflags,
+		"-ldflags", flags,
 		"-o", out,
 		pkg,
 	)
