@@ -92,7 +92,7 @@ func (p *Peer) SetTrafficShape(shape TrafficShape) {
 }
 
 func NewPeer(roomURL, name string, onData func([]byte)) (*Peer, error) {
-	conn, err := GetConnectionInfo(roomURL, name)
+	conn, err := GetConnectionInfo(context.Background(), roomURL, name)
 	if err != nil {
 		return nil, err
 	}
@@ -275,9 +275,12 @@ func (p *Peer) Connect(ctx context.Context) error {
 		NetDialContext:   protect.DialContext,
 		HandshakeTimeout: 15 * time.Second,
 	}
-	ws, _, err := wsDialer.Dial(p.conn.ClientConfig.MediaServerURL, nil)
+	ws, resp, err := wsDialer.Dial(p.conn.ClientConfig.MediaServerURL, nil)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to dial websocket: %w", err)
+	}
+	if resp != nil && resp.Body != nil {
+		resp.Body.Close()
 	}
 	p.ws = ws
 
@@ -688,7 +691,7 @@ func (p *Peer) sendTelemetry(endpoint, event string) {
 		return
 	}
 
-	req, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
 		logger.Verbose("Telemetry request skipped: %v", err)
 		return
@@ -708,7 +711,7 @@ func (p *Peer) sendTelemetry(endpoint, event string) {
 		logger.Verbose("Telemetry send failed: %v", err)
 		return
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode >= 400 {
 		logger.Verbose("Telemetry endpoint returned %s", resp.Status)
 	}
@@ -965,9 +968,9 @@ func (p *Peer) reconnect(ctx context.Context) error {
 
 	time.Sleep(3 * time.Second)
 
-	conn, err := GetConnectionInfo(p.roomURL, p.name)
+	conn, err := GetConnectionInfo(ctx, p.roomURL, p.name)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to get connection info: %w", err)
 	}
 	p.conn = conn
 
