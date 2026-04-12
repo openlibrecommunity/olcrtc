@@ -1,4 +1,4 @@
-package telemost
+package telemost //nolint:revive
 
 import (
 	"context"
@@ -14,9 +14,9 @@ import (
 
 const apiBase = "https://cloud-api.yandex.ru/telemost_front/v2/telemost"
 
-var ErrAPI = fmt.Errorf("api error")
+var ErrAPI = fmt.Errorf("api error") //nolint:revive
 
-type ConnectionInfo struct {
+type ConnectionInfo struct { //nolint:revive
 	RoomID       string `json:"room_id"`             //nolint:tagliatelle
 	PeerID       string `json:"peer_id"`             //nolint:tagliatelle
 	Credentials  string `json:"credentials"`         //nolint:tagliatelle
@@ -25,10 +25,10 @@ type ConnectionInfo struct {
 	} `json:"client_configuration"` //nolint:tagliatelle
 }
 
-func GetConnectionInfo(ctx context.Context, roomURL, displayName string) (*ConnectionInfo, error) {
+func GetConnectionInfo(ctx context.Context, roomURL, displayName string) (*ConnectionInfo, error) { //nolint:revive
 	u := fmt.Sprintf("%s/conferences/%s/connection", apiBase, url.QueryEscape(roomURL))
 
-	req, err := http.NewRequestWithContext(ctx, "GET", u, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
@@ -53,7 +53,7 @@ func GetConnectionInfo(ctx context.Context, roomURL, displayName string) (*Conne
 	if err != nil {
 		return nil, fmt.Errorf("failed to do request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
