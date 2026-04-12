@@ -31,6 +31,7 @@ const (
 var (
 	// ErrDataChannelTimeout is returned when the datachannel fails to open within the timeout.
 	ErrDataChannelTimeout  = errors.New("datachannel timeout")
+// ErrDataChannelNotReady is returned when the datachannel is not open.
 	ErrDataChannelNotReady = errors.New("datachannel not ready")
 	ErrSendQueueClosed     = errors.New("send queue closed")
 	ErrSendQueueTimeout    = errors.New("send queue timeout")
@@ -995,7 +996,7 @@ func (p *Peer) SetShouldReconnect(fn func() bool) { //nolint:revive
 	p.shouldReconnect = fn
 }
 
-func (p *Peer) WatchConnection(ctx context.Context) { //nolint:revive,gocognit,cyclop
+func (p *Peer) WatchConnection(ctx context.Context) { //nolint:revive,cyclop
 	const maxReconnects = 10
 	const reconnectWindow = 5 * time.Minute
 
@@ -1041,7 +1042,7 @@ func (p *Peer) WatchConnection(ctx context.Context) { //nolint:revive,gocognit,c
 	}
 }
 
-func (p *Peer) processSendQueue(workerID int, sessionCloseCh <-chan struct{}) { //nolint:gocognit
+func (p *Peer) processSendQueue(workerID int, sessionCloseCh <-chan struct{}) {
 	for {
 		select {
 		case <-sessionCloseCh:
