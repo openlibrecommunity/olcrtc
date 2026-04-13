@@ -12,6 +12,8 @@ import (
 	"github.com/openlibrecommunity/olcrtc/internal/client"
 	"github.com/openlibrecommunity/olcrtc/internal/logger"
 	"github.com/openlibrecommunity/olcrtc/internal/protect"
+
+	_ "golang.org/x/mobile/bind" // ensure gomobile bind is available
 )
 
 // SocketProtector protects sockets from VPN routing on Android.
