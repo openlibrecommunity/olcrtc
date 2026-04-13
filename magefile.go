@@ -112,6 +112,9 @@ func Mobile() error {
 	if err := ensureTool("gomobile"); err != nil {
 		return fmt.Errorf("gomobile not found: run 'go install golang.org/x/mobile/cmd/gomobile@latest && gomobile init'")
 	}
+	if err := ensureBuildDir(); err != nil {
+		return err
+	}
 	return sh.RunV("gomobile", "bind",
 		"-target=android",
 		"-androidapi", "21",
