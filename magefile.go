@@ -18,7 +18,7 @@ const (
 	module    = "github.com/openlibrecommunity/olcrtc"
 	buildDir  = "build"
 	ldflags   = "-s -w"
-	goVersion = "1.25"
+	goVersion = "1.24"
 )
 
 var (
@@ -114,6 +114,7 @@ func Mobile() error {
 	}
 	return sh.RunV("gomobile", "bind",
 		"-target=android",
+		"-androidapi", "21",
 		"-o", filepath.Join(buildDir, "olcrtc.aar"),
 		"./mobile",
 	)

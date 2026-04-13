@@ -16,7 +16,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.25.x'
+          go-version: '1.24.x'
           
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v6
@@ -33,7 +33,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.25.x'
+          go-version: '1.24.x'
           
       - name: Install Mage
         run: go install github.com/magefile/mage@latest
@@ -59,7 +59,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.25.x'
+          go-version: '1.24.x'
           
       - name: Install Linux Dependencies (Fyne)
         if: runner.os == 'Linux'
@@ -88,7 +88,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.25.x'
+          go-version: '1.24.x'
           
       - name: Set up JDK
         uses: actions/setup-java@v4
