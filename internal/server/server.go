@@ -198,10 +198,6 @@ func (s *Server) addPeer(ctx context.Context, roomURL string, peerID int, cancel
 		s.handlePeerReconnect(peerID, dc)
 	})
 
-	peer.SetShouldReconnect(func() bool {
-		return s.activeClients.Load() > 0
-	})
-
 	log.Printf("Connecting peer %d to Telemost...", peerID)
 	if err := peer.Connect(ctx); err != nil {
 		return fmt.Errorf("failed to connect peer: %w", err)
