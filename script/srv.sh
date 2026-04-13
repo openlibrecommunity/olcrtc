@@ -58,11 +58,32 @@ esac
 
 echo "[*] Using provider: $PROVIDER"
 echo ""
-read -p "Enter Room ID: " ROOM_ID
 
-if [ -z "$ROOM_ID" ]; then
-    echo "[X] Room ID cannot be empty"
-    exit 1
+if [ "$PROVIDER" = "jazz" ]; then
+    echo "Jazz room options:"
+    echo "  1) Auto-generate new room (recommended)"
+    echo "  2) Use specific room ID (enter roomId:password)"
+    read -p "Enter choice [1-2, default: 1]: " JAZZ_CHOICE
+    
+    case "$JAZZ_CHOICE" in
+        2)
+            read -p "Enter Room ID (format: roomId:password): " ROOM_ID
+            if [ -z "$ROOM_ID" ]; then
+                echo "[X] Room ID cannot be empty"
+                exit 1
+            fi
+            ;;
+        *)
+            ROOM_ID="any"
+            echo "[*] Will auto-generate Jazz room"
+            ;;
+    esac
+else
+    read -p "Enter Room ID: " ROOM_ID
+    if [ -z "$ROOM_ID" ]; then
+        echo "[X] Room ID cannot be empty"
+        exit 1
+    fi
 fi
 
 echo ""
