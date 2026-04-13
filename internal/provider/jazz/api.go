@@ -131,7 +131,7 @@ func createRoom(ctx context.Context) (*RoomInfo, error) {
 	}, nil
 }
 
-func joinRoom(ctx context.Context, roomID string) (*RoomInfo, error) {
+func joinRoom(ctx context.Context, roomID, password string) (*RoomInfo, error) {
 	clientID := uuid.New().String()
 	headers := map[string]string{
 		"X-Jazz-ClientId":   clientID,
@@ -141,7 +141,7 @@ func joinRoom(ctx context.Context, roomID string) (*RoomInfo, error) {
 	}
 
 	preconnectPayload := map[string]any{
-		"password": "",
+		"password": password,
 		"jazzNextMigration": map[string]any{
 			"b2bBaseRoomSupport":               true,
 			"demoRoomBaseSupport":              true,
@@ -193,7 +193,7 @@ func joinRoom(ctx context.Context, roomID string) (*RoomInfo, error) {
 
 	return &RoomInfo{
 		RoomID:       roomID,
-		Password:     "",
+		Password:     password,
 		ConnectorURL: preconnectResp.ConnectorURL,
 	}, nil
 }

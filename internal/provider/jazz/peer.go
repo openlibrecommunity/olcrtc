@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -49,9 +50,17 @@ func NewPeer(ctx context.Context, roomID, name string, onData func([]byte)) (*Pe
 		if err != nil {
 			return nil, fmt.Errorf("create room: %w", err)
 		}
-		log.Printf("Jazz room created: %s (password: %s)", roomInfo.RoomID, roomInfo.Password)
+		log.Printf("Jazz room created: %s:%s", roomInfo.RoomID, roomInfo.Password)
+		log.Printf("To connect client use: -id \"%s:%s\"", roomInfo.RoomID, roomInfo.Password)
 	} else {
-		roomInfo, err = joinRoom(ctx, roomID)
+		var password string
+		parts := strings.Split(roomID, ":")
+		if len(parts) == 2 {
+			roomID = parts[0]
+			password = parts[1]
+		}
+
+		roomInfo, err = joinRoom(ctx, roomID, password)
 		if err != nil {
 			return nil, fmt.Errorf("join room: %w", err)
 		}
