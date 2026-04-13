@@ -7,7 +7,8 @@
 
 </div>
 
-# ЯНДЕКС УДАЛИЛ DC! ПРОЕКТ ПЕРЕПИСЫВАЕТСЯ НА VC и SALUTEJAZZ, [ОЖИДАЙТЕ](https://github.com/openlibrecommunity/olcrtc/issues/1)
+# ЯНДЕКС УДАЛИЛ DataChannel !
+# ПРОЕКТ ПЕРЕПИСЫВАЕТСЯ НА VideoChannel и SALUTEJAZZ, [ОЖИДАЙТЕ](https://github.com/openlibrecommunity/olcrtc/issues/1) !
 
 ## About
 olcRTC - across the Sea
