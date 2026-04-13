@@ -50,11 +50,35 @@ fi
 
 echo "[+] Using Docker"
 echo ""
+echo "Select provider:"
+echo "  1) telemost"
+echo "  2) jazz"
+read -p "Enter choice [1-2, default: 1]: " PROVIDER_CHOICE
 
-read -p "Enter Telemost Room ID: " ROOM_ID
-if [ -z "$ROOM_ID" ]; then
-    echo "[X] Room ID cannot be empty"
-    exit 1
+case "$PROVIDER_CHOICE" in
+    2)
+        PROVIDER="jazz"
+        ;;
+    *)
+        PROVIDER="telemost"
+        ;;
+esac
+
+echo "[*] Using provider: $PROVIDER"
+echo ""
+
+if [ "$PROVIDER" = "jazz" ]; then
+    read -p "Enter Room ID (format: roomId:password from server): " ROOM_ID
+    if [ -z "$ROOM_ID" ]; then
+        echo "[X] Room ID cannot be empty"
+        exit 1
+    fi
+else
+    read -p "Enter Room ID: " ROOM_ID
+    if [ -z "$ROOM_ID" ]; then
+        echo "[X] Room ID cannot be empty"
+        exit 1
+    fi
 fi
 
 echo ""
@@ -106,7 +130,7 @@ docker run -d \
     -v $WORK_DIR:/app \
     -w /app \
     $IMAGE_NAME \
-    ./olcrtc -mode cnc -id "$ROOM_ID" -key "$KEY" -socks-port $SOCKS_PORT -socks-host 0.0.0.0
+    ./olcrtc -mode cnc -provider "$PROVIDER" -id "$ROOM_ID" -key "$KEY" -socks-port $SOCKS_PORT -socks-host 0.0.0.0
 
 sleep 2
 
@@ -114,6 +138,7 @@ echo ""
 echo "[+] Client started successfully!"
 echo ""
 echo "Container name: $CONTAINER_NAME"
+echo "Provider: $PROVIDER"
 echo "Room ID: $ROOM_ID"
 echo "SOCKS5 proxy: $SOCKS_IP:$SOCKS_PORT"
 echo ""
