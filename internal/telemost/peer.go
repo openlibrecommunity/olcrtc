@@ -938,6 +938,10 @@ func (p *Peer) reconnect(ctx context.Context) error {
 	p.reconnecting.Store(true)
 	defer p.reconnecting.Store(false)
 
+	if p.onReconnect != nil {
+		p.onReconnect(nil)
+	}
+
 	p.sendLeave(uuid.New().String())
 	time.Sleep(500 * time.Millisecond)
 	p.stopSession()

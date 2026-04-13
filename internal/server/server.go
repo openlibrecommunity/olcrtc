@@ -213,12 +213,7 @@ func (s *Server) addPeer(ctx context.Context, roomURL string, peerID int, cancel
 }
 
 func (s *Server) handlePeerReconnect(peerID int, dc *webrtc.DataChannel) {
-	if dc == nil {
-		log.Printf("peer %d channel closed", peerID)
-		return
-	}
-
-	log.Printf("peer %d reconnected", peerID)
+	log.Printf("peer %d reconnect event: dc=%v", peerID, dc != nil)
 
 	s.connMu.Lock()
 	for sid, conn := range s.connections {
@@ -229,19 +224,20 @@ func (s *Server) handlePeerReconnect(peerID int, dc *webrtc.DataChannel) {
 	}
 	s.connMu.Unlock()
 
-	s.mux.UpdateSendFunc(func(frame []byte) error {
-		encrypted, err := s.cipher.Encrypt(frame)
-		if err != nil {
-			return fmt.Errorf("%w: %w", ErrEncryptFailed, err)
-		}
-		if len(s.peers) == 0 {
-			return ErrNoPeers
-		}
-		idx := s.peerIdx.Add(1) % uint32(len(s.peers)) //nolint:gosec
-		return s.peers[idx].Send(encrypted)
-	})
-
-	s.mux.Reset()
+	if dc != nil {
+		s.mux.UpdateSendFunc(func(frame []byte) error {
+			encrypted, err := s.cipher.Encrypt(frame)
+			if err != nil {
+				return fmt.Errorf("%w: %w", ErrEncryptFailed, err)
+			}
+			if len(s.peers) == 0 {
+				return ErrNoPeers
+			}
+			idx := s.peerIdx.Add(1) % uint32(len(s.peers)) //nolint:gosec
+			return s.peers[idx].Send(encrypted)
+		})
+		s.mux.Reset()
+	}
 }
 
 func (s *Server) socks5Connect(conn net.Conn, targetAddr string, targetPort int) error {
