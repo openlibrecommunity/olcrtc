@@ -9,6 +9,8 @@ CONTAINER_NAME="olcrtc-client"
 IMAGE_NAME="docker.io/library/golang:1.26-alpine"
 REPO_URL="https://github.com/openlibrecommunity/olcrtc.git"
 WORK_DIR="/tmp/olcrtc-client"
+
+SOCKS_IP="127.0.0.1"
 SOCKS_PORT="8808"
 
 echo "=== OlcRTC Client Deployment Script ==="
@@ -65,6 +67,10 @@ if [ -z "$KEY" ]; then
 fi
 
 echo ""
+read -p "SOCKS5 ip [default: 127.0.0.1]: " IP_INPUT
+SOCKS_IP=${IP_INPUT:-127.0.0.1}
+
+echo ""
 read -p "SOCKS5 port [default: 8808]: " PORT_INPUT
 SOCKS_PORT=${PORT_INPUT:-8808}
 
@@ -99,7 +105,7 @@ echo "[*] Starting OlcRTC client..."
 podman run -d \
     --name $CONTAINER_NAME \
     --restart unless-stopped \
-    -p 127.0.0.1:$SOCKS_PORT:$SOCKS_PORT \
+    -p $SOCKS_IP:$SOCKS_PORT:$SOCKS_PORT \
     -v $WORK_DIR:/app:Z \
     -w /app \
     $IMAGE_NAME \
@@ -112,7 +118,7 @@ echo "[+] Client started successfully!"
 echo ""
 echo "Container name: $CONTAINER_NAME"
 echo "Room ID: $ROOM_ID"
-echo "SOCKS5 proxy: 127.0.0.1:$SOCKS_PORT"
+echo "SOCKS5 proxy: $SOCKS_IP:$SOCKS_PORT"
 echo ""
 echo "View logs:"
 echo "  podman logs -f $CONTAINER_NAME"
@@ -121,6 +127,6 @@ echo "Stop client:"
 echo "  podman stop $CONTAINER_NAME"
 echo ""
 echo "Test proxy:"
-echo "  export all_proxy=socks5h://127.0.0.1:$SOCKS_PORT"
+echo "  export all_proxy=socks5h://$SOCKS_IP:$SOCKS_PORT"
 echo "  curl -fsSL https://ifconfig.me"
 echo ""
