@@ -21,7 +21,9 @@ import (
 	"github.com/openlibrecommunity/olcrtc/internal/logger"
 	"github.com/openlibrecommunity/olcrtc/internal/mux"
 	"github.com/openlibrecommunity/olcrtc/internal/names"
-	"github.com/openlibrecommunity/olcrtc/internal/telemost"
+	"github.com/openlibrecommunity/olcrtc/internal/provider"
+	_ "github.com/openlibrecommunity/olcrtc/internal/provider/jazz"
+	_ "github.com/openlibrecommunity/olcrtc/internal/provider/telemost"
 	"github.com/pion/webrtc/v4"
 )
 
@@ -31,9 +33,8 @@ var (
 	errNoConnectedPeers       = errors.New("no connected peers available")
 )
 
-// Client manages the client-side mux and SOCKS5 listener.
 type Client struct {
-	peers    []*telemost.Peer
+	peers    []provider.Provider
 	cipher   *crypto.Cipher
 	mux      *mux.Multiplexer
 	clientID uint32
@@ -43,9 +44,9 @@ type Client struct {
 
 const defaultSOCKSListenHost = "127.0.0.1"
 
-// Run starts the client and listens for SOCKS5 traffic.
 func Run(
 	ctx context.Context,
+	providerName,
 	roomURL,
 	keyHex string,
 	socksPort int,
@@ -53,12 +54,12 @@ func Run(
 	socksUser,
 	socksPass string,
 ) error {
-	return RunWithReady(ctx, roomURL, keyHex, socksPort, socksHost, socksUser, socksPass, nil)
+	return RunWithReady(ctx, providerName, roomURL, keyHex, socksPort, socksHost, socksUser, socksPass, nil)
 }
 
-// RunWithReady starts the client and invokes onReady once the local SOCKS5 listener is accepting connections.
 func RunWithReady(
 	ctx context.Context,
+	providerName,
 	roomURL,
 	keyHex string,
 	socksPort int,
@@ -88,13 +89,13 @@ func RunWithReady(
 	c := &Client{
 		cipher:   cipher,
 		clientID: uint32(time.Now().UnixNano() & 0xFFFFFFFF),
-		peers:    make([]*telemost.Peer, 0, 1),
+		peers:    make([]provider.Provider, 0, 1),
 	}
 
 	c.mux = mux.New(c.clientID, c.sendFrame)
 
 	for peerID := range 1 {
-		if err := c.addPeer(runCtx, roomURL, peerID, cancel); err != nil {
+		if err := c.addPeer(runCtx, providerName, roomURL, peerID, cancel); err != nil {
 			return fmt.Errorf("addPeer failed: %w", err)
 		}
 	}
@@ -152,7 +153,7 @@ func (c *Client) sendFrame(frame []byte) error {
 	return nil
 }
 
-func waitUntilPeersCanSend(peers []*telemost.Peer) {
+func waitUntilPeersCanSend(peers []provider.Provider) {
 	for {
 		canSend := true
 		for _, peer := range peers {
@@ -170,7 +171,7 @@ func waitUntilPeersCanSend(peers []*telemost.Peer) {
 	}
 }
 
-func (c *Client) nextPeer() (*telemost.Peer, error) {
+func (c *Client) nextPeer() (provider.Provider, error) {
 	switch len(c.peers) {
 	case 0:
 		return nil, errNoConnectedPeers
@@ -183,11 +184,16 @@ func (c *Client) nextPeer() (*telemost.Peer, error) {
 
 func (c *Client) addPeer(
 	runCtx context.Context,
+	providerName,
 	roomURL string,
 	peerID int,
 	cancel context.CancelFunc,
 ) error {
-	peer, err := telemost.NewPeer(runCtx, roomURL, names.Generate(), c.onData)
+	peer, err := provider.New(runCtx, providerName, provider.Config{
+		RoomURL: roomURL,
+		Name:    names.Generate(),
+		OnData:  c.onData,
+	})
 	if err != nil {
 		return fmt.Errorf("create peer %d: %w", peerID, err)
 	}
@@ -203,7 +209,7 @@ func (c *Client) addPeer(
 
 	c.peers = append(c.peers, peer)
 
-	log.Printf("Connecting peer %d to Telemost...", peerID)
+	log.Printf("Connecting peer %d to %s...", peerID, providerName)
 	if err := peer.Connect(runCtx); err != nil {
 		return fmt.Errorf("connect peer %d: %w", peerID, err)
 	}
