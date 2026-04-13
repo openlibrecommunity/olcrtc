@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log"
 	"math/rand/v2"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -52,6 +53,7 @@ type TrafficShape struct { //nolint:revive
 type Peer struct { //nolint:revive
 	roomURL         string
 	name            string
+	dnsServer       string
 	conn            *ConnectionInfo
 	ws              *websocket.Conn
 	wsMu            sync.Mutex
@@ -106,8 +108,8 @@ func (p *Peer) SetTrafficShape(shape TrafficShape) { //nolint:revive
 	p.trafficShape = shape
 }
 
-func NewPeer(ctx context.Context, roomURL, name string, onData func([]byte)) (*Peer, error) { //nolint:revive
-	conn, err := GetConnectionInfo(ctx, roomURL, name)
+func NewPeer(ctx context.Context, roomURL, name, dnsServer string, onData func([]byte)) (*Peer, error) { //nolint:revive
+	conn, err := GetConnectionInfo(ctx, roomURL, name, dnsServer)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get connection info: %w", err)
 	}
@@ -115,6 +117,7 @@ func NewPeer(ctx context.Context, roomURL, name string, onData func([]byte)) (*P
 	return &Peer{
 		roomURL:        roomURL,
 		name:           name,
+		dnsServer:      dnsServer,
 		conn:           conn,
 		onData:         onData,
 		reconnectCh:    make(chan struct{}, 1),
@@ -301,7 +304,12 @@ func (p *Peer) onDataChannelMessage(msg webrtc.DataChannelMessage) {
 
 func (p *Peer) dialWebSocket() error {
 	wsDialer := websocket.Dialer{
-		NetDialContext:   protect.DialContext,
+		NetDialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			if network == "tcp" {
+				network = "tcp4"
+			}
+			return protect.NewDialer(p.dnsServer).DialContext(ctx, network, addr)
+		},
 		HandshakeTimeout: 15 * time.Second,
 	}
 	ws, resp, err := wsDialer.Dial(p.conn.ClientConfig.MediaServerURL, nil)
@@ -727,7 +735,7 @@ func (p *Peer) sendTelemetry(ctx context.Context, endpoint, event string) {
 	req.Header.Set("X-Telemost-Client-Version", "187.1.0")
 	req.Header.Set("Idempotency-Key", uuid.New().String())
 
-	client := protect.NewHTTPClient()
+	client := protect.NewHTTPClient(p.dnsServer)
 	resp, err := client.Do(req)
 	if err != nil {
 		logger.Verbosef("Telemetry send error: %v", err)
@@ -964,7 +972,7 @@ func (p *Peer) reconnect(ctx context.Context) error {
 	}
 
 	time.Sleep(3 * time.Second)
-	conn, err := GetConnectionInfo(ctx, p.roomURL, p.name)
+	conn, err := GetConnectionInfo(ctx, p.roomURL, p.name, p.dnsServer)
 	if err != nil {
 		return fmt.Errorf("reconnect get info: %w", err)
 	}

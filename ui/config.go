@@ -61,7 +61,7 @@ func (p *Program) loadConfig() *Config {
 	log("Loading config from: %s", configPath)
 	// default values
 	cfg := &Config{
-		DNS:           "1.1.1.1",
+		DNS:           "77.88.8.8",
 		EncryptionKey: "",
 		SocksPort:     "1080",
 		ConferenceID:  "",

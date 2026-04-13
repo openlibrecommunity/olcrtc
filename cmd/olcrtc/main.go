@@ -93,7 +93,7 @@ func parseFlags() config {
 	flag.StringVar(&cfg.keyHex, "key", "", "Shared encryption key (hex)")
 	flag.BoolVar(&cfg.debug, "debug", false, "Enable verbose logging")
 	flag.StringVar(&cfg.dataDir, "data", "data", "Path to data directory")
-	flag.StringVar(&cfg.dnsServer, "dns", "1.1.1.1:53", "DNS server (default: Cloudflare 1.1.1.1)")
+	flag.StringVar(&cfg.dnsServer, "dns", "77.88.8.8:53", "DNS server (default: Yandex 77.88.8.8)")
 	flag.StringVar(&cfg.socksProxyAddr, "socks-proxy", "", "SOCKS5 proxy address (server only)")
 	flag.IntVar(&cfg.socksProxyPort, "socks-proxy-port", 1080, "SOCKS5 proxy port (server only)")
 	flag.Parse()
@@ -169,6 +169,7 @@ func runMode(ctx context.Context, cfg config, errCh chan<- error) {
 			cfg.socksHost,
 			"",
 			"",
+			cfg.dnsServer,
 		)
 	}
 }

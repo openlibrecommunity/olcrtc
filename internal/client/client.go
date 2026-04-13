@@ -51,9 +51,10 @@ func Run(
 	socksPort int,
 	socksHost,
 	socksUser,
-	socksPass string,
+	socksPass,
+	dnsServer string,
 ) error {
-	return RunWithReady(ctx, roomURL, keyHex, socksPort, socksHost, socksUser, socksPass, nil)
+	return RunWithReady(ctx, roomURL, keyHex, socksPort, socksHost, socksUser, socksPass, dnsServer, nil)
 }
 
 // RunWithReady starts the client and invokes onReady once the local SOCKS5 listener is accepting connections.
@@ -64,7 +65,8 @@ func RunWithReady(
 	socksPort int,
 	socksHost,
 	socksUser,
-	socksPass string,
+	socksPass,
+	dnsServer string,
 	onReady func(),
 ) error {
 	runCtx, cancel := context.WithCancel(ctx)
@@ -94,7 +96,7 @@ func RunWithReady(
 	c.mux = mux.New(c.clientID, c.sendFrame)
 
 	for peerID := range 1 {
-		if err := c.addPeer(runCtx, roomURL, peerID, cancel); err != nil {
+		if err := c.addPeer(runCtx, roomURL, peerID, dnsServer, cancel); err != nil {
 			return fmt.Errorf("addPeer failed: %w", err)
 		}
 	}
@@ -185,9 +187,10 @@ func (c *Client) addPeer(
 	runCtx context.Context,
 	roomURL string,
 	peerID int,
+	dnsServer string,
 	cancel context.CancelFunc,
 ) error {
-	peer, err := telemost.NewPeer(runCtx, roomURL, names.Generate(), c.onData)
+	peer, err := telemost.NewPeer(runCtx, roomURL, names.Generate(), dnsServer, c.onData)
 	if err != nil {
 		return fmt.Errorf("create peer %d: %w", peerID, err)
 	}

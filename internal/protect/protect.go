@@ -31,19 +31,41 @@ func controlFunc(network, _ string, c syscall.RawConn) error {
 }
 
 // NewDialer returns a net.Dialer that calls Protector on each new socket.
-func NewDialer() *net.Dialer {
-	return &net.Dialer{
+func NewDialer(dnsServer string) *net.Dialer {
+	dialer := &net.Dialer{
 		Timeout:   10 * time.Second,
 		KeepAlive: 30 * time.Second,
 		Control:   controlFunc,
 	}
+
+	if dnsServer != "" {
+		dialer.Resolver = &net.Resolver{
+			PreferGo: true,
+			Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
+				d := net.Dialer{
+					Timeout: 5 * time.Second,
+					Control: controlFunc,
+				}
+				// Force IPv4 for DNS lookups
+				return d.DialContext(ctx, "udp4", dnsServer)
+			},
+		}
+	}
+
+	return dialer
 }
 
-// NewHTTPClient returns an http.Client using protected sockets.
-func NewHTTPClient() *http.Client {
-	dialer := NewDialer()
+// NewHTTPClient returns an http.Client using protected sockets and optional DNS server.
+func NewHTTPClient(dnsServer string) *http.Client {
+	dialer := NewDialer(dnsServer)
 	transport := &http.Transport{
-		DialContext:           dialer.DialContext,
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			// Force IPv4 for all TCP connections to avoid broken IPv6 on Android
+			if network == "tcp" {
+				network = "tcp4"
+			}
+			return dialer.DialContext(ctx, network, addr)
+		},
 		ForceAttemptHTTP2:     true,
 		MaxIdleConns:          10,
 		IdleConnTimeout:       30 * time.Second,
@@ -55,7 +77,7 @@ func NewHTTPClient() *http.Client {
 
 // DialContext dials using a protected socket.
 func DialContext(ctx context.Context, network, address string) (net.Conn, error) {
-	conn, err := NewDialer().DialContext(ctx, network, address)
+	conn, err := NewDialer("").DialContext(ctx, network, address)
 	if err != nil {
 		return nil, fmt.Errorf("dial failed: %w", err)
 	}
@@ -67,12 +89,13 @@ type ProxyDialer struct{}
 
 // Dial connects to the address on the named network using a protected socket.
 func (d *ProxyDialer) Dial(network, addr string) (net.Conn, error) {
-	conn, err := NewDialer().Dial(network, addr)
+	conn, err := NewDialer("").Dial(network, addr)
 	if err != nil {
 		return nil, fmt.Errorf("dial failed: %w", err)
 	}
 	return conn, nil
 }
+
 
 // NewProxyDialer returns a proxy.Dialer that protects ICE sockets.
 func NewProxyDialer() *ProxyDialer {

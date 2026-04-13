@@ -26,7 +26,7 @@ type ConnectionInfo struct { //nolint:revive
 	} `json:"client_configuration"` //nolint:tagliatelle
 }
 
-func GetConnectionInfo(ctx context.Context, roomURL, displayName string) (*ConnectionInfo, error) { //nolint:revive
+func GetConnectionInfo(ctx context.Context, roomURL, displayName, dnsServer string) (*ConnectionInfo, error) { //nolint:revive
 	u := fmt.Sprintf("%s/conferences/%s/connection", apiBase, url.QueryEscape(roomURL))
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
@@ -49,7 +49,7 @@ func GetConnectionInfo(ctx context.Context, roomURL, displayName string) (*Conne
 	req.Header.Set("Origin", "https://telemost.yandex.ru")
 	req.Header.Set("Referer", "https://telemost.yandex.ru/")
 
-	client := protect.NewHTTPClient()
+	client := protect.NewHTTPClient(dnsServer)
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to do request: %w", err)

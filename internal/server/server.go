@@ -92,7 +92,7 @@ func Run(
 	}
 
 	if s.dnsServer == "" {
-		s.dnsServer = "1.1.1.1:53"
+		s.dnsServer = "77.88.8.8:53"
 	}
 
 	s.setupResolver()
@@ -183,7 +183,7 @@ func (s *Server) setupMux() {
 }
 
 func (s *Server) addPeer(ctx context.Context, roomURL string, peerID int, cancel context.CancelFunc) error {
-	peer, err := telemost.NewPeer(ctx, roomURL, names.Generate(), s.onData)
+	peer, err := telemost.NewPeer(ctx, roomURL, names.Generate(), s.dnsServer, s.onData)
 	if err != nil {
 		return fmt.Errorf("failed to create peer: %w", err)
 	}
