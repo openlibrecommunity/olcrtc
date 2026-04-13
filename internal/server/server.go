@@ -184,7 +184,13 @@ func (s *Server) setupMux() {
 	})
 }
 
-func (s *Server) addPeer(ctx context.Context, providerName, roomURL string, peerID int, cancel context.CancelFunc) error {
+func (s *Server) addPeer(
+	ctx context.Context,
+	providerName,
+	roomURL string,
+	peerID int,
+	cancel context.CancelFunc,
+) error {
 	peer, err := provider.New(ctx, providerName, provider.Config{
 		RoomURL:   roomURL,
 		Name:      names.Generate(),

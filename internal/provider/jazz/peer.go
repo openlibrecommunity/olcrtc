@@ -41,11 +41,11 @@ type Peer struct {
 	sendQueueClosed atomic.Bool
 	onEnded         func(string)
 	sessionCloseCh  chan struct{}
-	sessionMu       sync.Mutex
 	wg              sync.WaitGroup
 	groupID         string
 }
 
+// NewPeer creates a new Jazz provider peer.
 func NewPeer(ctx context.Context, roomID, name string, onData func([]byte)) (*Peer, error) {
 	var roomInfo *RoomInfo
 	var err error

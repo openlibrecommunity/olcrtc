@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 
@@ -18,6 +19,11 @@ type RoomInfo struct {
 	Password     string `json:"password"`
 	ConnectorURL string `json:"connectorUrl"`
 }
+
+var (
+	errCreateRoomFailed = errors.New("create room failed")
+	errPreconnectFailed = errors.New("preconnect failed")
+)
 
 func createRoom(ctx context.Context) (*RoomInfo, error) {
 	clientID := uuid.New().String()
@@ -60,10 +66,10 @@ func createRoom(ctx context.Context) (*RoomInfo, error) {
 	if err != nil {
 		return nil, fmt.Errorf("do create request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("create room failed: status %d", resp.StatusCode)
+		return nil, fmt.Errorf("%w: status %d", errCreateRoomFailed, resp.StatusCode)
 	}
 
 	var createResp struct {
@@ -111,10 +117,10 @@ func createRoom(ctx context.Context) (*RoomInfo, error) {
 	if err != nil {
 		return nil, fmt.Errorf("do preconnect request: %w", err)
 	}
-	defer preResp.Body.Close()
+	defer func() { _ = preResp.Body.Close() }()
 
 	if preResp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("preconnect failed: status %d", preResp.StatusCode)
+		return nil, fmt.Errorf("%w: status %d", errPreconnectFailed, preResp.StatusCode)
 	}
 
 	var preconnectResp struct {
@@ -178,10 +184,10 @@ func joinRoom(ctx context.Context, roomID, password string) (*RoomInfo, error) {
 	if err != nil {
 		return nil, fmt.Errorf("do preconnect request: %w", err)
 	}
-	defer preResp.Body.Close()
+	defer func() { _ = preResp.Body.Close() }()
 
 	if preResp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("preconnect failed: status %d", preResp.StatusCode)
+		return nil, fmt.Errorf("%w: status %d", errPreconnectFailed, preResp.StatusCode)
 	}
 
 	var preconnectResp struct {

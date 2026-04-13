@@ -108,6 +108,7 @@ func Start(roomID, keyHex string, socksPort int, socksUser, socksPass string) er
 
 		err := client.RunWithReady(
 			ctx,
+			"telemost",
 			roomURL,
 			keyHex,
 			socksPort,
