@@ -4,7 +4,6 @@ package main
 import (
 	"context"
 	"errors"
-	"flag"
 	"fmt"
 	"log"
 	"os"
@@ -12,6 +11,8 @@ import (
 	"path/filepath"
 	"syscall"
 	"time"
+
+	flag "github.com/spf13/pflag"
 
 	"github.com/openlibrecommunity/olcrtc/internal/client"
 	"github.com/openlibrecommunity/olcrtc/internal/logger"
@@ -23,17 +24,15 @@ import (
 )
 
 type config struct {
-	mode           string
-	roomID         string
-	provider       string
-	socksPort      int
-	socksHost      string
-	keyHex         string
-	debug          bool
-	dataDir        string
-	dnsServer      string
-	socksProxyAddr string
-	socksProxyPort int
+	mode      string
+	roomID    string
+	provider  string
+	socksPort int
+	socksHost string
+	keyHex    string
+	debug     bool
+	dataDir   string
+	dnsServer string
 }
 
 var (
@@ -92,17 +91,16 @@ func run() error {
 func parseFlags() config {
 	cfg := config{}
 
-	flag.StringVar(&cfg.mode, "mode", "", "Mode: srv or cnc")
-	flag.StringVar(&cfg.roomID, "id", "", "Room ID")
-	flag.StringVar(&cfg.provider, "provider", "", "Provider: telemost or jazz (required)")
-	flag.IntVar(&cfg.socksPort, "socks-port", 1080, "SOCKS5 port (client only)")
-	flag.StringVar(&cfg.socksHost, "socks-host", "127.0.0.1", "SOCKS5 listen host (client only)")
-	flag.StringVar(&cfg.keyHex, "key", "", "Shared encryption key (hex)")
-	flag.BoolVar(&cfg.debug, "debug", false, "Enable verbose logging")
-	flag.StringVar(&cfg.dataDir, "data", "data", "Path to data directory")
-	flag.StringVar(&cfg.dnsServer, "dns", "1.1.1.1:53", "DNS server (default: Cloudflare 1.1.1.1)")
-	flag.StringVar(&cfg.socksProxyAddr, "socks-proxy", "", "SOCKS5 proxy address (server only)")
-	flag.IntVar(&cfg.socksProxyPort, "socks-proxy-port", 1080, "SOCKS5 proxy port (server only)")
+	flag.StringVarP(&cfg.mode, "mode", "m", "", "Mode: srv or cnc")
+	flag.StringVarP(&cfg.roomID, "id", "i", "", "Room ID")
+	flag.StringVarP(&cfg.provider, "provider", "p", "", "Provider: telemost or jazz (required)")
+	flag.IntVarP(&cfg.socksPort, "port", "P", 1080, "SOCKS5 port")
+	flag.StringVarP(&cfg.socksHost, "host", "H", "127.0.0.1", "SOCKS5 host")
+	flag.StringVarP(&cfg.keyHex, "key", "k", "", "Shared encryption key (hex)")
+	flag.BoolVarP(&cfg.debug, "debug", "d", false, "Enable verbose logging")
+	flag.StringVarP(&cfg.dataDir, "data", "D", "data", "Path to data directory")
+	flag.StringVarP(&cfg.dnsServer, "dns", "n", "1.1.1.1:53", "DNS server (default: Cloudflare 1.1.1.1)")
+
 	flag.Parse()
 
 	return cfg
@@ -176,8 +174,8 @@ func runMode(ctx context.Context, cfg config, errCh chan<- error) {
 			roomURL,
 			cfg.keyHex,
 			cfg.dnsServer,
-			cfg.socksProxyAddr,
-			cfg.socksProxyPort,
+			cfg.socksHost,
+			cfg.socksPort,
 		)
 	case "cnc":
 		errCh <- client.Run(

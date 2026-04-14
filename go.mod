@@ -7,6 +7,7 @@ require (
 	github.com/gorilla/websocket v1.5.3
 	github.com/magefile/mage v1.17.1
 	github.com/pion/webrtc/v4 v4.2.11
+	github.com/spf13/pflag v1.0.10
 	golang.org/x/crypto v0.50.0
 	golang.org/x/mobile v0.0.0-20260410095206-2cfb76559b7b
 )
