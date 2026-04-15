@@ -19,6 +19,7 @@ const (
 	ControlStreamID uint16 = 0xFFFF //nolint:revive
 	ControlLength   uint16 = 0xFFFF //nolint:revive
 
+	ControlNoop        uint32 = 0
 	ControlResetClient uint32 = 1
 )
 
@@ -171,6 +172,13 @@ func (m *Multiplexer) SendClientReset() error { //nolint:revive
 	return nil
 }
 
+func (m *Multiplexer) SendNoop() error { //nolint:revive
+	if err := m.onSend(BuildControlFrame(m.clientID, ControlNoop)); err != nil {
+		return fmt.Errorf("onSend failed: %w", err)
+	}
+	return nil
+}
+
 func BuildControlFrame(clientID uint32, controlType uint32) []byte { //nolint:revive
 	frame := make([]byte, 12)
 	binary.BigEndian.PutUint32(frame[0:4], clientID)
@@ -312,6 +320,8 @@ func (m *Multiplexer) notifyDataReady(sid uint16) {
 
 func (m *Multiplexer) handleControlFrame(control ControlFrame) {
 	switch control.Type {
+	case ControlNoop:
+		return
 	case ControlResetClient:
 		m.ResetClient(control.ClientID)
 	default:
@@ -358,6 +368,25 @@ func (m *Multiplexer) ReadStream(sid uint16) []byte { //nolint:revive
 	data := stream.recvBuf
 	stream.recvBuf = make([]byte, 0)
 	return data
+}
+
+func (m *Multiplexer) ReadStreamByte(sid uint16) (byte, bool) { //nolint:revive
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	stream, exists := m.streams[sid]
+	if !exists || len(stream.recvBuf) == 0 {
+		return 0, false
+	}
+
+	b := stream.recvBuf[0]
+	if len(stream.recvBuf) == 1 {
+		stream.recvBuf = make([]byte, 0)
+	} else {
+		stream.recvBuf = append([]byte(nil), stream.recvBuf[1:]...)
+	}
+
+	return b, true
 }
 
 func (m *Multiplexer) StreamClosed(sid uint16) bool { //nolint:revive

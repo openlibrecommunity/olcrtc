@@ -31,14 +31,16 @@ fi
 
 mode="${OLCRTC_MODE:-srv}"
 room_id="${OLCRTC_ROOM_ID:-${ROOM_ID:-}}"
-provider="${OLCRTC_PROVIDER:-telemost}"
+provider="${OLCRTC_PROVIDER:-jazz-visual}"
 data_dir="${OLCRTC_DATA_DIR:-/usr/share/olcrtc}"
 dns_server="${OLCRTC_DNS:-1.1.1.1:53}"
 key="${OLCRTC_KEY:-${KEY:-}}"
 key_file="${OLCRTC_KEY_FILE:-/var/lib/olcrtc/key.hex}"
+visual_background="${OLCRTC_VISUAL_BACKGROUND:-${VISUAL_BACKGROUND:-}}"
+visual_dump="${OLCRTC_VISUAL_DUMP:-${VISUAL_DUMP:-}}"
 
 [ "$mode" = "srv" ] || die "server image defaults to OLCRTC_MODE=srv; got '$mode'"
-[ -n "$room_id" ] || die "set OLCRTC_ROOM_ID to the Telemost room id"
+[ -n "$room_id" ] || die "set OLCRTC_ROOM_ID (use 'any' for Jazz/Jazz-visual auto-room creation)"
 
 if [ -z "$key" ]; then
     if [ -s "$key_file" ]; then
@@ -74,6 +76,14 @@ fi
 
 if bool_flag "${OLCRTC_DEBUG:-}"; then
     set -- "$@" -debug
+fi
+
+if [ -n "$visual_background" ]; then
+    set -- "$@" -visual-background "$visual_background"
+fi
+
+if [ -n "$visual_dump" ]; then
+    set -- "$@" -visual-dump "$visual_dump"
 fi
 
 exec "$@"

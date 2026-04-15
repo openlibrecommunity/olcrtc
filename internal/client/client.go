@@ -101,6 +101,8 @@ func RunWithReady(
 		}
 	}
 
+	go c.startWarmupLoop(runCtx)
+
 	time.Sleep(100 * time.Millisecond)
 	c.sendResetSignal()
 
@@ -109,6 +111,22 @@ func RunWithReady(
 	c.wg.Wait()
 
 	return err
+}
+
+func (c *Client) startWarmupLoop(ctx context.Context) {
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if err := c.mux.SendNoop(); err != nil {
+				logger.Debugf("Client warmup noop error: %v", err)
+			}
+		}
+	}
 }
 
 func decodeKey(keyHex string) ([]byte, error) {
@@ -371,7 +389,6 @@ func (c *Client) handleSOCKS5(conn net.Conn, username, password string) {
 		return
 	}
 
-	c.mux.ReadStream(sid)
 	writeResponse(conn, replySuccess())
 	c.proxyStream(conn, sid)
 }
@@ -498,12 +515,19 @@ func (c *Client) waitConnectResponse(conn net.Conn, sid uint16) bool {
 
 	select {
 	case <-dataReady:
-		stream := c.mux.GetStream(sid)
-		if stream == nil || len(stream.RecvBuf()) == 0 {
+		status, ok := c.mux.ReadStreamByte(sid)
+		if !ok {
+			_ = c.mux.CloseStream(sid)
+			writeResponse(conn, replyHostUnreachable())
+			return false
+		}
+		if status != 0x00 {
+			_ = c.mux.CloseStream(sid)
 			writeResponse(conn, replyHostUnreachable())
 			return false
 		}
 	case <-timeout.C:
+		_ = c.mux.CloseStream(sid)
 		writeResponse(conn, replyHostUnreachable())
 		return false
 	}

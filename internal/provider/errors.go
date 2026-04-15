@@ -14,4 +14,7 @@ var (
 	ErrSendQueueClosed = errors.New("send queue closed")
 	// ErrSendQueueTimeout is returned when the send queue is full and the timeout is reached.
 	ErrSendQueueTimeout = errors.New("send queue timeout")
+	// ErrTransportNotImplemented is returned when a provider/transport name exists,
+	// but its runtime media path has not been implemented yet.
+	ErrTransportNotImplemented = errors.New("transport not implemented")
 )

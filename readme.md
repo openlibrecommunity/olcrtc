@@ -14,7 +14,47 @@ olcRTC - across the Sea
 
 Project that allows users to bypass blocking by parasitizing and tunneling on unblocked and whitelisted services in Russia, use telemost, Max, mail and API in the future
 
-## satus
+## jazz-visual status
+
+`jazz-visual` is now working end-to-end through SaluteJazz SFU.
+
+Current verified baseline:
+- automated smoke / soak harness: [script/jazz_visual_smoke.sh](script/jazz_visual_smoke.sh)
+- short soak: `ATTEMPTS=50` -> `50/50`
+- longer soak: `ATTEMPTS=200` -> `200/200`
+- live outer-FEC counters are non-zero during long runs, so recovery is exercised in practice
+
+Native build with real VP8 path:
+
+```bash
+go build -tags vpx -o build/olcrtc ./cmd/olcrtc
+```
+
+Quick automated verification:
+
+```bash
+ATTEMPTS=10 script/jazz_visual_smoke.sh
+```
+
+The harness does the full cycle itself:
+- kills old `srv/cnc`
+- starts fresh `jazz-visual` server and client
+- extracts a fresh `room:pass`
+- waits for SOCKS5 readiness
+- warms the tunnel with a preflight request
+- runs counted `curl` checks through SOCKS5
+
+Visual frame dumping is available for debugging:
+
+```bash
+./build/olcrtc -mode srv -provider jazz-visual -id any -key "$KEY" -visual-dump ./debug -debug
+```
+
+This writes every 30th visual frame as PNG:
+- outbound: `out-000001.png`
+- inbound: `in-000001.png`
+
+## status
 
 pre-alpha
 <br>

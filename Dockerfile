@@ -1,13 +1,18 @@
 # syntax=docker/dockerfile:1.7
 
-ARG GO_VERSION=1.25
+ARG GO_VERSION=1.26
 ARG ALPINE_VERSION=3.22
 
 FROM golang:${GO_VERSION}-alpine${ALPINE_VERSION} AS build
 
 WORKDIR /src
 
-RUN apk add --no-cache ca-certificates git
+RUN apk add --no-cache \
+    build-base \
+    ca-certificates \
+    git \
+    libvpx-dev \
+    pkgconf
 
 COPY go.mod go.sum ./
 RUN --mount=type=cache,target=/go/pkg/mod \
@@ -17,15 +22,16 @@ COPY . .
 
 ARG TARGETOS=linux
 ARG TARGETARCH=amd64
+ARG BUILD_TAGS=vpx
 
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
-    CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
-    go build -trimpath -ldflags="-s -w" -o /out/olcrtc ./cmd/olcrtc
+    CGO_ENABLED=1 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
+    go build -trimpath -tags "${BUILD_TAGS}" -ldflags="-s -w" -o /out/olcrtc ./cmd/olcrtc
 
 FROM alpine:${ALPINE_VERSION} AS runtime
 
-RUN apk add --no-cache ca-certificates tzdata && \
+RUN apk add --no-cache ca-certificates libvpx tzdata && \
     addgroup -S olcrtc && \
     mkdir -p /usr/share/olcrtc /var/lib/olcrtc && \
     adduser -S -D -h /var/lib/olcrtc -s /sbin/nologin -G olcrtc olcrtc && \
@@ -41,7 +47,7 @@ USER olcrtc:olcrtc
 WORKDIR /var/lib/olcrtc
 
 ENV OLCRTC_MODE=srv \
-    OLCRTC_PROVIDER=telemost \
+    OLCRTC_PROVIDER=jazz-visual \
     OLCRTC_DATA_DIR=/usr/share/olcrtc \
     OLCRTC_DNS=1.1.1.1:53 \
     OLCRTC_KEY_FILE=/var/lib/olcrtc/key.hex

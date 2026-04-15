@@ -108,11 +108,29 @@ func Run(
 		}
 	}
 
+	go s.startWarmupLoop(runCtx)
+
 	err = s.runLoop(runCtx)
 
 	s.wg.Wait()
 
 	return err
+}
+
+func (s *Server) startWarmupLoop(ctx context.Context) {
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if err := s.mux.SendNoop(); err != nil {
+				logger.Debugf("Server warmup noop error: %v", err)
+			}
+		}
+	}
 }
 
 func setupCipher(keyHex string) (*crypto.Cipher, error) {

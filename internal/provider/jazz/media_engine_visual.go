@@ -5,14 +5,20 @@ import (
 	"errors"
 	"fmt"
 	"image"
+	"image/png"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/openlibrecommunity/olcrtc/internal/logger"
 	"github.com/openlibrecommunity/olcrtc/internal/provider"
+	"github.com/openlibrecommunity/olcrtc/internal/visual/background"
+	"github.com/openlibrecommunity/olcrtc/internal/visual/lav"
 	"github.com/openlibrecommunity/olcrtc/internal/visual/transport"
 	"github.com/pion/webrtc/v4"
 	"github.com/pion/webrtc/v4/pkg/media"
@@ -35,6 +41,8 @@ type visualEngine struct {
 
 	outerEncoder *transport.OuterFECEncoder
 	outerDecoder *transport.OuterFECDecoder
+	lavCarrier   *image.YCbCr
+	initErr      error
 
 	localTrack     *webrtc.TrackLocalStaticSample
 	audioTrack     *webrtc.TrackLocalStaticSample
@@ -46,8 +54,8 @@ type visualEngine struct {
 	videoAnnounced bool
 	audioPublished bool
 	videoPublished bool
-	readyCh        chan struct{}
-	readyOnce      sync.Once
+	readyCh   chan struct{}
+	readyOnce sync.Once
 
 	// Legacy fallback/test harness fields. Keep for offline transport tests and
 	// possible future experiments only. New production behaviour should prefer
@@ -72,6 +80,7 @@ type visualEngine struct {
 	metricsDone chan struct{}
 
 	logTrackOnce sync.Once
+	frameDumper  *visualFrameDumper
 }
 
 type visualFrameWriter interface {
@@ -91,6 +100,13 @@ type visualSampleCodec interface {
 
 type visualSampleSink interface {
 	WriteSample(sample media.Sample) error
+}
+
+type visualFrameDumper struct {
+	dir      string
+	every    uint64
+	outbound atomic.Uint64
+	inbound  atomic.Uint64
 }
 
 var errNoVisualFrame = errors.New("no visual frame available")
@@ -122,7 +138,7 @@ func (w *visualTrackFrameWriter) WriteFrame(frame *image.YCbCr) error {
 }
 
 func newVisualEngine() *visualEngine {
-	return &visualEngine{
+	engine := &visualEngine{
 		sender:        transport.NewSender(40),
 		receiver:      transport.NewReceiver(),
 		outerEncoder:  transport.NewOuterFECEncoder(10, 4),
@@ -138,6 +154,18 @@ func newVisualEngine() *visualEngine {
 		readerDone:    make(chan struct{}),
 		metricsDone:   make(chan struct{}),
 	}
+	if dumpDir := getVisualDumpDir(); dumpDir != "" {
+		engine.frameDumper = newVisualFrameDumper(dumpDir, 30)
+	}
+	if bgPath := getVisualBackgroundPath(); bgPath != "" {
+		carrier, err := background.LoadStaticI420(bgPath)
+		if err != nil {
+			engine.initErr = fmt.Errorf("load visual background: %w", err)
+		} else {
+			engine.lavCarrier = carrier
+		}
+	}
+	return engine
 }
 
 func (e *visualEngine) trackMetadata() map[string]any {
@@ -145,6 +173,10 @@ func (e *visualEngine) trackMetadata() map[string]any {
 }
 
 func (e *visualEngine) setup(pcPub, pcSub *webrtc.PeerConnection) (<-chan struct{}, error) {
+	if e.initErr != nil {
+		return nil, e.initErr
+	}
+
 	pcPub.OnConnectionStateChange(func(state webrtc.PeerConnectionState) {
 		logger.Debugf("visual pcPub state=%s", state.String())
 	})
@@ -189,34 +221,20 @@ func (e *visualEngine) setup(pcPub, pcSub *webrtc.PeerConnection) (<-chan struct
 	}
 
 	pcSub.OnTrack(func(trackRemote *webrtc.TrackRemote, _ *webrtc.RTPReceiver) {
-		logger.Debugf(
-			"visual OnTrack candidate: kind=%s codec=%s id=%s stream=%s",
-			trackRemote.Kind().String(),
-			trackRemote.Codec().MimeType,
-			trackRemote.ID(),
-			trackRemote.StreamID(),
-		)
 		if trackRemote.Kind() != webrtc.RTPCodecTypeVideo {
 			return
 		}
 		if !strings.EqualFold(trackRemote.Codec().MimeType, webrtc.MimeTypeVP8) {
 			return
 		}
-		e.logTrackOnce.Do(func() {
-			logger.Debugf(
-				"visual OnTrack: codec=%s id=%s stream=%s",
-				trackRemote.Codec().MimeType,
-				trackRemote.ID(),
-				trackRemote.StreamID(),
-			)
-		})
+		e.logTrackOnce.Do(func() {})
 		if err := e.installLiveVisualReader(trackRemote); err != nil {
 			if e.onClosed != nil {
 				e.onClosed()
 			}
 			return
 		}
-		e.markReady()
+		e.markSubscriberReady()
 	})
 
 	e.localTrack = track
@@ -447,6 +465,11 @@ func (e *visualEngine) markPublisherReady() {
 	e.markReady()
 }
 
+func (e *visualEngine) markSubscriberReady() {
+	logger.Debugf("visual subscriber transport is ready")
+	e.markReady()
+}
+
 // startFramePump turns queued application payloads into outbound visual frames.
 //
 // Each payload is first wrapped with an outer FEC group header. Every Nth
@@ -490,6 +513,7 @@ func (e *visualEngine) pumpPayload(payload []byte) error {
 			return fmt.Errorf("encode visual frames: %w", err)
 		}
 		for _, frame := range frames {
+			frame = e.applyLAV(frame)
 			select {
 			case <-e.closeCh:
 				return nil
@@ -527,6 +551,7 @@ func (e *visualEngine) runFrameWriter() {
 		case <-e.closeCh:
 			return
 		case frame := <-e.outboundQ:
+			e.dumpOutboundFrame(frame)
 			if err := writer.WriteFrame(frame); err != nil {
 				if e.onClosed != nil {
 					e.onClosed()
@@ -630,17 +655,41 @@ func (e *visualEngine) runOuterFECMetrics() {
 	defer close(e.metricsDone)
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
+
+	var last transport.OuterStats
+
 	for {
 		select {
 		case <-e.closeCh:
+			e.logOuterFECMetrics(last, true)
 			return
 		case <-ticker.C:
-			s := e.outerDecoder.Stats()
-			logger.Debugf(
-				"outer FEC stats: lost=%d recovered=%d completed=%d abandoned=%d",
-				s.FramesLost, s.FramesRecovered, s.GroupsCompleted, s.GroupsAbandoned,
-			)
+			last = e.logOuterFECMetrics(last, false)
 		}
+	}
+}
+
+func (e *visualEngine) logOuterFECMetrics(
+	last transport.OuterStats,
+	force bool,
+) transport.OuterStats {
+	innerExpired := e.receiver.SweepExpired()
+	outerExpired := e.outerDecoder.SweepExpired()
+	stats := e.outerDecoder.Stats()
+
+	logMetricValue(force, "visual/reassembly_expired", innerExpired, 0)
+	logMetricValue(force, "visual/outer_groups_expired", outerExpired, 0)
+	logMetricValue(force, "visual/frames_lost", stats.FramesLost, last.FramesLost)
+	logMetricValue(force, "visual/fragments_recovered", stats.FramesRecovered, last.FramesRecovered)
+	logMetricValue(force, "visual/groups_completed", stats.GroupsCompleted, last.GroupsCompleted)
+	logMetricValue(force, "visual/groups_abandoned", stats.GroupsAbandoned, last.GroupsAbandoned)
+
+	return stats
+}
+
+func logMetricValue[T comparable](force bool, name string, current, last T) {
+	if force || current != last {
+		logger.Debugf("%s=%v", name, current)
 	}
 }
 
@@ -770,8 +819,75 @@ func (e *visualEngine) readOneFrame(reader visualFrameReader) error {
 	if frame == nil {
 		return errNoVisualFrame
 	}
+	frame = e.restoreLAV(frame)
+	e.dumpInboundFrame(frame)
 	if err := e.acceptDecodedFrame(frame); err != nil {
 		return err
 	}
 	return nil
+}
+
+func newVisualFrameDumper(dir string, every uint64) *visualFrameDumper {
+	if every == 0 {
+		every = 30
+	}
+	return &visualFrameDumper{dir: dir, every: every}
+}
+
+func (d *visualFrameDumper) dump(prefix string, counter *atomic.Uint64, frame *image.YCbCr) {
+	if d == nil || frame == nil {
+		return
+	}
+
+	seq := counter.Add(1)
+	if (seq-1)%d.every != 0 {
+		return
+	}
+
+		if err := os.MkdirAll(d.dir, 0o750); err != nil {
+			logger.Debugf("visual dump mkdir failed: %v", err)
+			return
+		}
+
+		path := filepath.Join(d.dir, fmt.Sprintf("%s-%06d.png", prefix, seq))
+		// #nosec G304 -- dump path is explicitly configured by the local operator.
+		file, err := os.Create(path)
+	if err != nil {
+		logger.Debugf("visual dump create failed: %v", err)
+		return
+	}
+	defer func() {
+		_ = file.Close()
+	}()
+
+	if err := png.Encode(file, frame); err != nil {
+		logger.Debugf("visual dump encode failed: %v", err)
+		return
+	}
+}
+
+func (e *visualEngine) dumpOutboundFrame(frame *image.YCbCr) {
+	if e.frameDumper != nil {
+		e.frameDumper.dump("out", &e.frameDumper.outbound, frame)
+	}
+}
+
+func (e *visualEngine) dumpInboundFrame(frame *image.YCbCr) {
+	if e.frameDumper != nil {
+		e.frameDumper.dump("in", &e.frameDumper.inbound, frame)
+	}
+}
+
+func (e *visualEngine) applyLAV(frame *image.YCbCr) *image.YCbCr {
+	if e.lavCarrier == nil || frame == nil {
+		return frame
+	}
+	return lav.Modulate(e.lavCarrier, frame)
+}
+
+func (e *visualEngine) restoreLAV(frame *image.YCbCr) *image.YCbCr {
+	if e.lavCarrier == nil || frame == nil {
+		return frame
+	}
+	return lav.Demodulate(e.lavCarrier, frame)
 }

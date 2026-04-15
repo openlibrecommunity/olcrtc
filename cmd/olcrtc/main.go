@@ -18,6 +18,7 @@ import (
 	"github.com/openlibrecommunity/olcrtc/internal/names"
 	"github.com/openlibrecommunity/olcrtc/internal/provider"
 	"github.com/openlibrecommunity/olcrtc/internal/provider/jazz"
+	"github.com/openlibrecommunity/olcrtc/internal/provider/jazzvisual"
 	"github.com/openlibrecommunity/olcrtc/internal/provider/telemost"
 	"github.com/openlibrecommunity/olcrtc/internal/server"
 )
@@ -30,6 +31,8 @@ type config struct {
 	socksHost      string
 	keyHex         string
 	debug          bool
+	visualDumpDir  string
+	visualBackground string
 	dataDir        string
 	dnsServer      string
 	socksProxyAddr string
@@ -39,7 +42,7 @@ type config struct {
 var (
 	errRoomIDRequired      = errors.New("room ID required")
 	errModeRequired        = errors.New("specify -mode srv or -mode cnc")
-	errProviderRequired    = errors.New("provider required (use -provider telemost or -provider jazz)")
+	errProviderRequired    = errors.New("provider required (use -provider telemost, jazz, or jazz-visual)")
 	errUnsupportedProvider = errors.New("unsupported provider")
 )
 
@@ -52,9 +55,12 @@ func main() {
 
 func run() error {
 	provider.Register("jazz", jazz.New)
+	provider.Register("jazz-visual", jazzvisual.New)
 	provider.Register("telemost", telemost.New)
 
 	cfg := parseFlags()
+	jazz.SetVisualDumpDir(cfg.visualDumpDir)
+	jazz.SetVisualBackgroundPath(cfg.visualBackground)
 	configureLogging(cfg.debug)
 
 	if err := validateConfig(cfg); err != nil {
@@ -94,11 +100,18 @@ func parseFlags() config {
 
 	flag.StringVar(&cfg.mode, "mode", "", "Mode: srv or cnc")
 	flag.StringVar(&cfg.roomID, "id", "", "Room ID")
-	flag.StringVar(&cfg.provider, "provider", "", "Provider: telemost or jazz (required)")
+	flag.StringVar(&cfg.provider, "provider", "", "Provider: telemost, jazz, or jazz-visual (required)")
 	flag.IntVar(&cfg.socksPort, "socks-port", 1080, "SOCKS5 port (client only)")
 	flag.StringVar(&cfg.socksHost, "socks-host", "127.0.0.1", "SOCKS5 listen host (client only)")
 	flag.StringVar(&cfg.keyHex, "key", "", "Shared encryption key (hex)")
 	flag.BoolVar(&cfg.debug, "debug", false, "Enable verbose logging")
+	flag.StringVar(&cfg.visualDumpDir, "visual-dump", "", "Dump every 30th visual frame as PNG into this directory")
+	flag.StringVar(
+		&cfg.visualBackground,
+		"visual-background",
+		"",
+		"Path to a static 640x480 I420 .yuv background carrier for LAV mode",
+	)
 	flag.StringVar(&cfg.dataDir, "data", "data", "Path to data directory")
 	flag.StringVar(&cfg.dnsServer, "dns", "1.1.1.1:53", "DNS server (default: Cloudflare 1.1.1.1)")
 	flag.StringVar(&cfg.socksProxyAddr, "socks-proxy", "", "SOCKS5 proxy address (server only)")
@@ -197,7 +210,7 @@ func buildRoomURL(providerName, roomID string) string {
 	switch providerName {
 	case "telemost":
 		return "https://telemost.yandex.ru/j/" + roomID
-	case "jazz":
+	case "jazz", "jazz-visual":
 		if roomID == "" {
 			return "any"
 		}
