@@ -9,8 +9,6 @@ services:
       - .env.server
     environment:
       OLCRTC_PROVIDER: "${OLCRTC_PROVIDER:-jazz-visual}"
-      OLCRTC_ROOM_ID: "${OLCRTC_ROOM_ID:-}"
-      OLCRTC_KEY: "${OLCRTC_KEY:-}"
       OLCRTC_DNS: "${OLCRTC_DNS:-1.1.1.1:53}"
       OLCRTC_DUO: "${OLCRTC_DUO:-false}"
       OLCRTC_DEBUG: "${OLCRTC_DEBUG:-false}"
