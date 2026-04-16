@@ -8,7 +8,7 @@ CONTAINER_NAME="olcrtc-server"
 IMAGE_NAME="docker.io/library/golang:1.26-alpine"
 REPO_URL="https://github.com/openlibrecommunity/olcrtc.git"
 WORK_DIR="/tmp/olcrtc-deploy"
-BRANCH="main"
+BRANCH="master"
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -114,7 +114,7 @@ if [[ "$USE_PROXY" =~ ^[Yy]$ ]]; then
     SOCKS_PROXY_PORT=${PROXY_PORT_INPUT:-1080}
 
     echo "[*] Will use SOCKS5 proxy: $SOCKS_PROXY_ADDR:$SOCKS_PROXY_PORT"
-    EXTRA_ARGS+=(-socks-proxy "$SOCKS_PROXY_ADDR" -socks-proxy-port "$SOCKS_PROXY_PORT")
+    EXTRA_ARGS+=(-H "$SOCKS_PROXY_ADDR" -P "$SOCKS_PROXY_PORT")
 fi
 
 echo ""
@@ -169,7 +169,7 @@ podman run -d \
     -v $WORK_DIR:/app:Z \
     -w /app \
     $IMAGE_NAME \
-    ./olcrtc -mode srv -provider "$PROVIDER" -id "$ROOM_ID" -key "$KEY" "${EXTRA_ARGS[@]}"
+    ./olcrtc -m srv -p "$PROVIDER" -i "$ROOM_ID" -k "$KEY" "${EXTRA_ARGS[@]}"
 
 sleep 3
 
@@ -211,5 +211,5 @@ echo "Stop server:"
 echo "  podman stop $CONTAINER_NAME"
 echo ""
 echo "Client command:"
-echo "  ./olcrtc -mode cnc -provider \"$PROVIDER\" -id \"$ACTUAL_ROOM_ID\" -key \"$KEY\" -socks-port 1080"
+echo "  ./olcrtc -m cnc -p \"$PROVIDER\" -i \"$ACTUAL_ROOM_ID\" -k \"$KEY\" -P 1080"
 echo ""

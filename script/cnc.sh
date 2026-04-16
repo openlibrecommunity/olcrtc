@@ -12,7 +12,7 @@ WORK_DIR="/tmp/olcrtc-client"
 
 SOCKS_IP="127.0.0.1"
 SOCKS_PORT="8808"
-BRANCH="main"
+BRANCH="master"
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -148,7 +148,7 @@ podman run -d \
     -v $WORK_DIR:/app:Z \
     -w /app \
     $IMAGE_NAME \
-    ./olcrtc -mode cnc -provider "$PROVIDER" -id "$ROOM_ID" -key "$KEY" -socks-port $SOCKS_PORT -socks-host 0.0.0.0
+    ./olcrtc -m cnc -p "$PROVIDER" -i "$ROOM_ID" -k "$KEY" -P $SOCKS_PORT -H $SOCKS_IP
 
 sleep 2
 

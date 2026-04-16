@@ -130,7 +130,7 @@ docker run -d \
     -v $WORK_DIR:/app \
     -w /app \
     $IMAGE_NAME \
-    ./olcrtc -mode cnc -provider "$PROVIDER" -id "$ROOM_ID" -key "$KEY" -socks-port $SOCKS_PORT -socks-host 0.0.0.0
+    ./olcrtc -m cnc -p "$PROVIDER" -i "$ROOM_ID" -k "$KEY" -P $SOCKS_PORT -H $SOCKS_IP
 
 sleep 2
 
