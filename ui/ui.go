@@ -105,11 +105,11 @@ func (p *Program) buildRunString(conferenceId, roomPassword, encryptionKey, sock
 
 	switch p.Config.Os {
 	case "windows":
-		p.RunString = fmt.Sprintf("olcrtc.exe -mode cnc -provider %s -id \"%s\" -key \"%s\" -socks-port %s -dns %s", provider, finalRoomId, encryptionKey, socksPort, dns)
+		p.RunString = fmt.Sprintf("olcrtc.exe -m cnc -p %s -i \"%s\" -k \"%s\" -P %s -n %s", provider, finalRoomId, encryptionKey, socksPort, dns)
 	case "linux", "darwin":
-		p.RunString = fmt.Sprintf("./olcrtc -mode cnc -provider %s -id \"%s\" -key \"%s\" -socks-port %s -dns %s", provider, finalRoomId, encryptionKey, socksPort, dns)
+		p.RunString = fmt.Sprintf("./olcrtc -m cnc -p %s -i \"%s\" -k \"%s\" -P %s -n %s", provider, finalRoomId, encryptionKey, socksPort, dns)
 	default:
-		p.RunString = fmt.Sprintf("olcrtc -mode cnc -provider %s -id \"%s\" -key \"%s\" -socks-port %s -dns %s", provider, finalRoomId, encryptionKey, socksPort, dns)
+		p.RunString = fmt.Sprintf("olcrtc -m cnc -p %s -i \"%s\" -k \"%s\" -P %s -n %s", provider, finalRoomId, encryptionKey, socksPort, dns)
 	}
 	log("Generated command: %s", p.RunString)
 }
