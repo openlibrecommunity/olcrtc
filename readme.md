@@ -80,14 +80,20 @@ mage clean
 ./build/olcrtc-ui
 
 
-# or native ( no podman ) cli linux
+# or native ( no podman ) cli linux x86
 GOOS=linux GOARCH=amd64 go build ./cmd/olcrtc
+
+# or native ( no podman ) cli linux arm
+GOOS=linux GOARCH=arm64 go build ./cmd/olcrtc
 
 # or native ( no podman ) cli android
 GOOS=android GOARCH=arm64 go build -ldflags="-checklinkname=0" -o build/olcrtc ./cmd/olcrtc
 
-# or native ( no podman ) cli windows
+# or native ( no podman ) cli windows x86
 GOOS=windows GOARCH=amd64 go build ./cmd/olcrtc
+
+# or native ( no podman ) cli windows arm
+GOOS=windows GOARCH=arm64 go build ./cmd/olcrtc
 
 # or native ( no podman ) ui linux
 cd ui && go build -o ../build/olcrtc-ui .
