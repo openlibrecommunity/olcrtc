@@ -14,3 +14,4 @@ opencv-python>=4.8.0
 pyzbar>=0.1.9
 cryptography>=41.0.0
 imageio[ffmpeg]>=2.31.0
+livekit
