@@ -3,6 +3,7 @@ package wbstream
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"sync"
@@ -16,6 +17,11 @@ const (
 	wsURL = "wss://wbstream01-el.wb.ru:7880"
 )
 
+var (
+	errPeerClosed    = errors.New("peer closed")
+	errSendQueueFull = errors.New("send queue full")
+)
+
 // Peer represents a WB Stream WebRTC connection using LiveKit.
 type Peer struct {
 	roomURL         string
@@ -27,20 +33,20 @@ type Peer struct {
 	onEnded         func(string)
 	sendQueue       chan []byte
 	closed          atomic.Bool
-	ctx             context.Context
+	done            chan struct{}
 	cancel          context.CancelFunc
 	wg              sync.WaitGroup
 }
 
 // NewPeer creates a new WB Stream provider peer.
 func NewPeer(ctx context.Context, roomURL, name string, onData func([]byte)) (*Peer, error) {
-	childCtx, cancel := context.WithCancel(ctx)
+	_, cancel := context.WithCancel(ctx)
 	return &Peer{
 		roomURL:   roomURL,
 		name:      name,
 		onData:    onData,
 		sendQueue: make(chan []byte, 5000),
-		ctx:       childCtx,
+		done:      make(chan struct{}),
 		cancel:    cancel,
 	}, nil
 }
@@ -54,7 +60,7 @@ func (p *Peer) Connect(ctx context.Context) error {
 
 	roomCB := &lksdk.RoomCallback{
 		ParticipantCallback: lksdk.ParticipantCallback{
-			OnDataReceived: func(data []byte, params lksdk.DataReceiveParams) {
+			OnDataReceived: func(data []byte, _ lksdk.DataReceiveParams) {
 				if p.onData != nil {
 					p.onData(data)
 				}
@@ -80,14 +86,14 @@ func (p *Peer) Connect(ctx context.Context) error {
 }
 
 func (p *Peer) getRoomToken(ctx context.Context) (string, error) {
-	accessToken, err := RegisterGuest(ctx, p.name)
+	accessToken, err := registerGuest(ctx, p.name)
 	if err != nil {
 		return "", fmt.Errorf("register guest: %w", err)
 	}
 
 	roomID := p.roomURL
 	if roomID == "" || roomID == "any" {
-		roomID, err = CreateRoom(ctx, accessToken)
+		roomID, err = createRoom(ctx, accessToken)
 		if err != nil {
 			return "", fmt.Errorf("create room: %w", err)
 		}
@@ -95,11 +101,11 @@ func (p *Peer) getRoomToken(ctx context.Context) (string, error) {
 		log.Printf("To connect client use: -id %s", roomID)
 	}
 
-	if err := JoinRoom(ctx, accessToken, roomID); err != nil {
+	if err := joinRoom(ctx, accessToken, roomID); err != nil {
 		return "", fmt.Errorf("join room: %w", err)
 	}
 
-	token, err := GetToken(ctx, accessToken, roomID, p.name)
+	token, err := getToken(ctx, accessToken, roomID, p.name)
 	if err != nil {
 		return "", fmt.Errorf("get token: %w", err)
 	}
@@ -111,13 +117,17 @@ func (p *Peer) processSendQueue() {
 	defer p.wg.Done()
 	for {
 		select {
-		case <-p.ctx.Done():
+		case <-p.done:
 			return
 		case data, ok := <-p.sendQueue:
 			if !ok {
 				return
 			}
-			if err := p.room.LocalParticipant.PublishDataPacket(lksdk.UserData(data), lksdk.WithDataPublishTopic("olcrtc"), lksdk.WithDataPublishReliable(true)); err != nil {
+			if err := p.room.LocalParticipant.PublishDataPacket(
+				lksdk.UserData(data),
+				lksdk.WithDataPublishTopic("olcrtc"),
+				lksdk.WithDataPublishReliable(true),
+			); err != nil {
 				log.Printf("WB Stream publish data error: %v", err)
 			}
 		}
@@ -127,13 +137,13 @@ func (p *Peer) processSendQueue() {
 // Send transmits data to the room.
 func (p *Peer) Send(data []byte) error {
 	if p.closed.Load() {
-		return fmt.Errorf("peer closed")
+		return errPeerClosed
 	}
 	select {
 	case p.sendQueue <- data:
 		return nil
 	default:
-		return fmt.Errorf("send queue full")
+		return errSendQueueFull
 	}
 }
 
@@ -141,6 +151,7 @@ func (p *Peer) Send(data []byte) error {
 func (p *Peer) Close() error {
 	if p.closed.CompareAndSwap(false, true) {
 		p.cancel()
+		close(p.done)
 		if p.room != nil {
 			p.room.Disconnect()
 		}
@@ -166,7 +177,7 @@ func (p *Peer) SetEndedCallback(cb func(string)) {
 }
 
 // WatchConnection is a stub for WB Stream.
-func (p *Peer) WatchConnection(ctx context.Context) {}
+func (p *Peer) WatchConnection(_ context.Context) {}
 
 // CanSend checks if the provider is ready to transmit data.
 func (p *Peer) CanSend() bool {
