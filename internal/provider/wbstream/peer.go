@@ -193,3 +193,11 @@ func (p *Peer) GetSendQueue() chan []byte {
 func (p *Peer) GetBufferedAmount() uint64 {
 	return 0
 }
+
+// AddVideoTrack adds a video track to the publisher peer connection.
+func (p *Peer) AddVideoTrack(track *webrtc.TrackLocalStaticRTP) (*webrtc.RTPSender, error) {
+	if p.pcPub == nil {
+		return nil, fmt.Errorf("publisher peer connection not initialized")
+	}
+	return p.pcPub.AddTrack(track)
+}

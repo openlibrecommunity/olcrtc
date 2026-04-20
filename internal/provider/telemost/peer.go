@@ -1160,3 +1160,11 @@ func (p *Peer) CanSend() bool {
 	}
 	return len(p.sendQueue) < 4000
 }
+
+// AddVideoTrack adds a video track to the publisher peer connection.
+func (p *Peer) AddVideoTrack(track *webrtc.TrackLocalStaticRTP) (*webrtc.RTPSender, error) {
+	if p.pcPub == nil {
+		return nil, fmt.Errorf("publisher peer connection not initialized")
+	}
+	return p.pcPub.AddTrack(track)
+}

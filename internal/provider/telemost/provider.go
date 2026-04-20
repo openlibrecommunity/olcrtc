@@ -13,7 +13,7 @@ type telemostProvider struct {
 	peer *Peer
 }
 
-// New creates a new Yandex Telemost provider instance.
+// New creates a new Telemost provider instance.
 func New(ctx context.Context, cfg provider.Config) (provider.Provider, error) {
 	peer, err := NewPeer(ctx, cfg.RoomURL, cfg.Name, cfg.OnData)
 	if err != nil {
@@ -72,3 +72,9 @@ func (t *telemostProvider) GetSendQueue() chan []byte {
 func (t *telemostProvider) GetBufferedAmount() uint64 {
 	return t.peer.GetBufferedAmount()
 }
+
+// AddVideoTrack adds a video track to the telemost connection.
+func (t *telemostProvider) AddVideoTrack(track *webrtc.TrackLocalStaticRTP) (*webrtc.RTPSender, error) {
+	return t.peer.AddVideoTrack(track)
+}
+

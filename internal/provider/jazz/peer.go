@@ -533,6 +533,14 @@ func (p *Peer) Close() error {
 	return nil
 }
 
+// AddVideoTrack adds a video track to the publisher peer connection.
+func (p *Peer) AddVideoTrack(track *webrtc.TrackLocalStaticRTP) (*webrtc.RTPSender, error) {
+	if p.pcPub == nil {
+		return nil, fmt.Errorf("publisher peer connection not initialized")
+	}
+	return p.pcPub.AddTrack(track)
+}
+
 // SetReconnectCallback sets the callback for reconnection events.
 func (p *Peer) SetReconnectCallback(cb func(*webrtc.DataChannel)) {
 	p.onReconnect = cb

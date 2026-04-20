@@ -72,3 +72,8 @@ func (j *jazzProvider) GetSendQueue() chan []byte {
 func (j *jazzProvider) GetBufferedAmount() uint64 {
 	return j.peer.GetBufferedAmount()
 }
+
+// AddVideoTrack adds a video track to the jazz connection.
+func (j *jazzProvider) AddVideoTrack(track *webrtc.TrackLocalStaticRTP) (*webrtc.RTPSender, error) {
+	return j.peer.AddVideoTrack(track)
+}
