@@ -205,7 +205,7 @@ func (s *Server) addPeer(
 	}
 
 	peer.SetEndedCallback(func(reason string) {
-		log.Printf("Server peer %d reported conference end: %s", peerID, reason)
+		logger.Infof("Server peer %d reported conference end: %s", peerID, reason)
 		cancel()
 	})
 	s.peers = append(s.peers, peer)
@@ -214,11 +214,11 @@ func (s *Server) addPeer(
 		s.handlePeerReconnect(peerID, dc)
 	})
 
-	log.Printf("Connecting peer %d to %s...", peerID, providerName)
+	logger.Infof("Connecting peer %d to %s...", peerID, providerName)
 	if err := peer.Connect(ctx); err != nil {
 		return fmt.Errorf("failed to connect peer: %w", err)
 	}
-	log.Printf("Peer %d connected", peerID)
+	logger.Infof("Peer %d connected", peerID)
 
 	s.wg.Add(1)
 	go func() {
@@ -229,7 +229,7 @@ func (s *Server) addPeer(
 }
 
 func (s *Server) handlePeerReconnect(peerID int, dc *webrtc.DataChannel) {
-	log.Printf("peer %d reconnect event: dc=%v", peerID, dc != nil)
+	logger.Infof("peer %d reconnect event: dc=%v", peerID, dc != nil)
 
 	s.connMu.Lock()
 	for sid, conn := range s.connections {
@@ -303,7 +303,7 @@ func (s *Server) onData(data []byte) {
 	}
 
 	if control, ok := mux.ParseControlFrame(plaintext); ok && control.Type == mux.ControlResetClient {
-		log.Printf("Received reset signal from client (clientID=%d)", control.ClientID)
+		logger.Infof("Received reset signal from client (clientID=%d)", control.ClientID)
 		s.closeClientConnections(control.ClientID)
 	}
 
@@ -350,7 +350,7 @@ func (s *Server) shutdown() {
 	s.connMu.Unlock()
 
 	for i, peer := range s.peers {
-		log.Printf("closing peer %d", i)
+		logger.Infof("closing peer %d", i)
 		_ = peer.Close()
 	}
 }
@@ -374,7 +374,7 @@ func (s *Server) processMuxStreams(ctx context.Context) {
 
 		var req ConnectRequest
 		if err := json.Unmarshal(data, &req); err == nil && req.Cmd == "connect" {
-			log.Printf("sid=%d connect %s:%d", sid, req.Addr, req.Port)
+			logger.Infof("sid=%d connect %s:%d", sid, req.Addr, req.Port)
 			s.closeStreamConnection(sid)
 			go s.handleConnect(ctx, sid, req)
 		}
@@ -437,7 +437,7 @@ func (s *Server) handleConnect(ctx context.Context, sid uint16, req ConnectReque
 	dialElapsed := time.Since(dialStart)
 
 	if err != nil {
-		log.Printf("sid=%d dial %s failed (%v): %v", sid, addr, dialElapsed, err)
+		logger.Infof("sid=%d dial %s failed (%v): %v", sid, addr, dialElapsed, err)
 		_ = s.mux.CloseStream(sid)
 		return
 	}
@@ -446,7 +446,7 @@ func (s *Server) handleConnect(ctx context.Context, sid uint16, req ConnectReque
 	s.connections[sid] = conn
 	s.connMu.Unlock()
 
-	log.Printf("sid=%d connected %s in %v", sid, addr, dialElapsed)
+	logger.Infof("sid=%d connected %s in %v", sid, addr, dialElapsed)
 
 	s.activeClients.Add(1)
 	_ = s.mux.SendData(sid, []byte{0x00})
@@ -504,7 +504,7 @@ func (s *Server) pumpToMux(sid uint16, conn net.Conn) {
 		n, err := conn.Read(buf)
 		if err != nil {
 			if totalSent > 1024*1024 {
-				log.Printf("sid=%d done total=%dMB", sid, totalSent/(1024*1024))
+				logger.Infof("sid=%d done total=%dMB", sid, totalSent/(1024*1024))
 			}
 			return
 		}
@@ -519,7 +519,7 @@ func (s *Server) pumpToMux(sid uint16, conn net.Conn) {
 
 		totalSent += uint64(n) //nolint:gosec
 		if time.Since(lastLog) > 5*time.Second {
-			log.Printf("sid=%d sent=%dMB", sid, totalSent/(1024*1024))
+			logger.Infof("sid=%d sent=%dMB", sid, totalSent/(1024*1024))
 			lastLog = time.Now()
 		}
 	}
