@@ -129,7 +129,6 @@ async def _create_peer(name: str, room: dict, session: aiohttp.ClientSession, is
                     p_ice_sub.clear()
                     await asyncio.sleep(0.3)
                     
-                    # pub
                     peer["pc_pub"] = RTCPeerConnection(configuration=RTCConfiguration(iceServers=ice_servers, bundlePolicy=RTCBundlePolicy.MAX_BUNDLE))
                     peer["pc_pub"].addTrack(AudioStreamTrack())
                     peer["dc"] = peer["pc_pub"].createDataChannel("_reliable", ordered=True)
