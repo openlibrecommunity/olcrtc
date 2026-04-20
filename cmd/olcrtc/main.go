@@ -19,6 +19,7 @@ import (
 type config struct {
 	mode           string
 	transport      string
+	carrier        string
 	roomID         string
 	provider       string
 	socksPort      int
@@ -83,8 +84,9 @@ func parseFlags() config {
 
 	flag.StringVar(&cfg.mode, "mode", "", "Mode: srv or cnc")
 	flag.StringVar(&cfg.transport, "transport", "datachannel", "Transport: datachannel")
+	flag.StringVar(&cfg.carrier, "carrier", "", "Carrier: telemost, jazz, wb_stream")
 	flag.StringVar(&cfg.roomID, "id", "", "Room ID")
-	flag.StringVar(&cfg.provider, "provider", "", "Provider: telemost or jazz (required)")
+	flag.StringVar(&cfg.provider, "provider", "", "Deprecated alias for -carrier")
 	flag.IntVar(&cfg.socksPort, "socks-port", 1080, "SOCKS5 port (client only)")
 	flag.StringVar(&cfg.socksHost, "socks-host", "127.0.0.1", "SOCKS5 listen host (client only)")
 	flag.StringVar(&cfg.keyHex, "key", "", "Shared encryption key (hex)")
@@ -131,7 +133,7 @@ func toSessionConfig(cfg config) session.Config {
 	return session.Config{
 		Mode:           cfg.mode,
 		Transport:      cfg.transport,
-		Provider:       cfg.provider,
+		Carrier:        firstNonEmpty(cfg.carrier, cfg.provider),
 		RoomID:         cfg.roomID,
 		KeyHex:         cfg.keyHex,
 		SOCKSHost:      cfg.socksHost,
@@ -140,6 +142,15 @@ func toSessionConfig(cfg config) session.Config {
 		SOCKSProxyAddr: cfg.socksProxyAddr,
 		SOCKSProxyPort: cfg.socksProxyPort,
 	}
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func waitForShutdown(errCh <-chan error) error {

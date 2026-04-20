@@ -5,18 +5,18 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/openlibrecommunity/olcrtc/internal/provider"
+	"github.com/openlibrecommunity/olcrtc/internal/carrier"
 	"github.com/openlibrecommunity/olcrtc/internal/transport"
 	"github.com/pion/webrtc/v4"
 )
 
 type providerTransport struct {
-	provider provider.Provider
+	carrier carrier.Carrier
 }
 
 // New creates a datachannel transport backed by a carrier-specific provider.
 func New(ctx context.Context, cfg transport.Config) (transport.Transport, error) {
-	p, err := provider.New(ctx, cfg.Carrier, provider.Config{
+	c, err := carrier.New(ctx, cfg.Carrier, carrier.Config{
 		RoomURL:   cfg.RoomURL,
 		Name:      cfg.Name,
 		OnData:    cfg.OnData,
@@ -28,27 +28,27 @@ func New(ctx context.Context, cfg transport.Config) (transport.Transport, error)
 		return nil, fmt.Errorf("create provider transport: %w", err)
 	}
 
-	return &providerTransport{provider: p}, nil
+	return &providerTransport{carrier: c}, nil
 }
 
 // Connect starts the transport connection.
 func (p *providerTransport) Connect(ctx context.Context) error {
-	return p.provider.Connect(ctx)
+	return p.carrier.Connect(ctx)
 }
 
 // Send transmits data through the transport.
 func (p *providerTransport) Send(data []byte) error {
-	return p.provider.Send(data)
+	return p.carrier.Send(data)
 }
 
 // Close terminates the transport.
 func (p *providerTransport) Close() error {
-	return p.provider.Close()
+	return p.carrier.Close()
 }
 
 // SetReconnectCallback registers reconnect handling.
 func (p *providerTransport) SetReconnectCallback(cb func()) {
-	p.provider.SetReconnectCallback(func(_ *webrtc.DataChannel) {
+	p.carrier.SetReconnectCallback(func(_ *webrtc.DataChannel) {
 		if cb != nil {
 			cb()
 		}
@@ -57,20 +57,20 @@ func (p *providerTransport) SetReconnectCallback(cb func()) {
 
 // SetShouldReconnect configures reconnect policy.
 func (p *providerTransport) SetShouldReconnect(fn func() bool) {
-	p.provider.SetShouldReconnect(fn)
+	p.carrier.SetShouldReconnect(fn)
 }
 
 // SetEndedCallback registers end-of-session handling.
 func (p *providerTransport) SetEndedCallback(cb func(string)) {
-	p.provider.SetEndedCallback(cb)
+	p.carrier.SetEndedCallback(cb)
 }
 
 // WatchConnection monitors connection lifecycle.
 func (p *providerTransport) WatchConnection(ctx context.Context) {
-	p.provider.WatchConnection(ctx)
+	p.carrier.WatchConnection(ctx)
 }
 
 // CanSend reports whether transport is ready for sending.
 func (p *providerTransport) CanSend() bool {
-	return p.provider.CanSend()
+	return p.carrier.CanSend()
 }
