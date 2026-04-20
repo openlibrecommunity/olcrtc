@@ -16,3 +16,4 @@ olcrtc
 build/
 dist/
 coverage.out
+GEMINI.md
