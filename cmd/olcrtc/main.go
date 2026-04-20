@@ -20,10 +20,13 @@ import (
 	"github.com/openlibrecommunity/olcrtc/internal/provider/telemost"
 	"github.com/openlibrecommunity/olcrtc/internal/provider/wbstream"
 	"github.com/openlibrecommunity/olcrtc/internal/server"
+	"github.com/openlibrecommunity/olcrtc/internal/transport"
+	"github.com/openlibrecommunity/olcrtc/internal/transport/datachannel"
 )
 
 type config struct {
 	mode           string
+	transport      string
 	roomID         string
 	provider       string
 	socksPort      int
@@ -37,10 +40,11 @@ type config struct {
 }
 
 var (
-	errRoomIDRequired      = errors.New("room ID required")
-	errModeRequired        = errors.New("specify -mode srv or -mode cnc")
-	errProviderRequired    = errors.New("provider required (use -provider telemost or -provider jazz)")
-	errUnsupportedProvider = errors.New("unsupported provider")
+	errRoomIDRequired       = errors.New("room ID required")
+	errModeRequired         = errors.New("specify -mode srv or -mode cnc")
+	errProviderRequired     = errors.New("provider required (use -provider telemost or -provider jazz)")
+	errUnsupportedProvider  = errors.New("unsupported provider")
+	errUnsupportedTransport = errors.New("unsupported transport")
 )
 
 func main() {
@@ -54,6 +58,7 @@ func run() error {
 	provider.Register("jazz", jazz.New)
 	provider.Register("telemost", telemost.New)
 	provider.Register("wb_stream", wbstream.New)
+	transport.Register("datachannel", datachannel.New)
 
 	cfg := parseFlags()
 	configureLogging(cfg.debug)
@@ -94,6 +99,7 @@ func parseFlags() config {
 	cfg := config{}
 
 	flag.StringVar(&cfg.mode, "mode", "", "Mode: srv or cnc")
+	flag.StringVar(&cfg.transport, "transport", "datachannel", "Transport: datachannel")
 	flag.StringVar(&cfg.roomID, "id", "", "Room ID")
 	flag.StringVar(&cfg.provider, "provider", "", "Provider: telemost or jazz (required)")
 	flag.IntVar(&cfg.socksPort, "socks-port", 1080, "SOCKS5 port (client only)")
@@ -116,11 +122,20 @@ func configureLogging(debug bool) {
 }
 
 func validateConfig(cfg config) error {
-	available := provider.Available()
+	availableProviders := provider.Available()
 	validProvider := false
-	for _, p := range available {
+	for _, p := range availableProviders {
 		if cfg.provider == p {
 			validProvider = true
+			break
+		}
+	}
+
+	availableTransports := transport.Available()
+	validTransport := false
+	for _, t := range availableTransports {
+		if cfg.transport == t {
+			validTransport = true
 			break
 		}
 	}
@@ -129,7 +144,9 @@ func validateConfig(cfg config) error {
 	case cfg.provider == "":
 		return errProviderRequired
 	case !validProvider:
-		return fmt.Errorf("%w: %s (available: %v)", errUnsupportedProvider, cfg.provider, available)
+		return fmt.Errorf("%w: %s (available: %v)", errUnsupportedProvider, cfg.provider, availableProviders)
+	case !validTransport:
+		return fmt.Errorf("%w: %s (available: %v)", errUnsupportedTransport, cfg.transport, availableTransports)
 	case cfg.roomID == "" && cfg.provider != "jazz":
 		return errRoomIDRequired
 	case cfg.mode != "srv" && cfg.mode != "cnc":
@@ -169,6 +186,7 @@ func runMode(ctx context.Context, cfg config, errCh chan<- error) {
 	case "srv":
 		errCh <- server.Run(
 			ctx,
+			cfg.transport,
 			cfg.provider,
 			roomURL,
 			cfg.keyHex,
@@ -179,6 +197,7 @@ func runMode(ctx context.Context, cfg config, errCh chan<- error) {
 	case "cnc":
 		errCh <- client.Run(
 			ctx,
+			cfg.transport,
 			cfg.provider,
 			roomURL,
 			cfg.keyHex,

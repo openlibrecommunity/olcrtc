@@ -20,8 +20,7 @@ import (
 	"github.com/openlibrecommunity/olcrtc/internal/logger"
 	"github.com/openlibrecommunity/olcrtc/internal/mux"
 	"github.com/openlibrecommunity/olcrtc/internal/names"
-	"github.com/openlibrecommunity/olcrtc/internal/provider"
-	"github.com/pion/webrtc/v4"
+	"github.com/openlibrecommunity/olcrtc/internal/transport"
 )
 
 var (
@@ -43,7 +42,7 @@ var (
 
 // Server handles incoming WebRTC connections and proxies their traffic.
 type Server struct {
-	peers          []provider.Provider
+	transports     []transport.Transport
 	cipher         *crypto.Cipher
 	mux            *mux.Multiplexer
 	connections    map[uint16]net.Conn
@@ -69,6 +68,7 @@ type ConnectRequest struct {
 // Run starts the server with the specified parameters.
 func Run(
 	ctx context.Context,
+	transportName,
 	providerName,
 	roomURL,
 	keyHex string,
@@ -88,7 +88,7 @@ func Run(
 		cipher:         cipher,
 		connections:    make(map[uint16]net.Conn),
 		streamPumps:    make(map[uint16]net.Conn),
-		peers:          make([]provider.Provider, 0),
+		transports:     make([]transport.Transport, 0),
 		dnsServer:      dnsServer,
 		socksProxyAddr: socksProxyAddr,
 		socksProxyPort: socksProxyPort,
@@ -103,8 +103,8 @@ func Run(
 
 	const peerCount = 1
 	for i := range peerCount {
-		if err := s.addPeer(runCtx, providerName, roomURL, i, cancel); err != nil {
-			return fmt.Errorf("addPeer failed: %w", err)
+		if err := s.addTransport(runCtx, transportName, providerName, roomURL, i, cancel); err != nil {
+			return fmt.Errorf("addTransport failed: %w", err)
 		}
 	}
 
@@ -161,8 +161,8 @@ func (s *Server) setupMux() {
 	s.mux = mux.New(0, func(frame []byte) error {
 		for {
 			canSend := true
-			for _, peer := range s.peers {
-				if !peer.CanSend() {
+			for _, tr := range s.transports {
+				if !tr.CanSend() {
 					canSend = false
 					break
 				}
@@ -177,22 +177,24 @@ func (s *Server) setupMux() {
 		if err != nil {
 			return fmt.Errorf("%w: %w", ErrEncryptFailed, err)
 		}
-		if len(s.peers) == 0 {
+		if len(s.transports) == 0 {
 			return ErrNoPeers
 		}
-		idx := s.peerIdx.Add(1) % uint32(len(s.peers)) //nolint:gosec
-		return s.peers[idx].Send(encrypted)
+		idx := s.peerIdx.Add(1) % uint32(len(s.transports)) //nolint:gosec
+		return s.transports[idx].Send(encrypted)
 	})
 }
 
-func (s *Server) addPeer(
+func (s *Server) addTransport(
 	ctx context.Context,
+	transportName,
 	providerName,
 	roomURL string,
 	peerID int,
 	cancel context.CancelFunc,
 ) error {
-	peer, err := provider.New(ctx, providerName, provider.Config{
+	tr, err := transport.New(ctx, transportName, transport.Config{
+		Carrier:   providerName,
 		RoomURL:   roomURL,
 		Name:      names.Generate(),
 		OnData:    s.onData,
@@ -201,35 +203,35 @@ func (s *Server) addPeer(
 		ProxyPort: s.socksProxyPort,
 	})
 	if err != nil {
-		return fmt.Errorf("failed to create peer: %w", err)
+		return fmt.Errorf("failed to create transport: %w", err)
 	}
 
-	peer.SetEndedCallback(func(reason string) {
-		logger.Infof("Server peer %d reported conference end: %s", peerID, reason)
+	tr.SetEndedCallback(func(reason string) {
+		logger.Infof("Server transport %d reported conference end: %s", peerID, reason)
 		cancel()
 	})
-	s.peers = append(s.peers, peer)
+	s.transports = append(s.transports, tr)
 
-	peer.SetReconnectCallback(func(dc *webrtc.DataChannel) {
-		s.handlePeerReconnect(peerID, dc)
+	tr.SetReconnectCallback(func() {
+		s.handleTransportReconnect(peerID)
 	})
 
-	logger.Infof("Connecting peer %d to %s...", peerID, providerName)
-	if err := peer.Connect(ctx); err != nil {
-		return fmt.Errorf("failed to connect peer: %w", err)
+	logger.Infof("Connecting transport %d via %s/%s...", peerID, transportName, providerName)
+	if err := tr.Connect(ctx); err != nil {
+		return fmt.Errorf("failed to connect transport: %w", err)
 	}
-	logger.Infof("Peer %d connected", peerID)
+	logger.Infof("Transport %d connected", peerID)
 
 	s.wg.Add(1)
 	go func() {
 		defer s.wg.Done()
-		peer.WatchConnection(ctx)
+		tr.WatchConnection(ctx)
 	}()
 	return nil
 }
 
-func (s *Server) handlePeerReconnect(peerID int, dc *webrtc.DataChannel) {
-	logger.Infof("peer %d reconnect event: dc=%v", peerID, dc != nil)
+func (s *Server) handleTransportReconnect(peerID int) {
+	logger.Infof("transport %d reconnect event", peerID)
 
 	s.connMu.Lock()
 	for sid, conn := range s.connections {
@@ -240,20 +242,18 @@ func (s *Server) handlePeerReconnect(peerID int, dc *webrtc.DataChannel) {
 	}
 	s.connMu.Unlock()
 
-	if dc != nil {
-		s.mux.UpdateSendFunc(func(frame []byte) error {
-			encrypted, err := s.cipher.Encrypt(frame)
-			if err != nil {
-				return fmt.Errorf("%w: %w", ErrEncryptFailed, err)
-			}
-			if len(s.peers) == 0 {
-				return ErrNoPeers
-			}
-			idx := s.peerIdx.Add(1) % uint32(len(s.peers)) //nolint:gosec
-			return s.peers[idx].Send(encrypted)
-		})
-		s.mux.Reset()
-	}
+	s.mux.UpdateSendFunc(func(frame []byte) error {
+		encrypted, err := s.cipher.Encrypt(frame)
+		if err != nil {
+			return fmt.Errorf("%w: %w", ErrEncryptFailed, err)
+		}
+		if len(s.transports) == 0 {
+			return ErrNoPeers
+		}
+		idx := s.peerIdx.Add(1) % uint32(len(s.transports)) //nolint:gosec
+		return s.transports[idx].Send(encrypted)
+	})
+	s.mux.Reset()
 }
 
 func (s *Server) socks5Connect(conn net.Conn, targetAddr string, targetPort int) error {
@@ -349,9 +349,9 @@ func (s *Server) shutdown() {
 	}
 	s.connMu.Unlock()
 
-	for i, peer := range s.peers {
-		logger.Infof("closing peer %d", i)
-		_ = peer.Close()
+	for i, tr := range s.transports {
+		logger.Infof("closing transport %d", i)
+		_ = tr.Close()
 	}
 }
 
@@ -561,8 +561,8 @@ func (s *Server) startStreamPump(ctx context.Context, sid uint16, conn net.Conn)
 }
 
 func (s *Server) canSendData() bool {
-	for _, peer := range s.peers {
-		if !peer.CanSend() {
+	for _, tr := range s.transports {
+		if !tr.CanSend() {
 			return false
 		}
 	}
