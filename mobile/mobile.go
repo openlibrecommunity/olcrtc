@@ -123,6 +123,7 @@ func Start(roomID, keyHex string, socksPort int, socksUser, socksPass string) er
 					close(localReady)
 				})
 			},
+			0, 0, 0, "", "",
 		)
 
 		mu.Lock()
