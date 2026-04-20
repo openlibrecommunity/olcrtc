@@ -6,10 +6,12 @@ services:
     container_name: olcrtc-server
     restart: unless-stopped
     environment:
+      OLCRTC_PROVIDER: "${OLCRTC_PROVIDER:?set OLCRTC_PROVIDER (telemost, jazz, wb_stream)}"
       OLCRTC_ROOM_ID: "${OLCRTC_ROOM_ID:?set OLCRTC_ROOM_ID}"
       OLCRTC_KEY: "${OLCRTC_KEY:-}"
       OLCRTC_DNS: "${OLCRTC_DNS:-1.1.1.1:53}"
-      OLCRTC_DUO: "${OLCRTC_DUO:-false}"
+      OLCRTC_SOCKS_PROXY: "${OLCRTC_SOCKS_PROXY:-}"
+      OLCRTC_SOCKS_PROXY_PORT: "${OLCRTC_SOCKS_PROXY_PORT:-1080}"
       OLCRTC_DEBUG: "${OLCRTC_DEBUG:-false}"
     volumes:
       - olcrtc-state:/var/lib/olcrtc

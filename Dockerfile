@@ -29,8 +29,9 @@ RUN apk add --no-cache ca-certificates tzdata && \
     addgroup -S olcrtc && \
     mkdir -p /usr/share/olcrtc /var/lib/olcrtc && \
     adduser -S -D -h /var/lib/olcrtc -s /sbin/nologin -G olcrtc olcrtc && \
-    chown -R olcrtc:olcrtc /var/lib/olcrtc
+    chown -R olcrtc:olcrtc /usr/share/olcrtc /var/lib/olcrtc
 
+COPY --chown=olcrtc:olcrtc data /usr/share/olcrtc
 COPY --from=build /out/olcrtc /usr/local/bin/olcrtc
 COPY script/docker/olcrtc-entrypoint.sh /usr/local/bin/olcrtc-entrypoint
 COPY script/docker/olcrtc-healthcheck.sh /usr/local/bin/olcrtc-healthcheck
@@ -41,7 +42,7 @@ USER olcrtc:olcrtc
 WORKDIR /var/lib/olcrtc
 
 ENV OLCRTC_MODE=srv \
-    OLCRTC_PROVIDER=telemost \
+    OLCRTC_PROVIDER= \
     OLCRTC_DATA_DIR=/usr/share/olcrtc \
     OLCRTC_DNS=1.1.1.1:53 \
     OLCRTC_KEY_FILE=/var/lib/olcrtc/key.hex
