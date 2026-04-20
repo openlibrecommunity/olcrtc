@@ -73,11 +73,6 @@ mage clean
 ./script/cnc.bat
 
 
-# also there's a client UI version (currently in beta)
-./script/ui.sh
-
-# and then
-./build/olcrtc-ui
 
 
 ```
