@@ -244,3 +244,5 @@ go.work.sum
 # .idea/
 # .vscode/
 build/
+GEMINI.md
+code/package-lock.json
