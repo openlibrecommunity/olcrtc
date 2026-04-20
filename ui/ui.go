@@ -2,6 +2,8 @@ package main
 
 import (
 	"fmt"
+	"os"
+	"runtime"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/container"
@@ -92,6 +94,35 @@ func (p *Program) settingsWindow() {
 	dialog.ShowCustom("Settings", "Close", content, p.ParentWindow)
 }
 
+func (p *Program) getBinaryName() string {
+	ext := ""
+	if p.Config.Os == "windows" {
+		ext = ".exe"
+	}
+
+	simpleName := "olcrtc" + ext
+	archName := fmt.Sprintf("olcrtc-%s-%s%s", p.Config.Os, runtime.GOARCH, ext)
+
+	if _, err := os.Stat(simpleName); err == nil {
+		if p.Config.Os != "windows" {
+			return "./" + simpleName
+		}
+		return simpleName
+	}
+
+	if _, err := os.Stat(archName); err == nil {
+		if p.Config.Os != "windows" {
+			return "./" + archName
+		}
+		return archName
+	}
+
+	if p.Config.Os != "windows" {
+		return "./" + simpleName
+	}
+	return simpleName
+}
+
 func (p *Program) buildRunString(conferenceId, roomPassword, encryptionKey, socksPort, dns, provider string) {
 	log("Building run string...")
 	log("  Provider: %s", provider)
@@ -106,14 +137,8 @@ func (p *Program) buildRunString(conferenceId, roomPassword, encryptionKey, sock
 		finalRoomId = conferenceId + ":" + roomPassword
 	}
 
-	switch p.Config.Os {
-	case "windows":
-		p.RunString = fmt.Sprintf("olcrtc.exe -mode cnc -provider %s -id \"%s\" -key \"%s\" -socks-port %s -dns %s", provider, finalRoomId, encryptionKey, socksPort, dns)
-	case "linux", "darwin":
-		p.RunString = fmt.Sprintf("./olcrtc -mode cnc -provider %s -id \"%s\" -key \"%s\" -socks-port %s -dns %s", provider, finalRoomId, encryptionKey, socksPort, dns)
-	default:
-		p.RunString = fmt.Sprintf("olcrtc -mode cnc -provider %s -id \"%s\" -key \"%s\" -socks-port %s -dns %s", provider, finalRoomId, encryptionKey, socksPort, dns)
-	}
+	binName := p.getBinaryName()
+	p.RunString = fmt.Sprintf("%s -mode cnc -provider %s -id \"%s\" -key \"%s\" -socks-port %s -dns %s", binName, provider, finalRoomId, encryptionKey, socksPort, dns)
 	log("Generated command: %s", p.RunString)
 }
 
