@@ -11,15 +11,17 @@ import (
 )
 
 var (
-	ErrInvalidKeySize     = errors.New("invalid key size")     //nolint:revive
-	ErrCiphertextTooShort = errors.New("ciphertext too short") //nolint:revive
+	ErrInvalidKeySize     = errors.New("invalid key size")
+	ErrCiphertextTooShort = errors.New("ciphertext too short")
 )
 
-type Cipher struct { //nolint:revive
+// Cipher provides AEAD encryption and decryption using ChaCha20-Poly1305.
+type Cipher struct {
 	aead cipher.AEAD
 }
 
-func NewCipher(keyStr string) (*Cipher, error) { //nolint:revive
+// NewCipher creates a new Cipher instance with the given 32-byte key.
+func NewCipher(keyStr string) (*Cipher, error) {
 	key := []byte(keyStr)
 	if len(key) != chacha20poly1305.KeySize {
 		return nil, ErrInvalidKeySize
@@ -33,23 +35,26 @@ func NewCipher(keyStr string) (*Cipher, error) { //nolint:revive
 	return &Cipher{aead: aead}, nil
 }
 
-func (c *Cipher) Encrypt(plaintext []byte) ([]byte, error) { //nolint:revive
+// Encrypt encrypts plaintext and prepends a random nonce.
+func (c *Cipher) Encrypt(plaintext []byte) ([]byte, error) {
 	nonce := make([]byte, c.aead.NonceSize())
 	if _, err := rand.Read(nonce); err != nil {
-		return nil, fmt.Errorf("failed to read nonce: %w", err)
+		return nil, fmt.Errorf("failed to generate nonce: %w", err)
 	}
 
-	ciphertext := c.aead.Seal(nonce, nonce, plaintext, nil)
-	return ciphertext, nil
+	// Seal appends the ciphertext to the nonce
+	return c.aead.Seal(nonce, nonce, plaintext, nil), nil
 }
 
-func (c *Cipher) Decrypt(ciphertext []byte) ([]byte, error) { //nolint:revive
-	if len(ciphertext) < c.aead.NonceSize() {
+// Decrypt decrypts ciphertext that has a nonce prepended.
+func (c *Cipher) Decrypt(ciphertext []byte) ([]byte, error) {
+	nonceSize := c.aead.NonceSize()
+	if len(ciphertext) < nonceSize {
 		return nil, ErrCiphertextTooShort
 	}
 
-	nonce := ciphertext[:c.aead.NonceSize()]
-	encrypted := ciphertext[c.aead.NonceSize():]
+	nonce := ciphertext[:nonceSize]
+	encrypted := ciphertext[nonceSize:]
 
 	res, err := c.aead.Open(nil, nonce, encrypted, nil)
 	if err != nil {
