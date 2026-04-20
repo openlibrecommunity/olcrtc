@@ -13,11 +13,14 @@ var (
 	ErrCarrierNotFound = errors.New("carrier not found")
 	// ErrByteStreamUnsupported is returned when a carrier cannot provide a byte stream.
 	ErrByteStreamUnsupported = errors.New("carrier does not support byte stream")
+	// ErrVideoTrackUnsupported is returned when a carrier cannot publish video tracks.
+	ErrVideoTrackUnsupported = errors.New("carrier does not support video tracks")
 )
 
 // Capabilities describes the transport primitives a carrier can expose.
 type Capabilities struct {
 	ByteStream bool
+	VideoTrack bool
 }
 
 // Session is the carrier-level runtime handle.
@@ -28,6 +31,11 @@ type Session interface {
 // ByteStreamCapable is implemented by carriers that can expose a byte stream.
 type ByteStreamCapable interface {
 	OpenByteStream() (ByteStream, error)
+}
+
+// VideoTrackCapable is implemented by carriers that can publish video tracks.
+type VideoTrackCapable interface {
+	OpenVideoTrack() (VideoTrack, error)
 }
 
 // Config holds carrier configuration.
