@@ -17,10 +17,10 @@ import (
 	"time"
 
 	"github.com/openlibrecommunity/olcrtc/internal/crypto"
+	"github.com/openlibrecommunity/olcrtc/internal/link"
 	"github.com/openlibrecommunity/olcrtc/internal/logger"
 	"github.com/openlibrecommunity/olcrtc/internal/mux"
 	"github.com/openlibrecommunity/olcrtc/internal/names"
-	"github.com/openlibrecommunity/olcrtc/internal/transport"
 )
 
 var (
@@ -32,24 +32,24 @@ var (
 	ErrSocks5AuthFailed = errors.New("SOCKS5 auth failed")
 	// ErrSocks5ConnectFailed is returned when SOCKS5 connection fails.
 	ErrSocks5ConnectFailed = errors.New("SOCKS5 connect failed")
-	// ErrNoPeers is returned when no peers are available.
-	ErrNoPeers = errors.New("no peers available")
+	// ErrNoLinks is returned when no links are available.
+	ErrNoLinks = errors.New("no links available")
 	// ErrDialProxy is returned when dialing the proxy fails.
 	ErrDialProxy = errors.New("failed to dial proxy")
 	// ErrEncryptFailed is returned when encryption fails.
 	ErrEncryptFailed = errors.New("encrypt failed")
 )
 
-// Server handles incoming WebRTC connections and proxies their traffic.
+// Server handles incoming tunnel connections and proxies their traffic.
 type Server struct {
-	transports     []transport.Transport
+	links          []link.Link
 	cipher         *crypto.Cipher
 	mux            *mux.Multiplexer
 	connections    map[uint16]net.Conn
 	connMu         sync.RWMutex
 	streamPumps    map[uint16]net.Conn
 	pumpMu         sync.Mutex
-	peerIdx        atomic.Uint32
+	linkIdx        atomic.Uint32
 	activeClients  atomic.Int32
 	wg             sync.WaitGroup
 	dnsServer      string
@@ -68,8 +68,9 @@ type ConnectRequest struct {
 // Run starts the server with the specified parameters.
 func Run(
 	ctx context.Context,
+	linkName,
 	transportName,
-	providerName,
+	carrierName,
 	roomURL,
 	keyHex string,
 	dnsServer,
@@ -88,7 +89,7 @@ func Run(
 		cipher:         cipher,
 		connections:    make(map[uint16]net.Conn),
 		streamPumps:    make(map[uint16]net.Conn),
-		transports:     make([]transport.Transport, 0),
+		links:          make([]link.Link, 0),
 		dnsServer:      dnsServer,
 		socksProxyAddr: socksProxyAddr,
 		socksProxyPort: socksProxyPort,
@@ -101,10 +102,10 @@ func Run(
 	s.setupResolver()
 	s.setupMux()
 
-	const peerCount = 1
-	for i := range peerCount {
-		if err := s.addTransport(runCtx, transportName, providerName, roomURL, i, cancel); err != nil {
-			return fmt.Errorf("addTransport failed: %w", err)
+	const linkCount = 1
+	for i := range linkCount {
+		if err := s.addLink(runCtx, linkName, transportName, carrierName, roomURL, i, cancel); err != nil {
+			return fmt.Errorf("addLink failed: %w", err)
 		}
 	}
 
@@ -161,8 +162,8 @@ func (s *Server) setupMux() {
 	s.mux = mux.New(0, func(frame []byte) error {
 		for {
 			canSend := true
-			for _, tr := range s.transports {
-				if !tr.CanSend() {
+			for _, ln := range s.links {
+				if !ln.CanSend() {
 					canSend = false
 					break
 				}
@@ -177,24 +178,26 @@ func (s *Server) setupMux() {
 		if err != nil {
 			return fmt.Errorf("%w: %w", ErrEncryptFailed, err)
 		}
-		if len(s.transports) == 0 {
-			return ErrNoPeers
+		if len(s.links) == 0 {
+			return ErrNoLinks
 		}
-		idx := s.peerIdx.Add(1) % uint32(len(s.transports)) //nolint:gosec
-		return s.transports[idx].Send(encrypted)
+		idx := s.linkIdx.Add(1) % uint32(len(s.links)) //nolint:gosec
+		return s.links[idx].Send(encrypted)
 	})
 }
 
-func (s *Server) addTransport(
+func (s *Server) addLink(
 	ctx context.Context,
+	linkName,
 	transportName,
-	providerName,
+	carrierName,
 	roomURL string,
-	peerID int,
+	linkID int,
 	cancel context.CancelFunc,
 ) error {
-	tr, err := transport.New(ctx, transportName, transport.Config{
-		Carrier:   providerName,
+	ln, err := link.New(ctx, linkName, link.Config{
+		Transport: transportName,
+		Carrier:   carrierName,
 		RoomURL:   roomURL,
 		Name:      names.Generate(),
 		OnData:    s.onData,
@@ -203,35 +206,35 @@ func (s *Server) addTransport(
 		ProxyPort: s.socksProxyPort,
 	})
 	if err != nil {
-		return fmt.Errorf("failed to create transport: %w", err)
+		return fmt.Errorf("failed to create link: %w", err)
 	}
 
-	tr.SetEndedCallback(func(reason string) {
-		logger.Infof("Server transport %d reported conference end: %s", peerID, reason)
+	ln.SetEndedCallback(func(reason string) {
+		logger.Infof("Server link %d reported conference end: %s", linkID, reason)
 		cancel()
 	})
-	s.transports = append(s.transports, tr)
+	s.links = append(s.links, ln)
 
-	tr.SetReconnectCallback(func() {
-		s.handleTransportReconnect(peerID)
+	ln.SetReconnectCallback(func() {
+		s.handleLinkReconnect(linkID)
 	})
 
-	logger.Infof("Connecting transport %d via %s/%s...", peerID, transportName, providerName)
-	if err := tr.Connect(ctx); err != nil {
-		return fmt.Errorf("failed to connect transport: %w", err)
+	logger.Infof("Connecting link %d via %s/%s/%s...", linkID, linkName, transportName, carrierName)
+	if err := ln.Connect(ctx); err != nil {
+		return fmt.Errorf("failed to connect link: %w", err)
 	}
-	logger.Infof("Transport %d connected", peerID)
+	logger.Infof("Link %d connected", linkID)
 
 	s.wg.Add(1)
 	go func() {
 		defer s.wg.Done()
-		tr.WatchConnection(ctx)
+		ln.WatchConnection(ctx)
 	}()
 	return nil
 }
 
-func (s *Server) handleTransportReconnect(peerID int) {
-	logger.Infof("transport %d reconnect event", peerID)
+func (s *Server) handleLinkReconnect(linkID int) {
+	logger.Infof("link %d reconnect event", linkID)
 
 	s.connMu.Lock()
 	for sid, conn := range s.connections {
@@ -247,11 +250,11 @@ func (s *Server) handleTransportReconnect(peerID int) {
 		if err != nil {
 			return fmt.Errorf("%w: %w", ErrEncryptFailed, err)
 		}
-		if len(s.transports) == 0 {
-			return ErrNoPeers
+		if len(s.links) == 0 {
+			return ErrNoLinks
 		}
-		idx := s.peerIdx.Add(1) % uint32(len(s.transports)) //nolint:gosec
-		return s.transports[idx].Send(encrypted)
+		idx := s.linkIdx.Add(1) % uint32(len(s.links)) //nolint:gosec
+		return s.links[idx].Send(encrypted)
 	})
 	s.mux.Reset()
 }
@@ -349,8 +352,8 @@ func (s *Server) shutdown() {
 	}
 	s.connMu.Unlock()
 
-	for i, tr := range s.transports {
-		logger.Infof("closing transport %d", i)
+	for i, tr := range s.links {
+		logger.Infof("closing link %d", i)
 		_ = tr.Close()
 	}
 }
@@ -561,7 +564,7 @@ func (s *Server) startStreamPump(ctx context.Context, sid uint16, conn net.Conn)
 }
 
 func (s *Server) canSendData() bool {
-	for _, tr := range s.transports {
+	for _, tr := range s.links {
 		if !tr.CanSend() {
 			return false
 		}

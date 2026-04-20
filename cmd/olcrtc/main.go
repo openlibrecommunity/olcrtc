@@ -3,7 +3,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -12,21 +11,16 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/openlibrecommunity/olcrtc/internal/client"
+	"github.com/openlibrecommunity/olcrtc/internal/app/session"
 	"github.com/openlibrecommunity/olcrtc/internal/logger"
 	"github.com/openlibrecommunity/olcrtc/internal/names"
-	"github.com/openlibrecommunity/olcrtc/internal/provider"
-	"github.com/openlibrecommunity/olcrtc/internal/provider/jazz"
-	"github.com/openlibrecommunity/olcrtc/internal/provider/telemost"
-	"github.com/openlibrecommunity/olcrtc/internal/provider/wbstream"
-	"github.com/openlibrecommunity/olcrtc/internal/server"
-	"github.com/openlibrecommunity/olcrtc/internal/transport"
-	"github.com/openlibrecommunity/olcrtc/internal/transport/datachannel"
 )
 
 type config struct {
 	mode           string
+	link           string
 	transport      string
+	carrier        string
 	roomID         string
 	provider       string
 	socksPort      int
@@ -39,14 +33,6 @@ type config struct {
 	socksProxyPort int
 }
 
-var (
-	errRoomIDRequired       = errors.New("room ID required")
-	errModeRequired         = errors.New("specify -mode srv or -mode cnc")
-	errProviderRequired     = errors.New("provider required (use -provider telemost or -provider jazz)")
-	errUnsupportedProvider  = errors.New("unsupported provider")
-	errUnsupportedTransport = errors.New("unsupported transport")
-)
-
 func main() {
 	if err := run(); err != nil {
 		logger.Error(err)
@@ -55,15 +41,12 @@ func main() {
 }
 
 func run() error {
-	provider.Register("jazz", jazz.New)
-	provider.Register("telemost", telemost.New)
-	provider.Register("wb_stream", wbstream.New)
-	transport.Register("datachannel", datachannel.New)
+	session.RegisterDefaults()
 
 	cfg := parseFlags()
 	configureLogging(cfg.debug)
 
-	if err := validateConfig(cfg); err != nil {
+	if err := session.Validate(toSessionConfig(cfg)); err != nil {
 		return err
 	}
 
@@ -83,7 +66,9 @@ func run() error {
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
 
 	errCh := make(chan error, 1)
-	go runMode(ctx, cfg, errCh)
+	go func() {
+		errCh <- session.Run(ctx, toSessionConfig(cfg))
+	}()
 
 	select {
 	case <-sigCh:
@@ -99,9 +84,11 @@ func parseFlags() config {
 	cfg := config{}
 
 	flag.StringVar(&cfg.mode, "mode", "", "Mode: srv or cnc")
+	flag.StringVar(&cfg.link, "link", "direct", "Link: direct")
 	flag.StringVar(&cfg.transport, "transport", "datachannel", "Transport: datachannel")
+	flag.StringVar(&cfg.carrier, "carrier", "", "Carrier: telemost, jazz, wb_stream")
 	flag.StringVar(&cfg.roomID, "id", "", "Room ID")
-	flag.StringVar(&cfg.provider, "provider", "", "Provider: telemost or jazz (required)")
+	flag.StringVar(&cfg.provider, "provider", "", "Deprecated alias for -carrier")
 	flag.IntVar(&cfg.socksPort, "socks-port", 1080, "SOCKS5 port (client only)")
 	flag.StringVar(&cfg.socksHost, "socks-host", "127.0.0.1", "SOCKS5 listen host (client only)")
 	flag.StringVar(&cfg.keyHex, "key", "", "Shared encryption key (hex)")
@@ -118,41 +105,6 @@ func parseFlags() config {
 func configureLogging(debug bool) {
 	if debug {
 		logger.SetVerbose(true)
-	}
-}
-
-func validateConfig(cfg config) error {
-	availableProviders := provider.Available()
-	validProvider := false
-	for _, p := range availableProviders {
-		if cfg.provider == p {
-			validProvider = true
-			break
-		}
-	}
-
-	availableTransports := transport.Available()
-	validTransport := false
-	for _, t := range availableTransports {
-		if cfg.transport == t {
-			validTransport = true
-			break
-		}
-	}
-
-	switch {
-	case cfg.provider == "":
-		return errProviderRequired
-	case !validProvider:
-		return fmt.Errorf("%w: %s (available: %v)", errUnsupportedProvider, cfg.provider, availableProviders)
-	case !validTransport:
-		return fmt.Errorf("%w: %s (available: %v)", errUnsupportedTransport, cfg.transport, availableTransports)
-	case cfg.roomID == "" && cfg.provider != "jazz":
-		return errRoomIDRequired
-	case cfg.mode != "srv" && cfg.mode != "cnc":
-		return errModeRequired
-	default:
-		return nil
 	}
 }
 
@@ -179,50 +131,29 @@ func loadNames(dataDir string) error {
 	return nil
 }
 
-func runMode(ctx context.Context, cfg config, errCh chan<- error) {
-	roomURL := buildRoomURL(cfg.provider, cfg.roomID)
-
-	switch cfg.mode {
-	case "srv":
-		errCh <- server.Run(
-			ctx,
-			cfg.transport,
-			cfg.provider,
-			roomURL,
-			cfg.keyHex,
-			cfg.dnsServer,
-			cfg.socksProxyAddr,
-			cfg.socksProxyPort,
-		)
-	case "cnc":
-		errCh <- client.Run(
-			ctx,
-			cfg.transport,
-			cfg.provider,
-			roomURL,
-			cfg.keyHex,
-			fmt.Sprintf("%s:%d", cfg.socksHost, cfg.socksPort),
-			cfg.dnsServer,
-			"",
-			"",
-		)
+func toSessionConfig(cfg config) session.Config {
+	return session.Config{
+		Mode:           cfg.mode,
+		Link:           cfg.link,
+		Transport:      cfg.transport,
+		Carrier:        firstNonEmpty(cfg.carrier, cfg.provider),
+		RoomID:         cfg.roomID,
+		KeyHex:         cfg.keyHex,
+		SOCKSHost:      cfg.socksHost,
+		SOCKSPort:      cfg.socksPort,
+		DNSServer:      cfg.dnsServer,
+		SOCKSProxyAddr: cfg.socksProxyAddr,
+		SOCKSProxyPort: cfg.socksProxyPort,
 	}
 }
 
-func buildRoomURL(providerName, roomID string) string {
-	switch providerName {
-	case "telemost":
-		return "https://telemost.yandex.ru/j/" + roomID
-	case "jazz":
-		if roomID == "" {
-			return "any"
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
 		}
-		return roomID
-	case "wb_stream":
-		return roomID
-	default:
-		return roomID
 	}
+	return ""
 }
 
 func waitForShutdown(errCh <-chan error) error {

@@ -109,6 +109,7 @@ func Start(roomID, keyHex string, socksPort int, socksUser, socksPass string) er
 
 		err := client.RunWithReady(
 			ctx,
+			"direct",
 			"datachannel",
 			"telemost",
 			roomURL,

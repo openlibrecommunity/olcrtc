@@ -16,10 +16,10 @@ import (
 	"time"
 
 	"github.com/openlibrecommunity/olcrtc/internal/crypto"
+	"github.com/openlibrecommunity/olcrtc/internal/link"
 	"github.com/openlibrecommunity/olcrtc/internal/logger"
 	"github.com/openlibrecommunity/olcrtc/internal/mux"
 	"github.com/openlibrecommunity/olcrtc/internal/names"
-	"github.com/openlibrecommunity/olcrtc/internal/transport"
 )
 
 var (
@@ -29,8 +29,8 @@ var (
 	ErrKeyStringLength = errors.New("key string length must be 32")
 	// ErrInvalidSocks5 is returned when the SOCKS version is not 5.
 	ErrInvalidSocks5 = errors.New("invalid SOCKS5 version")
-	// ErrNoPeers is returned when no peers are available for sending.
-	ErrNoPeers = errors.New("no peers available")
+	// ErrNoLinks is returned when no links are available for sending.
+	ErrNoLinks = errors.New("no links available")
 	// ErrEncryptFailed is returned when encryption fails.
 	ErrEncryptFailed = errors.New("encrypt failed")
 	// ErrUnsupportedSocksCommand is returned when a SOCKS5 command is not supported.
@@ -41,14 +41,14 @@ var (
 	ErrTunnelSetupFailed = errors.New("tunnel setup failed")
 )
 
-// Client handles local SOCKS5 connections and tunnels them via WebRTC.
+// Client handles local SOCKS5 connections and tunnels them through the selected runtime stack.
 type Client struct {
-	transports    []transport.Transport
+	links         []link.Link
 	cipher        *crypto.Cipher
 	mux           *mux.Multiplexer
 	connections   map[uint16]net.Conn
 	connMu        sync.RWMutex
-	peerIdx       atomic.Uint32
+	linkIdx       atomic.Uint32
 	clientID      uint32
 	activeClients atomic.Int32
 	wg            sync.WaitGroup
@@ -58,8 +58,9 @@ type Client struct {
 // Run starts the client with the specified parameters.
 func Run(
 	ctx context.Context,
+	linkName,
 	transportName,
-	providerName,
+	carrierName,
 	roomURL,
 	keyHex string,
 	localAddr string,
@@ -67,14 +68,15 @@ func Run(
 	socksUser string,
 	socksPass string,
 ) error {
-	return RunWithReady(ctx, transportName, providerName, roomURL, keyHex, localAddr, dnsServer, socksUser, socksPass, nil)
+	return RunWithReady(ctx, linkName, transportName, carrierName, roomURL, keyHex, localAddr, dnsServer, socksUser, socksPass, nil)
 }
 
 // RunWithReady is like Run but accepts a callback that is called when the client is ready.
 func RunWithReady(
 	ctx context.Context,
+	linkName,
 	transportName,
-	providerName,
+	carrierName,
 	roomURL,
 	keyHex string,
 	localAddr string,
@@ -100,17 +102,17 @@ func RunWithReady(
 	c := &Client{
 		cipher:      cipher,
 		connections: make(map[uint16]net.Conn),
-		transports:  make([]transport.Transport, 0),
+		links:       make([]link.Link, 0),
 		clientID:    clientID,
 		dnsServer:   dnsServer,
 	}
 
 	c.setupMux()
 
-	const peerCount = 1
-	for i := range peerCount {
-		if err := c.addTransport(runCtx, transportName, providerName, roomURL, i, cancel, dnsServer, "", 0); err != nil {
-			return fmt.Errorf("addTransport failed: %w", err)
+	const linkCount = 1
+	for i := range linkCount {
+		if err := c.addLink(runCtx, linkName, transportName, carrierName, roomURL, i, cancel, dnsServer, "", 0); err != nil {
+			return fmt.Errorf("addLink failed: %w", err)
 		}
 	}
 
@@ -161,8 +163,8 @@ func (c *Client) setupMux() {
 	c.mux = mux.New(c.clientID, func(frame []byte) error {
 		for {
 			canSend := true
-			for _, tr := range c.transports {
-				if !tr.CanSend() {
+			for _, ln := range c.links {
+				if !ln.CanSend() {
 					canSend = false
 					break
 				}
@@ -177,27 +179,29 @@ func (c *Client) setupMux() {
 		if err != nil {
 			return fmt.Errorf("%w: %w", ErrEncryptFailed, err)
 		}
-		if len(c.transports) == 0 {
-			return ErrNoPeers
+		if len(c.links) == 0 {
+			return ErrNoLinks
 		}
-		idx := c.peerIdx.Add(1) % uint32(len(c.transports)) //nolint:gosec
-		return c.transports[idx].Send(encrypted)
+		idx := c.linkIdx.Add(1) % uint32(len(c.links)) //nolint:gosec
+		return c.links[idx].Send(encrypted)
 	})
 }
 
-func (c *Client) addTransport(
+func (c *Client) addLink(
 	ctx context.Context,
+	linkName,
 	transportName,
-	providerName,
+	carrierName,
 	roomURL string,
-	peerID int,
+	linkID int,
 	cancel context.CancelFunc,
 	dnsServer,
 	socksProxyAddr string,
 	socksProxyPort int,
 ) error {
-	tr, err := transport.New(ctx, transportName, transport.Config{
-		Carrier:   providerName,
+	ln, err := link.New(ctx, linkName, link.Config{
+		Transport: transportName,
+		Carrier:   carrierName,
 		RoomURL:   roomURL,
 		Name:      names.Generate(),
 		OnData:    c.onData,
@@ -206,29 +210,29 @@ func (c *Client) addTransport(
 		ProxyPort: socksProxyPort,
 	})
 	if err != nil {
-		return fmt.Errorf("failed to create transport: %w", err)
+		return fmt.Errorf("failed to create link: %w", err)
 	}
 
-	tr.SetEndedCallback(func(reason string) {
-		logger.Infof("Client transport %d reported conference end: %s", peerID, reason)
+	ln.SetEndedCallback(func(reason string) {
+		logger.Infof("Client link %d reported conference end: %s", linkID, reason)
 		cancel()
 	})
-	c.transports = append(c.transports, tr)
+	c.links = append(c.links, ln)
 
-	tr.SetReconnectCallback(func() {
-		c.handleTransportReconnect(peerID)
+	ln.SetReconnectCallback(func() {
+		c.handleLinkReconnect(linkID)
 	})
 
-	logger.Infof("Connecting transport %d via %s/%s...", peerID, transportName, providerName)
-	if err := tr.Connect(ctx); err != nil {
-		return fmt.Errorf("failed to connect transport: %w", err)
+	logger.Infof("Connecting link %d via %s/%s/%s...", linkID, linkName, transportName, carrierName)
+	if err := ln.Connect(ctx); err != nil {
+		return fmt.Errorf("failed to connect link: %w", err)
 	}
-	logger.Infof("Transport %d connected", peerID)
+	logger.Infof("Link %d connected", linkID)
 
 	c.wg.Add(1)
 	go func() {
 		defer c.wg.Done()
-		tr.WatchConnection(ctx)
+		ln.WatchConnection(ctx)
 	}()
 
 	// Send initial reset to clean up any stale connections for this clientID on server
@@ -239,8 +243,8 @@ func (c *Client) addTransport(
 	return nil
 }
 
-func (c *Client) handleTransportReconnect(peerID int) {
-	logger.Infof("transport %d reconnect event", peerID)
+func (c *Client) handleLinkReconnect(linkID int) {
+	logger.Infof("link %d reconnect event", linkID)
 
 	c.connMu.Lock()
 	for sid, conn := range c.connections {
@@ -256,11 +260,11 @@ func (c *Client) handleTransportReconnect(peerID int) {
 		if err != nil {
 			return fmt.Errorf("%w: %w", ErrEncryptFailed, err)
 		}
-		if len(c.transports) == 0 {
-			return ErrNoPeers
+		if len(c.links) == 0 {
+			return ErrNoLinks
 		}
-		idx := c.peerIdx.Add(1) % uint32(len(c.transports)) //nolint:gosec
-		return c.transports[idx].Send(encrypted)
+		idx := c.linkIdx.Add(1) % uint32(len(c.links)) //nolint:gosec
+		return c.links[idx].Send(encrypted)
 	})
 	c.mux.Reset()
 
@@ -443,8 +447,8 @@ func (c *Client) shutdown() {
 	}
 	c.connMu.Unlock()
 
-	for i, tr := range c.transports {
-		logger.Infof("closing transport %d", i)
+	for i, tr := range c.links {
+		logger.Infof("closing link %d", i)
 		_ = tr.Close()
 	}
 }
@@ -516,7 +520,7 @@ func (c *Client) startStreamPump(ctx context.Context, sid uint16, conn net.Conn)
 }
 
 func (c *Client) canSendData() bool {
-	for _, tr := range c.transports {
+	for _, tr := range c.links {
 		if !tr.CanSend() {
 			return false
 		}

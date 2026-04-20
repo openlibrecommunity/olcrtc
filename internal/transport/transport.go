@@ -11,6 +11,14 @@ var (
 	ErrTransportNotFound = errors.New("transport not found")
 )
 
+// Features describes the delivery semantics of a transport.
+type Features struct {
+	Reliable        bool
+	Ordered         bool
+	MessageOriented bool
+	MaxPayloadSize  int
+}
+
 // Transport defines a byte transport independent of the underlying carrier.
 type Transport interface {
 	Connect(ctx context.Context) error
@@ -21,6 +29,7 @@ type Transport interface {
 	SetEndedCallback(cb func(string))
 	WatchConnection(ctx context.Context)
 	CanSend() bool
+	Features() Features
 }
 
 // Config holds common transport configuration.
