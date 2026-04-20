@@ -55,7 +55,6 @@ func (p *Program) getConfigPath() string {
 		log("WARNING: Could not create config directory: %v", err)
 	}
 	return filepath.Join(configDir, "config.json")
-
 }
 
 func (p *Program) loadConfig() *Config {
@@ -83,10 +82,13 @@ func (p *Program) loadConfig() *Config {
 		return cfg
 	}
 	cfg.ConferenceID = strings.ReplaceAll(cfg.ConferenceID, " ", "")
-	if !isValidConferenceID(cfg.ConferenceID) {
-		log("WARNING: Invalid conference ID in config (must be numbers only)")
+	
+	// Validation check for telemost specifically if it was stored
+	if cfg.Provider == "telemost" && !isValidConferenceID(cfg.ConferenceID) {
+		log("WARNING: Invalid conference ID in config (must be numbers only for telemost)")
 		cfg.ConferenceID = ""
 	}
+	
 	if !isValidPort(cfg.SocksPort) {
 		log("WARNING: Invalid port in config, using default: 1080")
 		cfg.SocksPort = "1080"
@@ -113,15 +115,15 @@ func (p *Program) saveConfig(dns, encryptionKey, socksPort, conferenceID, roomPa
 		return
 	}
 
-	if provider == "jazz" && conferenceID == "" {
-		log("ERROR: Room ID required for jazz provider")
-		p.showError(fmt.Errorf("room ID required for jazz provider"))
+	if (provider == "jazz" || provider == "wb_stream") && conferenceID == "" {
+		log("ERROR: Room ID required for %s provider", provider)
+		p.showError(fmt.Errorf("room ID required for %s provider", provider))
 		return
 	}
 
-	if provider != "telemost" && provider != "jazz" {
+	if provider != "telemost" && provider != "jazz" && provider != "wb_stream" {
 		log("ERROR: Invalid provider: %s", provider)
-		p.showError(fmt.Errorf("invalid provider: must be telemost or jazz"))
+		p.showError(fmt.Errorf("invalid provider: must be telemost, jazz or wb_stream"))
 		return
 	}
 

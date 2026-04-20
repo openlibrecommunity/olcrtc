@@ -13,7 +13,7 @@ import (
 func (p *Program) settingsWindow() {
 	log("Opening settings dialog...")
 
-	providerSelect := widget.NewSelect([]string{"telemost", "jazz"}, nil)
+	providerSelect := widget.NewSelect([]string{"telemost", "jazz", "wb_stream"}, nil)
 	if p.Config.Provider != "" {
 		providerSelect.SetSelected(p.Config.Provider)
 	} else {
@@ -47,7 +47,7 @@ func (p *Program) settingsWindow() {
 		roomPassword.SetText(p.Config.RoomPassword)
 	}
 
-	roomIdLabel := widget.NewLabel("Room ID (telemost: numbers only, jazz: any)")
+	roomIdLabel := widget.NewLabel("Room ID (telemost: numbers only, others: any)")
 	roomPasswordLabel := widget.NewLabel("Room Password (jazz only)")
 	roomPasswordContainer := container.NewVBox(roomPasswordLabel, roomPassword)
 
@@ -56,6 +56,9 @@ func (p *Program) settingsWindow() {
 		if value == "jazz" {
 			roomIdLabel.SetText("Room ID (jazz: any)")
 			roomPasswordContainer.Show()
+		} else if value == "wb_stream" {
+			roomIdLabel.SetText("Room ID (wb_stream: any)")
+			roomPasswordContainer.Hide()
 		} else {
 			roomIdLabel.SetText("Room ID (telemost: numbers only)")
 			roomPasswordContainer.Hide()
@@ -118,9 +121,6 @@ func (p *Program) showError(err error) {
 	dialog.ShowError(err, p.ParentWindow)
 }
 
-// fyne.Do used here to execute function in the main context frame
-// we can just paste p.RunCheck.SetChecked(false) and that'll work. but if so
-// there'll be a bunch of warnings(thread safety)
 func (p *Program) MarkUncheck() {
 	fyne.Do(func() { p.RunCheck.SetChecked(false) })
 }

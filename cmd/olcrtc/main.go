@@ -19,6 +19,7 @@ import (
 	"github.com/openlibrecommunity/olcrtc/internal/provider"
 	"github.com/openlibrecommunity/olcrtc/internal/provider/jazz"
 	"github.com/openlibrecommunity/olcrtc/internal/provider/telemost"
+	"github.com/openlibrecommunity/olcrtc/internal/provider/wbstream"
 	"github.com/openlibrecommunity/olcrtc/internal/server"
 )
 
@@ -53,6 +54,7 @@ func main() {
 func run() error {
 	provider.Register("jazz", jazz.New)
 	provider.Register("telemost", telemost.New)
+	provider.Register("wb_stream", wbstream.New)
 
 	cfg := parseFlags()
 	configureLogging(cfg.debug)
@@ -201,6 +203,8 @@ func buildRoomURL(providerName, roomID string) string {
 		if roomID == "" {
 			return "any"
 		}
+		return roomID
+	case "wb_stream":
 		return roomID
 	default:
 		return roomID

@@ -60,11 +60,15 @@ echo ""
 echo "Select provider:"
 echo "  1) telemost"
 echo "  2) jazz"
-read -p "Enter choice [1-2, default: 1]: " PROVIDER_CHOICE
+echo "  3) wb_stream"
+read -p "Enter choice [1-3, default: 1]: " PROVIDER_CHOICE
 
 case "$PROVIDER_CHOICE" in
     2)
         PROVIDER="jazz"
+        ;;
+    3)
+        PROVIDER="wb_stream"
         ;;
     *)
         PROVIDER="telemost"
@@ -91,6 +95,25 @@ if [ "$PROVIDER" = "jazz" ]; then
         *)
             ROOM_ID="any"
             echo "[*] Will auto-generate Jazz room"
+            ;;
+    esac
+elif [ "$PROVIDER" = "wb_stream" ]; then
+    echo "WB Stream room options:"
+    echo "  1) Auto-generate new room (recommended)"
+    echo "  2) Use specific room ID"
+    read -p "Enter choice [1-2, default: 1]: " WB_CHOICE
+    
+    case "$WB_CHOICE" in
+        2)
+            read -p "Enter Room ID: " ROOM_ID
+            if [ -z "$ROOM_ID" ]; then
+                echo "[X] Room ID cannot be empty"
+                exit 1
+            fi
+            ;;
+        *)
+            ROOM_ID="any"
+            echo "[*] Will auto-generate WB Stream room"
             ;;
     esac
 else
@@ -188,6 +211,20 @@ if [ "$PROVIDER" = "jazz" ] && [ "$ROOM_ID" = "any" ]; then
         ACTUAL_ROOM_ID="(check logs above)"
     else
         echo "[+] Jazz room created: $ACTUAL_ROOM_ID"
+    fi
+elif [ "$PROVIDER" = "wb_stream" ] && [ "$ROOM_ID" = "any" ]; then
+    echo "[*] Waiting for WB Stream room creation..."
+    sleep 2
+    LOGS=$(podman logs $CONTAINER_NAME 2>&1)
+    ACTUAL_ROOM_ID=$(echo "$LOGS" | grep -oP 'WB Stream room created: \K[^\s]+' | head -1)
+    
+    if [ -z "$ACTUAL_ROOM_ID" ]; then
+        echo "[!] WARNING: Could not extract WB Stream room ID from logs"
+        echo "[*] Full logs:"
+        podman logs $CONTAINER_NAME
+        ACTUAL_ROOM_ID="(check logs above)"
+    else
+        echo "[+] WB Stream room created: $ACTUAL_ROOM_ID"
     fi
 fi
 
