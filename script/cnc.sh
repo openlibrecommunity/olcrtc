@@ -69,11 +69,15 @@ echo ""
 echo "Select provider:"
 echo "  1) telemost"
 echo "  2) jazz"
-read -p "Enter choice [1-2, default: 1]: " PROVIDER_CHOICE
+echo "  3) wb_stream"
+read -p "Enter choice [1-3, default: 1]: " PROVIDER_CHOICE
 
 case "$PROVIDER_CHOICE" in
     2)
         PROVIDER="jazz"
+        ;;
+    3)
+        PROVIDER="wb_stream"
         ;;
     *)
         PROVIDER="telemost"
