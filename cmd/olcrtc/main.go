@@ -35,6 +35,7 @@ type config struct {
 	videoHeight    int
 	videoFPS       int
 	videoBitrate   string
+	videoHW        string
 }
 
 func main() {

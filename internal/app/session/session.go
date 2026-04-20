@@ -50,6 +50,7 @@ type Config struct {
 	VideoHeight    int
 	VideoFPS       int
 	VideoBitrate   string
+	VideoHW        string
 }
 
 // RegisterDefaults registers built-in providers and transports.
@@ -128,6 +129,7 @@ func Run(ctx context.Context, cfg Config) error {
 			cfg.VideoHeight,
 			cfg.VideoFPS,
 			cfg.VideoBitrate,
+			cfg.VideoHW,
 		)
 	case "cnc":
 		return client.Run(
@@ -145,6 +147,7 @@ func Run(ctx context.Context, cfg Config) error {
 			cfg.VideoHeight,
 			cfg.VideoFPS,
 			cfg.VideoBitrate,
+			cfg.VideoHW,
 		)
 	default:
 		return ErrModeRequired
