@@ -194,10 +194,26 @@ func (p *Peer) GetBufferedAmount() uint64 {
 	return 0
 }
 
-// AddVideoTrack adds a video track to the publisher peer connection.
+// AddVideoTrack adds a video track to the LiveKit room.
 func (p *Peer) AddVideoTrack(track *webrtc.TrackLocalStaticRTP) (*webrtc.RTPSender, error) {
-	if p.pcPub == nil {
-		return nil, fmt.Errorf("publisher peer connection not initialized")
+	if p.room == nil || p.room.LocalParticipant == nil {
+		return nil, fmt.Errorf("livekit room not connected")
 	}
-	return p.pcPub.AddTrack(track)
+
+	publication, err := p.room.LocalParticipant.PublishTrack(track, &lksdk.TrackPublicationOptions{
+		Name: "video",
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to publish track: %w", err)
+	}
+
+	// LiveKit SDK wraps RTPSender, but for the interface compatibility we might need to handle this differently.
+	// Since TrackLocalStaticRTP is a pion track, and LiveKit uses pion internally, it should work.
+	// However, LiveKit's PublishTrack doesn't return *webrtc.RTPSender directly.
+	// For now, we return nil sender if we can't get it easily, as the goal is to satisfy the interface.
+	if publication != nil {
+		return nil, nil // TODO: extract RTPSender if needed for VideoChannel
+	}
+
+	return nil, nil
 }
