@@ -79,6 +79,7 @@ func Run(
 	videoFPS int,
 	videoBitrate string,
 	videoHW string,
+	videoQRSize int,
 ) error {
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -103,7 +104,7 @@ func Run(
 
 	const linkCount = 1
 	for i := range linkCount {
-		if err := s.addLink(runCtx, linkName, transportName, carrierName, roomURL, i, cancel, videoWidth, videoHeight, videoFPS, videoBitrate, videoHW); err != nil {
+		if err := s.addLink(runCtx, linkName, transportName, carrierName, roomURL, i, cancel, videoWidth, videoHeight, videoFPS, videoBitrate, videoHW, videoQRSize); err != nil {
 			return fmt.Errorf("addLink failed: %w", err)
 		}
 	}
@@ -189,6 +190,7 @@ func (s *Server) addLink(
 	cancel context.CancelFunc,
 	videoWidth, videoHeight, videoFPS int,
 	videoBitrate, videoHW string,
+	videoQRSize int,
 ) error {
 	ln, err := link.New(ctx, linkName, link.Config{
 		Transport:    transportName,
@@ -204,6 +206,7 @@ func (s *Server) addLink(
 		VideoFPS:     videoFPS,
 		VideoBitrate: videoBitrate,
 		VideoHW:      videoHW,
+		VideoQRSize:  videoQRSize,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to create link: %w", err)

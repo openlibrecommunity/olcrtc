@@ -36,6 +36,7 @@ type config struct {
 	videoFPS       int
 	videoBitrate   string
 	videoHW        string
+	videoQRSize    int
 }
 
 func main() {
@@ -111,6 +112,7 @@ func parseFlags() config {
 	flag.IntVar(&cfg.videoFPS, "video-fps", 0, "Video frames per second (videochannel only)")
 	flag.StringVar(&cfg.videoBitrate, "video-bitrate", "", "Video bitrate (videochannel only)")
 	flag.StringVar(&cfg.videoHW, "video-hw", "", "Hardware acceleration (none, nvenc)")
+	flag.IntVar(&cfg.videoQRSize, "video-qr-size", 0, "Video QR code fragment size (videochannel only)")
 	flag.Parse()
 
 	return cfg
@@ -163,6 +165,7 @@ func toSessionConfig(cfg config) session.Config {
 		VideoFPS:       cfg.videoFPS,
 		VideoBitrate:   cfg.videoBitrate,
 		VideoHW:        cfg.videoHW,
+		VideoQRSize:    cfg.videoQRSize,
 	}
 }
 

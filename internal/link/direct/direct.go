@@ -27,6 +27,8 @@ func New(ctx context.Context, cfg link.Config) (link.Link, error) {
 		VideoHeight:  cfg.VideoHeight,
 		VideoFPS:     cfg.VideoFPS,
 		VideoBitrate: cfg.VideoBitrate,
+		VideoHW:      cfg.VideoHW,
+		VideoQRSize:  cfg.VideoQRSize,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create transport for direct link: %w", err)

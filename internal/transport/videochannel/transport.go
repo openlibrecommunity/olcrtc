@@ -62,6 +62,7 @@ type streamTransport struct {
 	videoFPS     int
 	videoBitrate string
 	videoHW      string
+	videoQRSize  int
 }
 
 // New creates a visual videochannel transport backed by a carrier-specific provider.
@@ -94,6 +95,11 @@ func New(ctx context.Context, cfg transport.Config) (transport.Transport, error)
 		return nil, fmt.Errorf("create local video track: %w", err)
 	}
 
+	qrSize := cfg.VideoQRSize
+	if qrSize <= 0 {
+		qrSize = defaultFragmentSize
+	}
+
 	tr := &streamTransport{
 		stream:       stream,
 		track:        track,
@@ -111,6 +117,7 @@ func New(ctx context.Context, cfg transport.Config) (transport.Transport, error)
 		videoFPS:     cfg.VideoFPS,
 		videoBitrate: cfg.VideoBitrate,
 		videoHW:      cfg.VideoHW,
+		videoQRSize:  qrSize,
 	}
 
 	if err := stream.AddTrack(track); err != nil {
@@ -156,7 +163,7 @@ func (p *streamTransport) Send(data []byte) error {
 
 	seq := p.nextSeq.Add(1)
 	crc := crc32.ChecksumIEEE(data)
-	fragments := fragmentPayload(data, defaultFragmentSize)
+	fragments := fragmentPayload(data, p.videoQRSize)
 	waiter := make(chan uint32, 1)
 
 	p.ackMu.Lock()
@@ -235,11 +242,15 @@ func (p *streamTransport) CanSend() bool {
 
 // Features describes the current videochannel transport semantics.
 func (p *streamTransport) Features() transport.Features {
+	maxPayload := defaultMaxPayloadSize
+	if p.videoQRSize*64 > maxPayload {
+		maxPayload = p.videoQRSize * 64
+	}
 	return transport.Features{
 		Reliable:        true,
 		Ordered:         true,
 		MessageOriented: true,
-		MaxPayloadSize:  defaultMaxPayloadSize,
+		MaxPayloadSize:  maxPayload,
 	}
 }
 

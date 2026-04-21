@@ -46,6 +46,7 @@ type Config struct {
 	VideoFPS     int
 	VideoBitrate string
 	VideoHW      string
+	VideoQRSize  int
 }
 
 // Factory creates a transport instance.

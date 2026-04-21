@@ -60,8 +60,9 @@ func Run(
 	videoFPS int,
 	videoBitrate string,
 	videoHW string,
+	videoQRSize int,
 ) error {
-	return RunWithReady(ctx, linkName, transportName, carrierName, roomURL, keyHex, localAddr, dnsServer, socksUser, socksPass, nil, videoWidth, videoHeight, videoFPS, videoBitrate, videoHW)
+	return RunWithReady(ctx, linkName, transportName, carrierName, roomURL, keyHex, localAddr, dnsServer, socksUser, socksPass, nil, videoWidth, videoHeight, videoFPS, videoBitrate, videoHW, videoQRSize)
 }
 
 // RunWithReady is like Run but accepts a callback that is called when the client is ready.
@@ -82,6 +83,7 @@ func RunWithReady(
 	videoFPS int,
 	videoBitrate string,
 	videoHW string,
+	videoQRSize int,
 ) error {
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -109,7 +111,7 @@ func RunWithReady(
 
 	const linkCount = 1
 	for i := range linkCount {
-		if err := c.addLink(runCtx, linkName, transportName, carrierName, roomURL, i, cancel, dnsServer, "", 0, videoWidth, videoHeight, videoFPS, videoBitrate, videoHW); err != nil {
+		if err := c.addLink(runCtx, linkName, transportName, carrierName, roomURL, i, cancel, dnsServer, "", 0, videoWidth, videoHeight, videoFPS, videoBitrate, videoHW, videoQRSize); err != nil {
 			return fmt.Errorf("addLink failed: %w", err)
 		}
 	}
@@ -212,6 +214,7 @@ func (c *Client) addLink(
 	socksProxyPort int,
 	videoWidth, videoHeight, videoFPS int,
 	videoBitrate, videoHW string,
+	videoQRSize int,
 ) error {
 	ln, err := link.New(ctx, linkName, link.Config{
 		Transport:    transportName,
@@ -227,6 +230,7 @@ func (c *Client) addLink(
 		VideoFPS:     videoFPS,
 		VideoBitrate: videoBitrate,
 		VideoHW:      videoHW,
+		VideoQRSize:  videoQRSize,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to create link: %w", err)
