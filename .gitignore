@@ -11,7 +11,7 @@
 *.ilk
 *.map
 *.exp
-
+CLAUDE.md
 # Precompiled Headers
 *.gch
 *.pch
