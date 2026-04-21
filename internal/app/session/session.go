@@ -20,11 +20,11 @@ import (
 
 var (
 	// ErrRoomIDRequired indicates that a room id is required for the selected carrier.
-	ErrRoomIDRequired = errors.New("room ID required")
+	ErrRoomIDRequired = errors.New("room ID required (use -id <id>)")
 	// ErrModeRequired indicates that mode is not one of the supported values.
-	ErrModeRequired = errors.New("specify -mode srv or -mode cnc")
+	ErrModeRequired = errors.New("mode required (use -mode srv or -mode cnc)")
 	// ErrCarrierRequired indicates that no carrier was selected.
-	ErrCarrierRequired = errors.New("carrier required (use -carrier telemost or -carrier jazz)")
+	ErrCarrierRequired = errors.New("carrier required (use -carrier telemost, -carrier jazz or -carrier wbstream)")
 	// ErrUnsupportedCarrier indicates that carrier is not registered.
 	ErrUnsupportedCarrier = errors.New("unsupported carrier")
 	// ErrUnsupportedLink indicates that link is not registered.
@@ -35,7 +35,7 @@ var (
 	// ErrLinkRequired indicates that link is not provided.
 	ErrLinkRequired = errors.New("link required (use -link direct)")
 	// ErrTransportRequired indicates that transport is not provided.
-	ErrTransportRequired = errors.New("transport required (use -transport datachannel or -transport videochannel)")
+	ErrTransportRequired = errors.New("transport required (use -transport datachannel, -transport videochannel or -transport seichannel)")
 	// ErrKeyRequired indicates that encryption key is not provided.
 	ErrKeyRequired = errors.New("key required (use -key <hex>)")
 	// ErrDNSServerRequired indicates that dns server is not provided.
@@ -235,7 +235,7 @@ func buildRoomURL(carrierName, roomID string) string {
 			return "any"
 		}
 		return roomID
-	case "wb_stream":
+	case "wbstream":
 		return roomID
 	default:
 		return roomID

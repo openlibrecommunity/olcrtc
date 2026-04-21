@@ -93,9 +93,9 @@ func parseFlags() config {
 	cfg := config{}
 
 	flag.StringVar(&cfg.mode, "mode", "", "Mode: srv or cnc")
-	flag.StringVar(&cfg.link, "link", "", "Link: direct")
+	flag.StringVar(&cfg.link, "link", "", "Link: direct (p2p connection type)")
 	flag.StringVar(&cfg.transport, "transport", "", "Transport: datachannel, videochannel, seichannel")
-	flag.StringVar(&cfg.carrier, "carrier", "", "Carrier: telemost, jazz, wb_stream")
+	flag.StringVar(&cfg.carrier, "carrier", "", "Carrier: telemost, jazz, wbstream")
 	flag.StringVar(&cfg.roomID, "id", "", "Room ID")
 	flag.StringVar(&cfg.provider, "provider", "", "Deprecated alias for -carrier")
 	flag.IntVar(&cfg.socksPort, "socks-port", 0, "SOCKS5 port (client only)")

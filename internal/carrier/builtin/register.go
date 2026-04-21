@@ -12,5 +12,5 @@ import (
 func Register() {
 	carrier.RegisterLegacy("jazz", jazz.New)
 	carrier.RegisterLegacy("telemost", telemost.New)
-	carrier.RegisterLegacy("wb_stream", wbstream.New)
+	carrier.RegisterLegacy("wbstream", wbstream.New)
 }

@@ -115,15 +115,15 @@ func (p *Program) saveConfig(dns, encryptionKey, socksPort, conferenceID, roomPa
 		return
 	}
 
-	if (provider == "jazz" || provider == "wb_stream") && conferenceID == "" {
+	if (provider == "jazz" || provider == "wbstream") && conferenceID == "" {
 		log("ERROR: Room ID required for %s provider", provider)
 		p.showError(fmt.Errorf("room ID required for %s provider", provider))
 		return
 	}
 
-	if provider != "telemost" && provider != "jazz" && provider != "wb_stream" {
+	if provider != "telemost" && provider != "jazz" && provider != "wbstream" {
 		log("ERROR: Invalid provider: %s", provider)
-		p.showError(fmt.Errorf("invalid provider: must be telemost, jazz or wb_stream"))
+		p.showError(fmt.Errorf("invalid provider: must be telemost, jazz or wbstream"))
 		return
 	}
 

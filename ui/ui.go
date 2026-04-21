@@ -15,7 +15,7 @@ import (
 func (p *Program) settingsWindow() {
 	log("Opening settings dialog...")
 
-	providerSelect := widget.NewSelect([]string{"telemost", "jazz", "wb_stream"}, nil)
+	providerSelect := widget.NewSelect([]string{"telemost", "jazz", "wbstream"}, nil)
 	if p.Config.Provider != "" {
 		providerSelect.SetSelected(p.Config.Provider)
 	} else {
@@ -58,8 +58,8 @@ func (p *Program) settingsWindow() {
 		if value == "jazz" {
 			roomIdLabel.SetText("Room ID (jazz: any)")
 			roomPasswordContainer.Show()
-		} else if value == "wb_stream" {
-			roomIdLabel.SetText("Room ID (wb_stream: any)")
+		} else if value == "wbstream" {
+			roomIdLabel.SetText("Room ID (wbstream: any)")
 			roomPasswordContainer.Hide()
 		} else {
 			roomIdLabel.SetText("Room ID (telemost: numbers only)")
