@@ -19,8 +19,6 @@ import (
 
 const (
 	defaultMaxPayloadSize = 60 * 1024
-	defaultFPS            = 25
-	defaultBatchSize      = 1
 	defaultConnectTimeout = 30 * time.Second
 	dataMarker            = 0xFF
 	rtpBufSize            = 65536
@@ -87,13 +85,7 @@ func New(ctx context.Context, cfg transport.Config) (transport.Transport, error)
 	}
 
 	fps := cfg.VP8FPS
-	if fps <= 0 {
-		fps = defaultFPS
-	}
 	batchSize := cfg.VP8BatchSize
-	if batchSize <= 0 {
-		batchSize = defaultBatchSize
-	}
 
 	tr := &streamTransport{
 		stream:        stream,

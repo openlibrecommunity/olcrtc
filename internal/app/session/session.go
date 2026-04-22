@@ -49,6 +49,10 @@ var (
 	ErrVideoBitrateRequired = errors.New("video bitrate required for videochannel (use -video-bitrate)")
 	ErrVideoHWRequired      = errors.New("video hardware acceleration required for videochannel (use -video-hw none/nvenc)")
 
+	// VP8channel errors
+	ErrVP8FPSRequired       = errors.New("vp8 fps required for vp8channel (use -vp8-fps)")
+	ErrVP8BatchSizeRequired = errors.New("vp8 batch size required for vp8channel (use -vp8-batch)")
+
 	// CNC errors
 	ErrSOCKSHostRequired = errors.New("socks host required for cnc mode (use -socks-host)")
 	ErrSOCKSPortRequired = errors.New("socks port required for cnc mode (use -socks-port)")
@@ -171,6 +175,15 @@ func Validate(cfg Config) error {
 		}
 		if cfg.VideoHW == "" {
 			return ErrVideoHWRequired
+		}
+	}
+
+	if cfg.Transport == "vp8channel" {
+		if cfg.VP8FPS == 0 {
+			return ErrVP8FPSRequired
+		}
+		if cfg.VP8BatchSize == 0 {
+			return ErrVP8BatchSizeRequired
 		}
 	}
 
