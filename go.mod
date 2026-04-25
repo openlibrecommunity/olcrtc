@@ -11,7 +11,7 @@ require (
 	github.com/makiuchi-d/gozxing v0.1.1
 	github.com/pion/rtp v1.10.1
 	github.com/pion/webrtc/v4 v4.2.11
-	github.com/zarazaex69/b v0.0.0-20260422171520-7eb386d13bda
+	github.com/zarazaex69/b v0.0.0-20260423064626-c0bd20863b89
 	golang.org/x/crypto v0.50.0
 	golang.org/x/mobile v0.0.0-20260410095206-2cfb76559b7b
 )

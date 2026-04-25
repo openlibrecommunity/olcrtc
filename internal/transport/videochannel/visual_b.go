@@ -9,14 +9,16 @@ import (
 )
 
 func renderVisualFrameB(payload []byte, width, height int) ([]byte, error) {
-	logicalFrameBytes := width * height
-	frame := make([]byte, logicalFrameBytes)
-	for i := range frame {
-		frame[i] = 0xff
+	rgba := make([]byte, width*height*4)
+	for i := 0; i < len(rgba); i += 4 {
+		rgba[i] = 0xff
+		rgba[i+1] = 0xff
+		rgba[i+2] = 0xff
+		rgba[i+3] = 0xff
 	}
 
 	if len(payload) == 0 {
-		return frame, nil
+		return rgba, nil
 	}
 
 	cfg := b.DefaultConfig()
@@ -27,63 +29,35 @@ func renderVisualFrameB(payload []byte, width, height int) ([]byte, error) {
 
 	bmpW := int(result.Width)
 	bmpH := int(result.Height)
-
-	scaleW := width / bmpW
-	scaleH := height / bmpH
-	scale := scaleW
-	if scaleH < scale {
-		scale = scaleH
-	}
-	if scale < 1 {
-		scale = 1
-	}
-
-	totalW := bmpW * scale
-	totalH := bmpH * scale
-	offsetX := (width - totalW) / 2
-	offsetY := (height - totalH) / 2
+	offsetX := (width - bmpW) / 2
+	offsetY := (height - bmpH) / 2
 
 	for y := 0; y < bmpH; y++ {
 		for x := 0; x < bmpW; x++ {
-			idx := (y*bmpW + x) * 4
-			r := result.RGBA[idx]
-			g := result.RGBA[idx+1]
-			bb := result.RGBA[idx+2]
-
-			gray := uint8((int(r) + int(g) + int(bb)) / 3)
-
-			for sy := 0; sy < scale; sy++ {
-				for sx := 0; sx < scale; sx++ {
-					pixelX := offsetX + (x * scale) + sx
-					pixelY := offsetY + (y * scale) + sy
-					if pixelX < width && pixelY < height {
-						frame[pixelY*width+pixelX] = gray
-					}
-				}
+			srcIdx := (y*bmpW + x) * 4
+			pixelX := offsetX + x
+			pixelY := offsetY + y
+			if pixelX >= 0 && pixelX < width && pixelY >= 0 && pixelY < height {
+				dstIdx := (pixelY*width + pixelX) * 4
+				rgba[dstIdx] = result.RGBA[srcIdx]
+				rgba[dstIdx+1] = result.RGBA[srcIdx+1]
+				rgba[dstIdx+2] = result.RGBA[srcIdx+2]
+				rgba[dstIdx+3] = result.RGBA[srcIdx+3]
 			}
 		}
 	}
 
-	return frame, nil
+	return rgba, nil
 }
 
 func extractVisualPayloadB(frame []byte, width, height int) ([]byte, error) {
-	logicalFrameBytes := width * height
-	if len(frame) != logicalFrameBytes {
-		return nil, fmt.Errorf("unexpected frame size: %d (expected %dx%d=%d)", len(frame), width, height, logicalFrameBytes)
-	}
-
-	rgba := make([]byte, width*height*4)
-	for i := 0; i < width*height; i++ {
-		gray := frame[i]
-		rgba[i*4] = gray
-		rgba[i*4+1] = gray
-		rgba[i*4+2] = gray
-		rgba[i*4+3] = 255
+	expectedSize := width * height * 4
+	if len(frame) != expectedSize {
+		return nil, fmt.Errorf("unexpected frame size: %d (expected %dx%dx4=%d)", len(frame), width, height, expectedSize)
 	}
 
 	cfg := b.DefaultConfig()
-	decoded, err := b.Decode(rgba, uint32(width), uint32(height), cfg)
+	decoded, err := b.Decode(frame, uint32(width), uint32(height), cfg)
 	if err != nil {
 		return nil, nil
 	}

@@ -127,13 +127,14 @@ type ffmpegEncoder struct {
 	frames    chan []byte
 	width     int
 	height    int
+	frameSize int
 	closed    atomic.Bool
 	closeOnce sync.Once
 	errMu     sync.Mutex
 	err       error
 }
 
-func newFFmpegEncoder(spec codecSpec, width, height, fps int, bitrate, hw string) (*ffmpegEncoder, error) {
+func newFFmpegEncoder(spec codecSpec, width, height, fps int, bitrate, hw, visualCodec string) (*ffmpegEncoder, error) {
 	if _, err := exec.LookPath("ffmpeg"); err != nil {
 		return nil, ErrFFmpegUnavailable
 	}
@@ -155,9 +156,16 @@ func newFFmpegEncoder(spec codecSpec, width, height, fps int, bitrate, hw string
 		}
 	}
 
+	inputPixFmt := "gray"
+	frameSize := width * height
+	if visualCodec == "b" {
+		inputPixFmt = "rgba"
+		frameSize = width * height * 4
+	}
+
 	args = append(args,
 		"-f", "rawvideo",
-		"-pix_fmt", "gray",
+		"-pix_fmt", inputPixFmt,
 		"-video_size", fmt.Sprintf("%dx%d", width, height),
 		"-framerate", fmt.Sprintf("%d", fps),
 		"-i", "pipe:0",
@@ -202,12 +210,13 @@ func newFFmpegEncoder(spec codecSpec, width, height, fps int, bitrate, hw string
 	}
 
 	enc := &ffmpegEncoder{
-		cmd:    cmd,
-		stdin:  stdin,
-		stderr: stderr,
-		frames: make(chan []byte, 8),
-		width:  width,
-		height: height,
+		cmd:       cmd,
+		stdin:     stdin,
+		stderr:    stderr,
+		frames:    make(chan []byte, 8),
+		width:     width,
+		height:    height,
+		frameSize: frameSize,
 	}
 
 	if spec.mimeType == webrtc.MimeTypeH264 {
@@ -219,8 +228,8 @@ func newFFmpegEncoder(spec codecSpec, width, height, fps int, bitrate, hw string
 }
 
 func (e *ffmpegEncoder) EncodeFrame(frame []byte) ([]byte, error) {
-	if len(frame) != e.width*e.height {
-		return nil, fmt.Errorf("unexpected encoder frame size: %d", len(frame))
+	if len(frame) != e.frameSize {
+		return nil, fmt.Errorf("unexpected encoder frame size: %d (expected %d)", len(frame), e.frameSize)
 	}
 	if err := e.processErr(); err != nil {
 		return nil, err
@@ -329,13 +338,14 @@ type ffmpegDecoder struct {
 	frames    chan []byte
 	pts       uint64
 	mimeType  string
+	frameSize int
 	closed    atomic.Bool
 	closeOnce sync.Once
 	errMu     sync.Mutex
 	err       error
 }
 
-func newFFmpegDecoder(spec codecSpec, width, height, fps int, hw string) (*ffmpegDecoder, error) {
+func newFFmpegDecoder(spec codecSpec, width, height, fps int, hw, visualCodec string) (*ffmpegDecoder, error) {
 	if _, err := exec.LookPath("ffmpeg"); err != nil {
 		return nil, ErrFFmpegUnavailable
 	}
@@ -352,6 +362,13 @@ func newFFmpegDecoder(spec codecSpec, width, height, fps int, hw string) (*ffmpe
 		}
 	}
 
+	outputPixFmt := "gray"
+	frameSize := width * height
+	if visualCodec == "b" {
+		outputPixFmt = "rgba"
+		frameSize = width * height * 4
+	}
+
 	args := []string{"-loglevel", "info"}
 	if spec.mimeType == webrtc.MimeTypeH264 {
 		args = append(args, "-f", "h264")
@@ -359,13 +376,14 @@ func newFFmpegDecoder(spec codecSpec, width, height, fps int, hw string) (*ffmpe
 		args = append(args, "-f", "ivf")
 	}
 
+	vfFilter := fmt.Sprintf("scale=%d:%d:flags=neighbor,format=%s", width, height, outputPixFmt)
 	args = append(args,
 		"-flags", "low_delay",
 		"-vcodec", decoderName,
 		"-i", "pipe:0",
 		"-an",
-		"-vf", fmt.Sprintf("scale=%d:%d:flags=neighbor,format=gray", width, height),
-		"-pix_fmt", "gray",
+		"-vf", vfFilter,
+		"-pix_fmt", outputPixFmt,
 		"-f", "rawvideo",
 		"pipe:1",
 	)
@@ -387,11 +405,12 @@ func newFFmpegDecoder(spec codecSpec, width, height, fps int, hw string) (*ffmpe
 	}
 
 	dec := &ffmpegDecoder{
-		cmd:      cmd,
-		stdin:    stdin,
-		stderr:   stderr,
-		frames:   make(chan []byte, 32),
-		mimeType: spec.mimeType,
+		cmd:       cmd,
+		stdin:     stdin,
+		stderr:    stderr,
+		frames:    make(chan []byte, 32),
+		mimeType:  spec.mimeType,
+		frameSize: frameSize,
 	}
 
 	if spec.mimeType != webrtc.MimeTypeH264 {
@@ -401,7 +420,7 @@ func newFFmpegDecoder(spec codecSpec, width, height, fps int, hw string) (*ffmpe
 		}
 	}
 
-	go dec.readRawFrames(stdout, width, height)
+	go dec.readRawFrames(stdout)
 	return dec, nil
 }
 
@@ -446,10 +465,9 @@ func (d *ffmpegDecoder) Close() error {
 	return nil
 }
 
-func (d *ffmpegDecoder) readRawFrames(stdout io.Reader, width, height int) {
+func (d *ffmpegDecoder) readRawFrames(stdout io.Reader) {
 	defer close(d.frames)
-	logicalFrameBytes := width * height
-	buf := make([]byte, logicalFrameBytes)
+	buf := make([]byte, d.frameSize)
 	for {
 		if _, err := io.ReadFull(stdout, buf); err != nil {
 			if !d.closed.Load() {
