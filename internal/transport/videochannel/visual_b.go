@@ -5,6 +5,7 @@ package videochannel
 import (
 	"fmt"
 
+	"github.com/openlibrecommunity/olcrtc/internal/logger"
 	"github.com/zarazaex69/b/go"
 )
 
@@ -59,6 +60,7 @@ func extractVisualPayloadB(frame []byte, width, height int) ([]byte, error) {
 	cfg := b.DefaultConfig()
 	decoded, err := b.Decode(frame, uint32(width), uint32(height), cfg)
 	if err != nil {
+		logger.Debugf("b decode failed: %v", err)
 		return nil, nil
 	}
 
