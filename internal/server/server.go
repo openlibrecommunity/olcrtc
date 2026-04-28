@@ -523,7 +523,6 @@ func (s *Server) pumpToMux(sid uint16, conn net.Conn) {
 
 	buf := make([]byte, 16384)
 	totalSent := uint64(0)
-	lastLog := time.Now()
 
 	for {
 		n, err := conn.Read(buf)
@@ -543,10 +542,6 @@ func (s *Server) pumpToMux(sid uint16, conn net.Conn) {
 		}
 
 		totalSent += uint64(n) //nolint:gosec
-		if time.Since(lastLog) > 5*time.Second {
-			logger.Infof("sid=%d sent=%dMB", sid, totalSent/(1024*1024))
-			lastLog = time.Now()
-		}
 	}
 }
 
