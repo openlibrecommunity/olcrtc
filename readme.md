@@ -37,6 +37,9 @@ mage build
 # build cli only
 mage buildCLI
 
+# build cli with b codec, clones b repo, builds libb.so, compiles with -tags b
+mage buildB
+
 # build ui only
 mage buildUI
 
@@ -54,6 +57,7 @@ mage docker
 mage lint
 mage test
 mage clean
+
 ```
 
 
