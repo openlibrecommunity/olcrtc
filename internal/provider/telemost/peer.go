@@ -336,8 +336,7 @@ func (p *Peer) setupPeerConnections(config webrtc.Configuration) error {
 }
 
 func (p *Peer) onConnectionStateChange(state webrtc.PeerConnectionState) {
-	if !p.closed.Load() && (state == webrtc.PeerConnectionStateFailed ||
-		state == webrtc.PeerConnectionStateDisconnected) {
+	if !p.closed.Load() && state == webrtc.PeerConnectionStateFailed {
 		p.queueReconnect()
 	}
 }
