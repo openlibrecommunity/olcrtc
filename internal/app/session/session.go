@@ -184,6 +184,9 @@ func Validate(cfg Config) error {
 		if cfg.VideoCodec != "" && cfg.VideoCodec != "qrcode" && cfg.VideoCodec != "tile" {
 			return ErrVideoCodecInvalid
 		}
+		if cfg.VideoCodec == "tile" && (cfg.VideoWidth != 1080 || cfg.VideoHeight != 1080) {
+			return errors.New("tile codec requires -video-w 1080 -video-h 1080")
+		}
 	}
 
 	if cfg.Transport == "vp8channel" {
