@@ -139,7 +139,7 @@ func newFFmpegEncoder(spec codecSpec, width, height, fps int, bitrate, hw string
 		return nil, ErrFFmpegUnavailable
 	}
 
-	args := []string{"-loglevel", "error"}
+	args := []string{"-loglevel", "error", "-threads", "1"}
 
 	// Determine encoder binary based on HW flag
 	vcodec := spec.encoder
@@ -361,7 +361,7 @@ func newFFmpegDecoder(spec codecSpec, width, height, fps int, hw string) (*ffmpe
 	outputPixFmt := "gray"
 	frameSize := width * height
 
-	args := []string{"-loglevel", "info"}
+	args := []string{"-loglevel", "error", "-threads", "1"}
 	if spec.mimeType == webrtc.MimeTypeH264 {
 		args = append(args, "-f", "h264")
 	} else {
