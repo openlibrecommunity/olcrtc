@@ -70,6 +70,11 @@ type streamTransport struct {
 	videoCodec      string
 	videoTileModule int
 	videoTileRS     int
+
+	// cached encoded idle frame — rendered and encoded once, reused on every tick
+	// where the outbound queue is empty to avoid re-encoding an identical blank frame.
+	idleFrame   []byte
+	idleFrameMu sync.Mutex
 }
 
 // New creates a visual videochannel transport backed by a carrier-specific provider.
@@ -309,6 +314,8 @@ func (p *streamTransport) writerLoop() {
 	ticker := time.NewTicker(time.Second / time.Duration(p.videoFPS))
 	defer ticker.Stop()
 
+	frameDuration := time.Second / time.Duration(p.videoFPS)
+
 	for {
 		select {
 		case <-p.closeCh:
@@ -319,19 +326,49 @@ func (p *streamTransport) writerLoop() {
 				return
 			}
 
-			var rawFrame []byte
-			var err error
-			rawFrame, err = renderVisualFrame(payload, p.videoW, p.videoH, p.videoCodec, p.videoQRRecovery, p.videoTileModule, p.videoTileRS)
-			if err != nil {
-				logger.Debugf("videochannel render error: %v", err)
-				continue
-			}
-
 			p.encoderMu.Lock()
 			enc := p.encoder
 			p.encoderMu.Unlock()
 
 			if enc == nil {
+				continue
+			}
+
+			// idle frame: payload is nil — reuse previously encoded sample to avoid
+			// re-rendering and re-encoding an identical blank frame every tick.
+			if payload == nil {
+				p.idleFrameMu.Lock()
+				cached := p.idleFrame
+				p.idleFrameMu.Unlock()
+
+				if cached == nil {
+					// first time — render + encode once, then cache
+					rawFrame, err := renderVisualFrame(nil, p.videoW, p.videoH, p.videoCodec, p.videoQRRecovery, p.videoTileModule, p.videoTileRS)
+					if err != nil {
+						logger.Debugf("videochannel render idle error: %v", err)
+						continue
+					}
+					sample, err := enc.EncodeFrame(rawFrame)
+					if err != nil {
+						logger.Warnf("videochannel encoder idle error: %v", err)
+						continue
+					}
+					p.idleFrameMu.Lock()
+					p.idleFrame = sample
+					p.idleFrameMu.Unlock()
+					cached = sample
+				}
+
+				_ = p.track.WriteSample(media.Sample{
+					Data:     cached,
+					Duration: frameDuration,
+				})
+				continue
+			}
+
+			rawFrame, err := renderVisualFrame(payload, p.videoW, p.videoH, p.videoCodec, p.videoQRRecovery, p.videoTileModule, p.videoTileRS)
+			if err != nil {
+				logger.Debugf("videochannel render error: %v", err)
 				continue
 			}
 
@@ -343,7 +380,7 @@ func (p *streamTransport) writerLoop() {
 
 			_ = p.track.WriteSample(media.Sample{
 				Data:     sample,
-				Duration: time.Second / time.Duration(p.videoFPS),
+				Duration: frameDuration,
 			})
 		}
 	}
