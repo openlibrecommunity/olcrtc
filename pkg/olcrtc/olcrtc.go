@@ -110,6 +110,7 @@ func newWithAuth(ctx context.Context, cfg Config) (*Session, error) {
 	authCfg := auth.Config{
 		RoomURL:   cfg.RoomID,
 		Name:      cfg.Name,
+		Token:     cfg.Token,
 		DNSServer: cfg.DNSServer,
 		ProxyAddr: cfg.ProxyAddr,
 		ProxyPort: cfg.ProxyPort,

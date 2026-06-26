@@ -116,6 +116,7 @@ func registerEngineAuth(name string, provider auth.Provider) {
 		authCfg := auth.Config{
 			RoomURL:   cfg.RoomURL,
 			Name:      cfg.Name,
+			Token:     cfg.Token,
 			DNSServer: cfg.DNSServer,
 			ProxyAddr: cfg.ProxyAddr,
 			ProxyPort: cfg.ProxyPort,

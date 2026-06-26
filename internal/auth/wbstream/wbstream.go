@@ -22,9 +22,16 @@ func (Provider) Issue(ctx context.Context, cfg auth.Config) (auth.Credentials, e
 		return auth.Credentials{}, auth.ErrRoomIDRequired
 	}
 
-	accessToken, err := registerGuest(ctx, cfg.Name)
-	if err != nil {
-		return auth.Credentials{}, fmt.Errorf("register guest: %w", err)
+	// Owner flow: when an access token is supplied (srv side via yaml engine.token),
+	// use it directly so this peer owns the room and keeps it alive. Otherwise register
+	// an anonymous guest (cnc side) — guests can only join a room an owner keeps live.
+	accessToken := cfg.Token
+	if accessToken == "" {
+		var err error
+		accessToken, err = registerGuest(ctx, cfg.Name)
+		if err != nil {
+			return auth.Credentials{}, fmt.Errorf("register guest: %w", err)
+		}
 	}
 
 	roomID := cfg.RoomURL

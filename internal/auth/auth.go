@@ -45,6 +45,11 @@ type Config struct {
 	RoomURL string
 	// Name is the display name to register with.
 	Name string
+	// Token is an optional pre-authenticated access token. When set, providers
+	// that support an "owner" flow (e.g. wbstream) use it instead of registering
+	// an anonymous guest — this lets a long-lived peer (the srv) own/keep the room
+	// alive while the other end joins as a guest. Carried from yaml `engine.token`.
+	Token string
 	// DNSServer / ProxyAddr / ProxyPort are network knobs for outbound HTTP.
 	DNSServer string
 	ProxyAddr string

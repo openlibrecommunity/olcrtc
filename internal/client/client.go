@@ -175,6 +175,14 @@ func RunWithReady(ctx context.Context, cfg Config, onReady func()) error {
 
 	go c.acceptLoop(runCtx, listener)
 
+	// промптовое закрытие listener на отмену ctx (не ждать раскрутки defer) — освобождает
+	// SOCKS-порт сразу, чтобы повторный StartCnc / ротация сессии могли ребиндить без
+	// "bind: address already in use" (важно для iOS NE-extension с retry).
+	go func() {
+		<-runCtx.Done()
+		_ = listener.Close()
+	}()
+
 	<-runCtx.Done()
 	return nil
 }

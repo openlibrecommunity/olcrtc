@@ -1066,13 +1066,18 @@ func (p *streamTransport) handleFirstPeer(peerEpoch uint32) {
 func (p *streamTransport) handleIncomingFrame(frame []byte) {
 	frameToken, peerEpoch, ok := parseEpochHeader(frame)
 	if !ok {
-		logger.Debugf("vp8channel: incoming frame bad header len=%d", len(frame))
+		hn := len(frame)
+		if hn > 40 {
+			hn = 40
+		}
+		logger.Infof("vp8channel: BADHDR len=%d want_token=0x%08x hdr=%x", len(frame), p.bindingToken, frame[:hn])
 		return
 	}
 	if frameToken != p.bindingToken {
-		logger.Debugf("vp8channel: incoming frame token mismatch got=0x%08x want=0x%08x", frameToken, p.bindingToken)
+		logger.Infof("vp8channel: TOKMISMATCH got=0x%08x want=0x%08x epoch=0x%08x", frameToken, p.bindingToken, peerEpoch)
 		return
 	}
+	logger.Debugf("vp8channel: GOODFRAME token=0x%08x epoch=0x%08x len=%d ctrl=%v", frameToken, peerEpoch, len(frame), peerEpoch&controlEpochFlag != 0)
 	kcpPayload := frame[epochHdrLen:]
 	if peerEpoch == p.localEpochValue() {
 		return // own loopback
