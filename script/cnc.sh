@@ -103,6 +103,14 @@ esac
 echo "[*] Using auth: $AUTH"
 echo ""
 
+WB_TOKEN=""
+if [ "$AUTH" = "wbstream" ]; then
+    echo "wbstream account token (auth.token), optional."
+    echo "Empty = anonymous guest. Required for datachannel (needs moderator rights, canPublishData=true)."
+    read -p "wbstream auth.token (Enter to skip): " WB_TOKEN
+    echo ""
+fi
+
 echo "Select transport:"
 echo "  1) datachannel"
 echo "  2) videochannel"
@@ -363,6 +371,15 @@ cat > "$CONFIG_FILE" <<EOF
 mode: cnc
 auth:
   provider: "$AUTH"
+EOF
+
+if [ -n "$WB_TOKEN" ]; then
+    cat >> "$CONFIG_FILE" <<EOF
+  token: "$WB_TOKEN"
+EOF
+fi
+
+cat >> "$CONFIG_FILE" <<EOF
 room:
   id: "$ROOM_ID"
 crypto:

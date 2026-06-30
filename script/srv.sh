@@ -99,6 +99,14 @@ esac
 echo "[*] Using carrier: $CARRIER"
 echo ""
 
+WB_TOKEN=""
+if [ "$CARRIER" = "wbstream" ]; then
+    echo "wbstream account token (auth.token), optional."
+    echo "Empty = anonymous guest. Required for datachannel (needs moderator rights, canPublishData=true)."
+    read -p "wbstream auth.token (Enter to skip): " WB_TOKEN
+    echo ""
+fi
+
 echo "Select transport:"
 echo "  1) datachannel"
 echo "  2) videochannel"
@@ -396,6 +404,15 @@ cat > "$CONFIG_FILE" <<EOF
 mode: srv
 auth:
   provider: "$CARRIER"
+EOF
+
+if [ -n "$WB_TOKEN" ]; then
+    cat >> "$CONFIG_FILE" <<EOF
+  token: "$WB_TOKEN"
+EOF
+fi
+
+cat >> "$CONFIG_FILE" <<EOF
 room:
   id: "$ROOM_ID"
 crypto:
