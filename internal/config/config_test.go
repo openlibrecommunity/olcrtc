@@ -37,9 +37,11 @@ socks:
   port: 1080
   user: u
   pass: p
+  max_sessions: 17
 vp8:
   fps: 25
   batch_size: 4
+  max_bytes_per_sec: 120000
 liveness:
   interval: 2s
   timeout: 500ms
@@ -97,7 +99,8 @@ func requireAppliedConfig(t *testing.T, got session.Config) {
 		SOCKSPort:             1080,
 		SOCKSUser:             "u",
 		SOCKSPass:             "p",
-		VP8:                   session.VP8Config{FPS: 25, BatchSize: 4},
+		SOCKSMaxSessions:      17,
+		VP8:                   session.VP8Config{FPS: 25, BatchSize: 4, MaxBytesPerSec: 120000},
 		LivenessInterval:      "2s",
 		LivenessTimeout:       "500ms",
 		LivenessFailures:      4,
@@ -169,6 +172,7 @@ profiles:
       transport: vp8channel
     vp8:
       fps: 30
+      max_bytes_per_sec: 160000
     liveness:
       interval: 1s
     lifecycle:
@@ -209,6 +213,7 @@ failover:
 		t.Fatalf("first profile = %+v", first)
 	}
 	if first.KeyHex != "shared-key" || first.DNSServer != testDNSServer || first.VP8.FPS != 30 ||
+		first.VP8.MaxBytesPerSec != 160000 ||
 		first.LivenessInterval != "1s" || first.LivenessTimeout != "2s" || first.LivenessFailures != 5 ||
 		first.MaxSessionDuration != "30m" || first.TrafficMaxPayloadSize != 4096 ||
 		first.TrafficMinDelay != "10ms" || first.TrafficMaxDelay != "20ms" {

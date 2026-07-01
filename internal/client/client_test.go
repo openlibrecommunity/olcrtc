@@ -89,6 +89,91 @@ func TestSocks5Handshake(t *testing.T) {
 	}
 }
 
+func TestSOCKSSlotActiveCount(t *testing.T) {
+	ctx := context.Background()
+	c := &Client{
+		socksSlots:          make(chan struct{}, 1),
+		socksLimit:          1,
+		socksTargets:        make(map[string]int64),
+		socksPerTargetLimit: 1,
+	}
+	server, client := net.Pipe()
+	defer func() { _ = server.Close() }()
+	defer func() { _ = client.Close() }()
+
+	if !c.acquireSOCKSSlot(ctx, server, "example.com:443") {
+		t.Fatal("acquireSOCKSSlot() = false")
+	}
+	if got := c.socksActive.Load(); got != 1 {
+		t.Fatalf("socksActive after acquire = %d, want 1", got)
+	}
+
+	c.releaseSOCKSSlot("example.com:443")
+	if got := c.socksActive.Load(); got != 0 {
+		t.Fatalf("socksActive after release = %d, want 0", got)
+	}
+
+	c.releaseSOCKSSlot("example.com:443")
+	if got := c.socksActive.Load(); got != 0 {
+		t.Fatalf("socksActive after extra release = %d, want 0", got)
+	}
+}
+
+func TestSOCKSSlotRejectsWhenPerTargetLimitReached(t *testing.T) {
+	ctx := context.Background()
+	c := &Client{
+		socksSlots:          make(chan struct{}, 64),
+		socksLimit:          64,
+		socksTargets:        make(map[string]int64),
+		socksPerTargetLimit: 1,
+	}
+	firstServer, firstClient := net.Pipe()
+	defer func() { _ = firstServer.Close() }()
+	defer func() { _ = firstClient.Close() }()
+	secondServer, secondClient := net.Pipe()
+	defer func() { _ = secondServer.Close() }()
+	defer func() { _ = secondClient.Close() }()
+
+	if !c.acquireSOCKSSlot(ctx, firstServer, "mail.example:993") {
+		t.Fatal("first acquireSOCKSSlot() = false")
+	}
+	if c.acquireSOCKSSlot(ctx, secondServer, "mail.example:993") {
+		t.Fatal("second acquireSOCKSSlot() unexpectedly succeeded for same target")
+	}
+	if !c.acquireSOCKSSlot(ctx, secondServer, "www.example:443") {
+		t.Fatal("acquireSOCKSSlot() for different target = false")
+	}
+}
+
+func TestSOCKSSlotWaitsWhenGlobalLimitReached(t *testing.T) {
+	c := &Client{
+		socksSlots:          make(chan struct{}, 1),
+		socksLimit:          1,
+		socksTargets:        make(map[string]int64),
+		socksPerTargetLimit: 8,
+	}
+	firstServer, firstClient := net.Pipe()
+	defer func() { _ = firstServer.Close() }()
+	defer func() { _ = firstClient.Close() }()
+	secondServer, secondClient := net.Pipe()
+	defer func() { _ = secondServer.Close() }()
+	defer func() { _ = secondClient.Close() }()
+
+	if !c.acquireSOCKSSlot(context.Background(), firstServer, "one.example:443") {
+		t.Fatal("first acquireSOCKSSlot() = false")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	if c.acquireSOCKSSlot(ctx, secondServer, "two.example:443") {
+		t.Fatal("second acquireSOCKSSlot() unexpectedly succeeded while global slot was occupied")
+	}
+}
+
+func isTimeout(err error) bool {
+	var netErr net.Error
+	return errors.As(err, &netErr) && netErr.Timeout()
+}
+
 func TestSocks5HandshakeWithAuth(t *testing.T) {
 	c := &Client{socksUser: "user", socksPass: "pass"}
 	server, client := net.Pipe()

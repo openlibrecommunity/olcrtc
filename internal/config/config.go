@@ -101,14 +101,15 @@ type Net struct {
 
 // SOCKS bundles SOCKS5 listener and outbound-proxy settings.
 type SOCKS struct {
-	Host      string `yaml:"host"`
-	Port      int    `yaml:"port"`
-	User      string `yaml:"user"`
-	Pass      string `yaml:"pass"`
-	ProxyAddr string `yaml:"proxy_addr"`
-	ProxyPort int    `yaml:"proxy_port"`
-	ProxyUser string `yaml:"proxy_user"`
-	ProxyPass string `yaml:"proxy_pass"`
+	Host        string `yaml:"host"`
+	Port        int    `yaml:"port"`
+	User        string `yaml:"user"`
+	Pass        string `yaml:"pass"`
+	MaxSessions int    `yaml:"max_sessions"`
+	ProxyAddr   string `yaml:"proxy_addr"`
+	ProxyPort   int    `yaml:"proxy_port"`
+	ProxyUser   string `yaml:"proxy_user"`
+	ProxyPass   string `yaml:"proxy_pass"`
 }
 
 // Engine selects a direct SFU connection when Auth.Provider is "none".
@@ -134,8 +135,9 @@ type Video struct {
 
 // VP8 tunes the vp8channel transport.
 type VP8 struct {
-	FPS       int `yaml:"fps"`
-	BatchSize int `yaml:"batch_size"`
+	FPS            int `yaml:"fps"`
+	BatchSize      int `yaml:"batch_size"`
+	MaxBytesPerSec int `yaml:"max_bytes_per_sec"`
 }
 
 // SEI tunes the seichannel transport.
@@ -260,6 +262,7 @@ func Apply(dst session.Config, f File) session.Config {
 	dst.SOCKSPort = pickInt(dst.SOCKSPort, f.SOCKS.Port)
 	dst.SOCKSUser = pickString(dst.SOCKSUser, f.SOCKS.User)
 	dst.SOCKSPass = pickString(dst.SOCKSPass, f.SOCKS.Pass)
+	dst.SOCKSMaxSessions = pickInt(dst.SOCKSMaxSessions, f.SOCKS.MaxSessions)
 	dst.DNSServer = pickString(dst.DNSServer, f.Net.DNS)
 	dst.SOCKSProxyAddr = pickString(dst.SOCKSProxyAddr, f.SOCKS.ProxyAddr)
 	dst.SOCKSProxyPort = pickInt(dst.SOCKSProxyPort, f.SOCKS.ProxyPort)
@@ -277,6 +280,7 @@ func Apply(dst session.Config, f File) session.Config {
 	dst.Video.TileRS = pickInt(dst.Video.TileRS, f.Video.TileRS)
 	dst.VP8.FPS = pickInt(dst.VP8.FPS, f.VP8.FPS)
 	dst.VP8.BatchSize = pickInt(dst.VP8.BatchSize, f.VP8.BatchSize)
+	dst.VP8.MaxBytesPerSec = pickInt(dst.VP8.MaxBytesPerSec, f.VP8.MaxBytesPerSec)
 	dst.SEI.FPS = pickInt(dst.SEI.FPS, f.SEI.FPS)
 	dst.SEI.BatchSize = pickInt(dst.SEI.BatchSize, f.SEI.BatchSize)
 	dst.SEI.FragmentSize = pickInt(dst.SEI.FragmentSize, f.SEI.FragmentSize)
@@ -307,6 +311,7 @@ func ApplyProfile(base session.Config, p Profile) session.Config {
 	dst.SOCKSPort = overlayInt(dst.SOCKSPort, p.SOCKS.Port)
 	dst.SOCKSUser = overlayString(dst.SOCKSUser, p.SOCKS.User)
 	dst.SOCKSPass = overlayString(dst.SOCKSPass, p.SOCKS.Pass)
+	dst.SOCKSMaxSessions = overlayInt(dst.SOCKSMaxSessions, p.SOCKS.MaxSessions)
 	dst.DNSServer = overlayString(dst.DNSServer, p.Net.DNS)
 	dst.SOCKSProxyAddr = overlayString(dst.SOCKSProxyAddr, p.SOCKS.ProxyAddr)
 	dst.SOCKSProxyPort = overlayInt(dst.SOCKSProxyPort, p.SOCKS.ProxyPort)
@@ -324,6 +329,7 @@ func ApplyProfile(base session.Config, p Profile) session.Config {
 	dst.Video.TileRS = overlayInt(dst.Video.TileRS, p.Video.TileRS)
 	dst.VP8.FPS = overlayInt(dst.VP8.FPS, p.VP8.FPS)
 	dst.VP8.BatchSize = overlayInt(dst.VP8.BatchSize, p.VP8.BatchSize)
+	dst.VP8.MaxBytesPerSec = overlayInt(dst.VP8.MaxBytesPerSec, p.VP8.MaxBytesPerSec)
 	dst.SEI.FPS = overlayInt(dst.SEI.FPS, p.SEI.FPS)
 	dst.SEI.BatchSize = overlayInt(dst.SEI.BatchSize, p.SEI.BatchSize)
 	dst.SEI.FragmentSize = overlayInt(dst.SEI.FragmentSize, p.SEI.FragmentSize)

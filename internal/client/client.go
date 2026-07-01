@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -49,28 +50,39 @@ var (
 	ErrSOCKSCredTooLong = errors.New("socks5 user/pass exceeds 255 bytes")
 )
 
+const (
+	defaultMaxSOCKSSessions          = 64
+	defaultMaxSOCKSSessionsPerTarget = 8
+)
+
 // Client handles local SOCKS5 connections and tunnels them to the server.
 type Client struct {
-	ln          transport.Transport
-	cipher      *crypto.Cipher
-	conn        *muxconn.Conn
+	ln     transport.Transport
+	cipher *crypto.Cipher
+	conn   *muxconn.Conn
 	// controlConn is a separate muxconn wired to the transport's control-plane
 	// channel (transport.ControlPlane). When non-nil, the smux control session
 	// runs over it instead of the bulk data conn, eliminating head-of-line
 	// blocking of control ping/pong behind large data transfers.
-	controlConn *muxconn.Conn
-	session     *smux.Session
-	controlStrm *smux.Stream
-	controlStop context.CancelFunc
-	sessMu      sync.RWMutex
-	reconnectMu sync.Mutex
-	health      *runtime.HealthTracker
-	deviceID    string
-	sessionID   string
-	claims      map[string]any
-	dnsServer   string
-	socksUser   string
-	socksPass   string
+	controlConn         *muxconn.Conn
+	session             *smux.Session
+	controlStrm         *smux.Stream
+	controlStop         context.CancelFunc
+	sessMu              sync.RWMutex
+	reconnectMu         sync.Mutex
+	health              *runtime.HealthTracker
+	deviceID            string
+	sessionID           string
+	claims              map[string]any
+	dnsServer           string
+	socksUser           string
+	socksPass           string
+	socksSlots          chan struct{}
+	socksLimit          int64
+	socksActive         atomic.Int64
+	socksTargetMu       sync.Mutex
+	socksTargets        map[string]int64
+	socksPerTargetLimit int64
 	// sessionReady is closed (and replaced) each time a session becomes fully
 	// established (sessionID != ""). Tunnel handlers wait on it so they do
 	// not open smux streams before the server has accepted the handshake.
@@ -91,6 +103,7 @@ type Config struct {
 	DNSServer        string
 	SOCKSUser        string
 	SOCKSPass        string
+	MaxSOCKSSessions int
 	TransportOptions transport.Options
 	Engine           string
 	URL              string
@@ -135,15 +148,20 @@ func RunWithReady(ctx context.Context, cfg Config, onReady func()) error {
 		return fmt.Errorf("resolve device id: %w", err)
 	}
 
+	socksLimit := maxSOCKSSessions(cfg.MaxSOCKSSessions)
 	c := &Client{
-		cipher:       cipher,
-		deviceID:     deviceID,
-		claims:       cfg.Claims,
-		dnsServer:    cfg.DNSServer,
-		socksUser:    cfg.SOCKSUser,
-		socksPass:    cfg.SOCKSPass,
-		health:       runtime.NewHealthTracker(cfg.OnHealth),
-		sessionReady: make(chan struct{}),
+		cipher:              cipher,
+		deviceID:            deviceID,
+		claims:              cfg.Claims,
+		dnsServer:           cfg.DNSServer,
+		socksUser:           cfg.SOCKSUser,
+		socksPass:           cfg.SOCKSPass,
+		socksSlots:          make(chan struct{}, socksLimit),
+		socksLimit:          int64(socksLimit),
+		socksTargets:        make(map[string]int64),
+		socksPerTargetLimit: defaultMaxSOCKSSessionsPerTarget,
+		health:              runtime.NewHealthTracker(cfg.OnHealth),
+		sessionReady:        make(chan struct{}),
 	}
 
 	// shutdown is registered BEFORE bringUpLink so we always close any
@@ -185,6 +203,13 @@ func RunWithReady(ctx context.Context, cfg Config, onReady func()) error {
 
 	<-runCtx.Done()
 	return nil
+}
+
+func maxSOCKSSessions(configured int) int {
+	if configured > 0 {
+		return configured
+	}
+	return defaultMaxSOCKSSessions
 }
 
 func (c *Client) bringUpLink(
@@ -774,6 +799,100 @@ func (c *Client) acceptLoop(ctx context.Context, ln net.Listener) {
 	}
 }
 
+func socksTargetKey(addr string, port int) string {
+	return strings.ToLower(fmt.Sprintf("%s:%d", addr, port))
+}
+
+func (c *Client) acquireSOCKSSlot(ctx context.Context, conn net.Conn, target string) bool {
+	if c.socksSlots == nil {
+		return true
+	}
+	if active, targetActive, blockedBy, ok := c.tryAcquireSOCKSSlot(target); ok {
+		return true
+	} else if blockedBy == "target" {
+		logger.Warnf("socks target limit reached target=%s target_active=%d target_limit=%d active=%d limit=%d remote=%s",
+			target, targetActive, c.socksPerTargetLimit, active, c.socksLimit, conn.RemoteAddr())
+		return false
+	}
+
+	started := time.Now()
+	logger.Warnf("socks slot wait target=%s active=%d limit=%d remote=%s",
+		target, c.socksActive.Load(), c.socksLimit, conn.RemoteAddr())
+	retry := time.NewTicker(100 * time.Millisecond)
+	defer retry.Stop()
+	logTicker := time.NewTicker(5 * time.Second)
+	defer logTicker.Stop()
+	for {
+		select {
+		case <-retry.C:
+			active, targetActive, blockedBy, ok := c.tryAcquireSOCKSSlot(target)
+			if ok {
+				logger.Infof("socks slot acquired wait_ms=%d target=%s active=%d limit=%d target_active=%d target_limit=%d",
+					time.Since(started).Milliseconds(), target, active, c.socksLimit,
+					targetActive, c.socksPerTargetLimit)
+				return true
+			}
+			if blockedBy == "target" {
+				logger.Warnf("socks target limit reached after wait_ms=%d target=%s target_active=%d target_limit=%d active=%d limit=%d remote=%s",
+					time.Since(started).Milliseconds(), target, targetActive, c.socksPerTargetLimit,
+					active, c.socksLimit, conn.RemoteAddr())
+				return false
+			}
+		case <-logTicker.C:
+			logger.Warnf("socks slot still waiting wait_ms=%d target=%s active=%d limit=%d remote=%s",
+				time.Since(started).Milliseconds(), target, c.socksActive.Load(), c.socksLimit, conn.RemoteAddr())
+		case <-ctx.Done():
+			_ = conn.Close()
+			return false
+		}
+	}
+}
+
+func (c *Client) tryAcquireSOCKSSlot(target string) (active, targetActive int64, blockedBy string, ok bool) {
+	if c.socksSlots == nil {
+		return 0, 0, "", true
+	}
+	c.socksTargetMu.Lock()
+	defer c.socksTargetMu.Unlock()
+	if c.socksTargets == nil {
+		c.socksTargets = make(map[string]int64)
+	}
+	targetActive = c.socksTargets[target]
+	if c.socksPerTargetLimit > 0 && targetActive >= c.socksPerTargetLimit {
+		return c.socksActive.Load(), targetActive, "target", false
+	}
+	select {
+	case c.socksSlots <- struct{}{}:
+		c.socksTargets[target] = targetActive + 1
+		return c.socksActive.Add(1), targetActive + 1, "", true
+	default:
+		return c.socksActive.Load(), targetActive, "global", false
+	}
+}
+
+func (c *Client) releaseSOCKSSlot(target string) {
+	if c.socksSlots == nil {
+		return
+	}
+	c.socksTargetMu.Lock()
+	defer c.socksTargetMu.Unlock()
+	select {
+	case <-c.socksSlots:
+		if c.socksTargets != nil && target != "" {
+			if current := c.socksTargets[target]; current <= 1 {
+				delete(c.socksTargets, target)
+			} else {
+				c.socksTargets[target] = current - 1
+			}
+		}
+		active := c.socksActive.Add(-1)
+		if active < 0 {
+			c.socksActive.Store(0)
+		}
+	default:
+	}
+}
+
 func (c *Client) handleSocks5(ctx context.Context, conn net.Conn) {
 	defer func() { _ = conn.Close() }()
 
@@ -785,6 +904,12 @@ func (c *Client) handleSocks5(ctx context.Context, conn net.Conn) {
 	if err != nil {
 		return
 	}
+	target := socksTargetKey(targetAddr, targetPort)
+	if !c.acquireSOCKSSlot(ctx, conn, target) {
+		_, _ = conn.Write(replyHostUnreachable())
+		return
+	}
+	defer c.releaseSOCKSSlot(target)
 
 	// Wait until the session handshake is fully complete (sessionID != "").
 	// Without this gate, tunnel streams opened during server-side reinstall
@@ -824,7 +949,8 @@ func (c *Client) tunnel(conn net.Conn, sess *smux.Session, targetAddr string, ta
 	}
 	defer func() { _ = stream.Close() }()
 
-	logger.Infof("sid=%d tunnel to %s:%d", stream.ID(), targetAddr, targetPort)
+	logger.Infof("sid=%d tunnel to %s:%d socks_active=%d socks_limit=%d",
+		stream.ID(), targetAddr, targetPort, c.socksActive.Load(), c.socksLimit)
 
 	if err := c.sendConnectRequest(stream, targetAddr, targetPort); err != nil {
 		logger.Warnf("sid=%d connect failed: %v", stream.ID(), err)

@@ -9,6 +9,7 @@ import (
 
 	"github.com/openlibrecommunity/olcrtc/internal/control"
 	"github.com/openlibrecommunity/olcrtc/internal/runtime"
+	"github.com/openlibrecommunity/olcrtc/internal/transport/vp8channel"
 )
 
 const testBadDuration = "nope"
@@ -74,6 +75,19 @@ func TestApplyTransportDefaults(t *testing.T) {
 				t.Fatalf("ApplyTransportDefaults() = %+v, want %+v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestBuildTransportOptionsIncludesVP8RateLimit(t *testing.T) {
+	opts, ok := buildTransportOptions(Config{
+		Transport: transportVP8,
+		VP8:       VP8Config{FPS: 24, BatchSize: 8, MaxBytesPerSec: 120000},
+	}).(vp8channel.Options)
+	if !ok {
+		t.Fatalf("options type = %T, want vp8channel.Options", opts)
+	}
+	if opts.FPS != 24 || opts.BatchSize != 8 || opts.MaxBytesPerSec != 120000 {
+		t.Fatalf("vp8 options = %+v", opts)
 	}
 }
 

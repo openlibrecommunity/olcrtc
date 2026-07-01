@@ -159,8 +159,9 @@ type VideoConfig struct {
 
 // VP8Config holds tunables for the vp8channel transport.
 type VP8Config struct {
-	FPS       int
-	BatchSize int
+	FPS            int
+	BatchSize      int
+	MaxBytesPerSec int
 }
 
 // SEIConfig holds tunables for the seichannel transport.
@@ -186,6 +187,7 @@ type Config struct {
 	SOCKSPort             int
 	SOCKSUser             string
 	SOCKSPass             string
+	SOCKSMaxSessions      int
 	DNSServer             string
 	SOCKSProxyAddr        string
 	SOCKSProxyPort        int
@@ -686,6 +688,7 @@ func runOnce(
 			DNSServer:        cfg.DNSServer,
 			SOCKSUser:        cfg.SOCKSUser,
 			SOCKSPass:        cfg.SOCKSPass,
+			MaxSOCKSSessions: cfg.SOCKSMaxSessions,
 			TransportOptions: opts,
 			Engine:           cfg.Engine,
 			URL:              cfg.URL,
