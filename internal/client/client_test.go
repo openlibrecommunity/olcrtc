@@ -633,6 +633,56 @@ func (s *closerLinkStub) Features() transport.Features    { return transport.Fea
 func (s *closerLinkStub) Reconnect(string)                {}
 func (s *closerLinkStub) ResetPeer()                      { s.resetCount++ }
 
+type peerReadyLinkStub struct {
+	closerLinkStub
+}
+
+func (s *peerReadyLinkStub) WaitForPeer(ctx context.Context) error {
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+func TestShouldStopCarrierReconnectCapsOnlyNonPeerReadyTransports(t *testing.T) {
+	if shouldStopCarrierReconnect("carrier", 4, &closerLinkStub{}) {
+		t.Fatal("carrier reconnect stopped before attempt limit")
+	}
+	if !shouldStopCarrierReconnect("carrier", 5, &closerLinkStub{}) {
+		t.Fatal("carrier reconnect did not stop non-peer-ready transport at attempt limit")
+	}
+	if shouldStopCarrierReconnect("carrier", 5, &peerReadyLinkStub{}) {
+		t.Fatal("carrier reconnect stopped peer-ready transport at attempt limit")
+	}
+	if shouldStopCarrierReconnect("liveness", 5, &closerLinkStub{}) {
+		t.Fatal("liveness reconnect should not use carrier attempt cap")
+	}
+}
+
+var errPeerWaitProbe = errors.New("peer wait probe")
+
+type deadlinePeerReadyLinkStub struct {
+	closerLinkStub
+	timeout time.Duration
+}
+
+func (s *deadlinePeerReadyLinkStub) WaitForPeer(ctx context.Context) error {
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		return errors.New("peer wait context has no deadline")
+	}
+	s.timeout = time.Until(deadline)
+	return errPeerWaitProbe
+}
+
+func TestWaitForPeerUsesTelemostFriendlyTimeout(t *testing.T) {
+	ln := &deadlinePeerReadyLinkStub{}
+	if err := waitForPeer(context.Background(), ln); !errors.Is(err, errPeerWaitProbe) {
+		t.Fatalf("waitForPeer() error = %v, want %v", err, errPeerWaitProbe)
+	}
+	if ln.timeout < time.Minute {
+		t.Fatalf("peer wait timeout = %s, want at least one minute", ln.timeout)
+	}
+}
+
 func TestOnDataWithNilConn(_ *testing.T) {
 	c := &Client{}
 	c.onData([]byte("ignored"))

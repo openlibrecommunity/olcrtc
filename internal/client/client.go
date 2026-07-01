@@ -301,12 +301,11 @@ func (c *Client) bringUpLink(
 }
 
 // peerWaitTimeout bounds how long bringUpLink/tryReopenSession will block
-// waiting for the remote peer to appear before giving up. Without a bound a
-// missing peer (server offline, wrong room, never joins) would hang the
-// caller indefinitely — before the SOCKS listener is even created — instead
-// of surfacing a failure. We reuse the handshake timeout so a missing peer
-// fails on the same ~15s budget as a wedged handshake would.
-const peerWaitTimeout = handshake.DefaultTimeout
+// waiting for the remote peer to appear before giving up. Telemost can close
+// and re-auth one side before the other joins; its auth/ws reconnect path may
+// take tens of seconds, so the peer wait must be longer than the smux handshake
+// timeout while still surfacing offline/wrong-room failures eventually.
+const peerWaitTimeout = 2 * time.Minute
 
 // waitForPeer blocks until the transport reports a remote peer is ready, the
 // peer-wait deadline elapses, or ctx is cancelled. Transports that don't
@@ -532,7 +531,7 @@ func (c *Client) retryHandshake(ctx context.Context, cfg Config, cancel context.
 		// will return host-unreachable to clients until we recover. For
 		// carrier-driven reconnects the callback fires after the link is
 		// already up, so a missed handshake is more suspicious; cap it.
-		if reason == "carrier" && attempt >= 5 {
+		if shouldStopCarrierReconnect(reason, attempt, c.ln) {
 			logger.Warnf("client reconnect: exhausted %d handshake attempts (reason=%s) - keeping listener up", attempt, reason)
 			return
 		}
@@ -548,6 +547,15 @@ func (c *Client) retryHandshake(ctx context.Context, cfg Config, cancel context.
 			}
 		}
 	}
+}
+
+func shouldStopCarrierReconnect(reason string, attempt int, ln transport.Transport) bool {
+	const carrierHandshakeAttemptLimit = 5
+	if reason != "carrier" || attempt < carrierHandshakeAttemptLimit {
+		return false
+	}
+	_, peerReady := ln.(transport.PeerReadyTransport)
+	return !peerReady
 }
 
 func (c *Client) resetLinkPeer() {

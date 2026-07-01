@@ -796,8 +796,8 @@ func validateStartArgs(carrierName, roomID, clientID, keyHex string) error {
 
 func buildRoomURL(_ string, roomID string) string {
 	// Keep the same RoomURL value the CLI/YAML path passes into transports.
-	// Auth providers may expand it for service HTTP calls, but transports
-	// such as vp8channel derive peer binding from the raw room value.
+	// Auth providers may expand it for service HTTP calls; transports bind
+	// peers through room.channel when the config provides one.
 	return roomID
 }
 

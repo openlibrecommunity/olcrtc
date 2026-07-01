@@ -37,7 +37,7 @@ const (
 	// to a couple of send windows so KCP's flush never blocks (a blocked
 	// WriteTo would stall KCP's update loop and delay ACKs); the paced writer
 	// keeps it drained so this depth is headroom, not standing latency.
-	outboundQueueSize        = 1536
+	outboundQueueSize = 1536
 	// controlOutboundQueueSize is the queue for the control-plane KCP.
 	// Control messages are tiny (ping/pong JSON frames), so a small queue
 	// suffices. We keep it separate from bulk data to guarantee forward
@@ -109,20 +109,20 @@ type videoSession interface {
 }
 
 type streamTransport struct {
-	stream        videoSession
-	track         *webrtc.TrackLocalStaticSample
+	stream videoSession
+	track  *webrtc.TrackLocalStaticSample
 	// writeMu serializes all track.WriteSample calls. pion's WriteSample is
 	// not safe for concurrent use (see writeSampleLocked); the server writes
 	// bulk data from per-peer pumps while writerLoop writes control frames
 	// and keepalives, so both paths must funnel through this lock.
-	writeMu       sync.Mutex
+	writeMu sync.Mutex
 	// sampleWriter, when set, replaces the real track.WriteSample call.
 	// Tests inject a writer here to observe the exact byte stream that
 	// reaches the track and to assert that writeSampleLocked serializes
 	// concurrent callers. Always invoked under writeMu.
-	sampleWriter  func([]byte) bool
-	onData        func([]byte)
-	onPeerData    func(peerID string, data []byte)
+	sampleWriter func([]byte) bool
+	onData       func([]byte)
+	onPeerData   func(peerID string, data []byte)
 	// onControlData is called with every reassembled message from the
 	// control-plane KCP session.
 	onControlData func([]byte)
@@ -131,16 +131,16 @@ type streamTransport struct {
 	// Frames here are drained with priority before bulk data frames so that
 	// handshake / liveness messages never wait behind large data writes.
 	controlOutbound chan []byte
-	closeCh       chan struct{}
-	writerDone    chan struct{}
-	closed        atomic.Bool
-	writerUp      atomic.Bool
-	writerOnce    sync.Once
-	kcpOnce       sync.Once
-	controlKCPOnce sync.Once
-	frameInterval time.Duration
-	batchSize     int
-	perTickBytes  int
+	closeCh         chan struct{}
+	writerDone      chan struct{}
+	closed          atomic.Bool
+	writerUp        atomic.Bool
+	writerOnce      sync.Once
+	kcpOnce         sync.Once
+	controlKCPOnce  sync.Once
+	frameInterval   time.Duration
+	batchSize       int
+	perTickBytes    int
 
 	// localEpoch is stamped into every outgoing VP8 frame. Explicit
 	// upper-layer resets rotate it so the peer can reset its KCP state too.
@@ -150,15 +150,15 @@ type streamTransport struct {
 	localEpoch   uint32
 	peerEpoch    atomic.Uint32
 
-	kcp           *kcpRuntime
-	kcpMu         sync.RWMutex
+	kcp   *kcpRuntime
+	kcpMu sync.RWMutex
 	// controlKCP is the isolated KCP session for the control plane.
-	controlKCP    *kcpRuntime
-	controlKCPMu  sync.RWMutex
+	controlKCP      *kcpRuntime
+	controlKCPMu    sync.RWMutex
 	controlOnDataMu sync.RWMutex // guards onControlData reads/writes
-	reconnectMu   sync.Mutex
-	reconnectFn   func()
-	peerConfirmed atomic.Bool
+	reconnectMu     sync.Mutex
+	reconnectFn     func()
+	peerConfirmed   atomic.Bool
 
 	// Multi-peer support: when onPeerData is set, each remote epoch gets
 	// its own KCP runtime and data is routed via onPeerData(peerID, ...).
@@ -247,21 +247,21 @@ func newStreamTransport(
 	}
 
 	tr := &streamTransport{
-		stream:            stream,
-		track:             track,
-		onData:            cfg.OnData,
-		onPeerData:        cfg.OnPeerData,
-		outbound:          make(chan []byte, outboundQueueSize),
-		controlOutbound:   make(chan []byte, controlOutboundQueueSize),
-		closeCh:           make(chan struct{}),
-		writerDone:        make(chan struct{}),
-		frameInterval:     time.Second / time.Duration(fps),
-		batchSize:         batchSize,
-		perTickBytes:      perTickBytes,
-		bindingToken:      bindingToken(cfg.RoomURL),
-		localEpoch:        randomEpoch(),
-		peers:             make(map[uint32]*kcpRuntime),
-		peerOut:           make(map[uint32]chan []byte),
+		stream:          stream,
+		track:           track,
+		onData:          cfg.OnData,
+		onPeerData:      cfg.OnPeerData,
+		outbound:        make(chan []byte, outboundQueueSize),
+		controlOutbound: make(chan []byte, controlOutboundQueueSize),
+		closeCh:         make(chan struct{}),
+		writerDone:      make(chan struct{}),
+		frameInterval:   time.Second / time.Duration(fps),
+		batchSize:       batchSize,
+		perTickBytes:    perTickBytes,
+		bindingToken:    bindingToken(bindingTokenSource(cfg)),
+		localEpoch:      randomEpoch(),
+		peers:           make(map[uint32]*kcpRuntime),
+		peerOut:         make(map[uint32]chan []byte),
 	}
 
 	// In single-peer mode, confirm the peer epoch on first successful KCP
@@ -410,9 +410,16 @@ func parseEpochHeader(frame []byte) (uint32, uint32, bool) {
 	return token, epoch, gotCRC == epochCRC(token, epoch)
 }
 
-func bindingToken(clientID string) uint32 {
+func bindingTokenSource(cfg transport.Config) string {
+	if cfg.ChannelID != "" {
+		return cfg.ChannelID
+	}
+	return cfg.RoomURL
+}
+
+func bindingToken(channelID string) uint32 {
 	h := fnv.New32a()
-	_, _ = h.Write([]byte(clientID))
+	_, _ = h.Write([]byte(channelID))
 	token := h.Sum32()
 	if token == 0 {
 		token = 1
@@ -1058,8 +1065,7 @@ func (p *streamTransport) readVP8Track(track *webrtc.TrackRemote) {
 
 func (p *streamTransport) handleFirstPeer(peerEpoch uint32) {
 	p.peerEpoch.Store(peerEpoch)
-	p.peerConfirmed.Store(true)
-	logger.Infof("vp8channel: peer latched epoch=0x%08x", peerEpoch)
+	logger.Infof("vp8channel: peer observed epoch=0x%08x", peerEpoch)
 }
 
 // handleIncomingFrame parses the epoch header and delivers KCP payload.

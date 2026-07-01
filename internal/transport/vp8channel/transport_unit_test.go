@@ -55,8 +55,8 @@ func (s *fakeVideoStream) SetReconnectCallback(cb func())    { s.reconnect = cb 
 func (s *fakeVideoStream) SetShouldReconnect(fn func() bool) { s.should = fn }
 func (s *fakeVideoStream) SetEndedCallback(cb func(string))  { s.ended = cb }
 func (s *fakeVideoStream) WatchConnection(context.Context)   { s.watched = true }
-func (s *fakeVideoStream) CanSend() bool           { return s.canSend }
-func (s *fakeVideoStream) SubscriberCanSend() bool { return s.canSend }
+func (s *fakeVideoStream) CanSend() bool                     { return s.canSend }
+func (s *fakeVideoStream) SubscriberCanSend() bool           { return s.canSend }
 func (s *fakeVideoStream) AddTrack(webrtc.TrackLocal) error  { s.trackAdded = true; return nil }
 func (s *fakeVideoStream) Reconnect(string)                  {}
 func (s *fakeVideoStream) SetTrackHandler(cb func(*webrtc.TrackRemote, *webrtc.RTPReceiver)) {
@@ -93,7 +93,7 @@ func (s *fakeEngineSession) WatchConnection(ctx context.Context) {
 	s.stream.WatchConnection(ctx)
 }
 func (s *fakeEngineSession) CanSend() bool                           { return s.stream.CanSend() }
-func (s *fakeEngineSession) SubscriberCanSend() bool                  { return s.stream.SubscriberCanSend() }
+func (s *fakeEngineSession) SubscriberCanSend() bool                 { return s.stream.SubscriberCanSend() }
 func (s *fakeEngineSession) GetSendQueue() chan []byte               { return nil }
 func (s *fakeEngineSession) GetBufferedAmount() uint64               { return 0 }
 func (s *fakeEngineSession) Reconnect(string)                        {}
@@ -166,6 +166,60 @@ func TestNewConnectSendCallbacksFeaturesAndClose(t *testing.T) {
 	}
 	if err := tr.Send([]byte("closed")); !errors.Is(err, ErrTransportClosed) {
 		t.Fatalf("Send(closed) error = %v, want %v", err, ErrTransportClosed)
+	}
+}
+
+func TestNewUsesChannelIDForBindingToken(t *testing.T) {
+	stream := &fakeVideoStream{canSend: true}
+	name := "vp8channel-unit-channel-token"
+	enginebuiltin.Register(name, func(context.Context, enginebuiltin.Config) (engine.Session, error) {
+		return &fakeEngineSession{stream: stream}, nil
+	})
+
+	trIface, err := New(context.Background(), transport.Config{
+		Carrier:   name,
+		RoomURL:   "shared-room",
+		ChannelID: "private-channel",
+		DeviceID:  "client",
+		Options:   Options{FPS: 30, BatchSize: 1},
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	tr, ok := trIface.(*streamTransport)
+	if !ok {
+		t.Fatalf("transport type = %T, want *streamTransport", trIface)
+	}
+	if got, want := tr.bindingToken, bindingToken("private-channel"); got != want {
+		t.Fatalf("bindingToken = 0x%08x, want channel token 0x%08x", got, want)
+	}
+	if tr.bindingToken == bindingToken("shared-room") {
+		t.Fatal("bindingToken unexpectedly used room URL")
+	}
+}
+
+func TestNewFallsBackToRoomURLForBindingToken(t *testing.T) {
+	stream := &fakeVideoStream{canSend: true}
+	name := "vp8channel-unit-room-token"
+	enginebuiltin.Register(name, func(context.Context, enginebuiltin.Config) (engine.Session, error) {
+		return &fakeEngineSession{stream: stream}, nil
+	})
+
+	trIface, err := New(context.Background(), transport.Config{
+		Carrier:  name,
+		RoomURL:  "legacy-room",
+		DeviceID: "client",
+		Options:  Options{FPS: 30, BatchSize: 1},
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	tr, ok := trIface.(*streamTransport)
+	if !ok {
+		t.Fatalf("transport type = %T, want *streamTransport", trIface)
+	}
+	if got, want := tr.bindingToken, bindingToken("legacy-room"); got != want {
+		t.Fatalf("bindingToken = 0x%08x, want room token 0x%08x", got, want)
 	}
 }
 
@@ -358,13 +412,22 @@ func TestHandleIncomingFrameEpochFilteringAndReconnect(t *testing.T) {
 		t.Fatal("filtered frames changed peer state")
 	}
 
-	// Keepalive (nil payload) latches peer immediately.
+	// Keepalive (nil payload) observes a candidate peer, but does not confirm
+	// it until real KCP payload is delivered. This lets crowded rooms recover
+	// when the first epoch belongs to a stale participant with the same token.
 	tr.handleIncomingFrame(mkFrame(tr.bindingToken, 1, nil))
-	if !tr.peerConfirmed.Load() {
-		t.Fatal("first frame should confirm peer")
+	if tr.peerConfirmed.Load() {
+		t.Fatal("keepalive should not confirm peer")
 	}
 	if tr.peerEpoch.Load() != 1 {
 		t.Fatalf("peer epoch not stored: got %d want 1", tr.peerEpoch.Load())
+	}
+	tr.handleIncomingFrame(mkFrame(tr.bindingToken, 2, nil))
+	if tr.peerConfirmed.Load() {
+		t.Fatal("second keepalive should not confirm peer")
+	}
+	if tr.peerEpoch.Load() != 2 {
+		t.Fatalf("peer epoch should update before confirmation: got %d want 2", tr.peerEpoch.Load())
 	}
 
 	reconnected := false
@@ -381,14 +444,14 @@ func TestHandleIncomingFrameEpochFilteringAndReconnect(t *testing.T) {
 		t.Fatalf("stream reconnect did not reset/callback: reconnected=%v kcp=%v", reconnected, tr.kcp)
 	}
 	reconnected = false
-	// After reconnect, peerConfirmed is reset so the next frame re-latches
-	// the peer epoch. This allows the server to restart with a new epoch.
+	// After reconnect, peerConfirmed is reset and the next frame observes a
+	// fresh peer epoch. This allows the server to restart with a new epoch.
 	if tr.peerConfirmed.Load() {
 		t.Fatal("reconnect should reset peerConfirmed")
 	}
 	tr.handleIncomingFrame(mkFrame(tr.bindingToken, 2, []byte("new-peer-after-reconnect")))
-	if !tr.peerConfirmed.Load() {
-		t.Fatal("frame after reconnect should re-latch peer")
+	if tr.peerConfirmed.Load() {
+		t.Fatal("frame after reconnect should not confirm peer before KCP delivery")
 	}
 	if tr.peerEpoch.Load() != 2 {
 		t.Fatalf("peer epoch not re-latched: got %d want 2", tr.peerEpoch.Load())

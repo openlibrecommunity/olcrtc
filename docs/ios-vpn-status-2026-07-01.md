@@ -58,6 +58,56 @@ Result:
 
 ## Telemost result
 
+### Latest valid smoke after Telemost fixes
+
+Launch:
+
+```sh
+xcrun devicectl device process launch \
+  --device 406AE25C-CC1F-592D-A60B-872C2D2E6427 \
+  ru.unite.olc.ios \
+  --profile-id telemost \
+  --connect-on-launch \
+  --probe-rounds 4 \
+  --probe-interval 5 \
+  --probe-download-bytes 0 \
+  --http-probe-url 'https://example.com/?olc-smoke-telemost-initialwait=20260701-2021'
+```
+
+Result:
+
+- `profile override id=telemost`
+- `connect start provider=telemost transport=vp8channel`
+- `connect ok provider=telemost`
+- `SOCKS ready @2500ms`
+- 4/4 short HTTP probe rounds successful (`ok=3 fail=0`)
+- `tun2socks stats` grew during the probe loop
+- `cnc-stderr.log` showed `peer observed`, `peer confirmed`, `session opened`
+- one liveness/carrier reconnect was observed and recovered with `session reopened`
+
+The Telemost fixes in this branch:
+
+- bind VP8 peers by `room.channel` when the profile provides one, falling back
+  to the room value for legacy profiles
+- do not confirm a peer from VP8 keepalives alone; confirm only after real KCP
+  payload delivery
+- do not stop carrier reconnect after 5 attempts for peer-aware transports
+- extend initial peer wait to tolerate Telemost auth/ws reconnect delays
+
+### Bulk download status
+
+The previous 10-round Telemost run with `--probe-download-bytes 1048576` is not
+a valid VPN success proof: the tunnel had already ended with `client: wait for
+peer`, so later HTTP responses could be direct traffic. Re-running with a live
+tunnel still showed that 1 MiB `speed.cloudflare.com` downloads time out on
+Telemost.
+
+Current conclusion: Telemost now starts, carries short HTTPS traffic, and can
+recover from at least one observed liveness/carrier reconnect on the iOS device.
+It is not yet proven stable for sustained throughput or bulk downloads.
+
+### Earlier failing run
+
 Launch:
 
 ```sh
@@ -83,6 +133,10 @@ Observed:
 - `tun2socks stats` grew only minimally, indicating signaling/SOCKS accept worked
   but data-plane payload did not flow
 
-Current conclusion: Telemost signaling reaches "connected", but the VP8 data
-transport does not become ready for tunnel payload. Continue debugging at the
-Telemost/WebRTC data-plane boundary, not at iOS VPN routing.
+Additional caveats:
+
+- local macOS testing was contaminated by a pre-existing utun default route,
+  so local host-side direct/VPN separation is not reliable enough for final
+  throughput claims
+- remote VPS deployment is still blocked by SSH access/host-key/public-key
+  issues; the remote stand was not updated with this branch
