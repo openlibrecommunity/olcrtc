@@ -73,31 +73,6 @@ func (t *trafficTransport) SendTo(peerID string, data []byte) error {
 	}, data)
 }
 
-func (t *trafficTransport) SendDatagram(data []byte) error {
-	dg, ok := t.inner.(DatagramTransport)
-	if !ok {
-		return ErrDatagramUnsupported
-	}
-	return t.sendWith(func(payload []byte) error {
-		return dg.SendDatagram(payload)
-	}, data)
-}
-
-func (t *trafficTransport) SendDatagramTo(peerID string, data []byte) error {
-	peer, ok := t.inner.(PeerDatagramTransport)
-	if !ok {
-		return t.SendDatagram(data)
-	}
-	return t.sendWith(func(payload []byte) error {
-		return peer.SendDatagramTo(peerID, payload)
-	}, data)
-}
-
-func (t *trafficTransport) DatagramCanSend() bool {
-	dg, ok := t.inner.(DatagramTransport)
-	return ok && dg.DatagramCanSend()
-}
-
 func (t *trafficTransport) SupportsPeerRouting() bool {
 	peer, ok := t.inner.(PeerTransport)
 	return ok && peer.SupportsPeerRouting()

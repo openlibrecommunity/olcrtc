@@ -17,9 +17,6 @@ const defaultMaxPayloadSize = 12 * 1024
 // ErrByteStreamUnsupported is returned when a carrier engine cannot expose a byte stream.
 var ErrByteStreamUnsupported = errors.New("engine does not support byte stream")
 
-// ErrDatagramUnsupported is returned when the carrier engine cannot expose lossy datagrams.
-var ErrDatagramUnsupported = errors.New("engine does not support datagrams")
-
 type streamTransport struct {
 	session engine.Session
 }
@@ -31,8 +28,6 @@ func New(ctx context.Context, cfg transport.Config) (transport.Transport, error)
 		Name:                cfg.Name,
 		OnData:              cfg.OnData,
 		OnPeerData:          cfg.OnPeerData,
-		OnDatagram:          cfg.OnDatagram,
-		OnPeerDatagram:      cfg.OnPeerDatagram,
 		DNSServer:           cfg.DNSServer,
 		ProxyAddr:           cfg.ProxyAddr,
 		ProxyPort:           cfg.ProxyPort,
@@ -80,36 +75,6 @@ func (p *streamTransport) SendTo(peerID string, data []byte) error {
 		return fmt.Errorf("session send to peer: %w", err)
 	}
 	return nil
-}
-
-// SendDatagram transmits an unordered/lossy payload when the carrier supports it.
-func (p *streamTransport) SendDatagram(data []byte) error {
-	dg, ok := p.session.(engine.DatagramSession)
-	if !ok {
-		return ErrDatagramUnsupported
-	}
-	if err := dg.SendDatagram(data); err != nil {
-		return fmt.Errorf("session send datagram: %w", err)
-	}
-	return nil
-}
-
-// SendDatagramTo transmits an unordered/lossy payload to a specific peer when supported.
-func (p *streamTransport) SendDatagramTo(peerID string, data []byte) error {
-	peer, ok := p.session.(engine.PeerDatagramSession)
-	if !ok {
-		return p.SendDatagram(data)
-	}
-	if err := peer.SendDatagramTo(peerID, data); err != nil {
-		return fmt.Errorf("session send datagram to peer: %w", err)
-	}
-	return nil
-}
-
-// DatagramCanSend reports whether the carrier datagram path is currently writable.
-func (p *streamTransport) DatagramCanSend() bool {
-	dg, ok := p.session.(engine.DatagramSession)
-	return ok && dg.DatagramCanSend()
 }
 
 // SupportsPeerRouting reports whether this transport can address individual peers.
@@ -185,6 +150,5 @@ func (p *streamTransport) Features() transport.Features {
 		Ordered:         true,
 		MessageOriented: true,
 		MaxPayloadSize:  defaultMaxPayloadSize,
-		Datagram:        p.session.Capabilities().Datagram,
 	}
 }

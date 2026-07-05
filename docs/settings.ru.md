@@ -121,8 +121,6 @@ transport. Используй одинаковые traffic-настройки н
 Если `socks.proxy_user` пуст - сервер ходит к прокси без аутентификации (метод `0x00`).
 Если задан - используется username/password auth по RFC 1929 (`proxy_pass` опционален, может быть пустым).
 
-При заданном `socks.proxy_addr` серверный UDP relay использует SOCKS5 UDP ASSOCIATE через upstream-прокси.
-
 ---
 
 ## Поля только для клиента (`mode: cnc`)

@@ -139,8 +139,6 @@ var (
 	// ErrTrafficMaxDelayInvalid indicates that traffic.max_delay is not a non-negative duration.
 	ErrTrafficMaxDelayInvalid = errors.New(
 		"invalid traffic max delay (set traffic.max_delay to a duration >= 0 and >= traffic.min_delay)")
-	// ErrUDPMaxFlowsInvalid indicates that udp.max_flows is negative.
-	ErrUDPMaxFlowsInvalid  = errors.New("invalid udp max flows (set udp.max_flows to 0 or a positive value)")
 	errPositiveDuration    = errors.New("duration must be > 0")
 	errNonNegativeDuration = errors.New("duration must be >= 0")
 )
@@ -204,8 +202,6 @@ type Config struct {
 	TrafficMaxPayloadSize int
 	TrafficMinDelay       string
 	TrafficMaxDelay       string
-	UDPDisabled           bool
-	UDPMaxFlows           int
 	Amount                int
 }
 
@@ -351,9 +347,6 @@ func Validate(cfg Config) error {
 		return err
 	}
 	if err := validateTrafficConfig(cfg); err != nil {
-		return err
-	}
-	if err := validateUDPConfig(cfg); err != nil {
 		return err
 	}
 	return validateModeConfig(cfg)
@@ -557,13 +550,6 @@ func validateTrafficConfig(cfg Config) error {
 	return err
 }
 
-func validateUDPConfig(cfg Config) error {
-	if cfg.UDPMaxFlows < 0 {
-		return ErrUDPMaxFlowsInvalid
-	}
-	return nil
-}
-
 func trafficConfig(cfg Config) (transport.TrafficConfig, error) {
 	if cfg.TrafficMaxPayloadSize < 0 || (cfg.TrafficMaxPayloadSize > 0 &&
 		cfg.TrafficMaxPayloadSize < runtime.MinSmuxWirePayload) {
@@ -678,8 +664,6 @@ func runOnce(
 			AuthToken:        cfg.AuthToken,
 			Liveness:         liveness,
 			Traffic:          traffic,
-			UDPDisabled:      cfg.UDPDisabled,
-			UDPMaxFlows:      cfg.UDPMaxFlows,
 			OnSessionOpen: func(sessionID, deviceID string, claims map[string]any) {
 				logger.Infof("session opened: id=%s device=%s claims=%v", sessionID, deviceID, claims)
 			},
@@ -711,8 +695,6 @@ func runOnce(
 			AuthToken:        cfg.AuthToken,
 			Liveness:         liveness,
 			Traffic:          traffic,
-			UDPDisabled:      cfg.UDPDisabled,
-			UDPMaxFlows:      cfg.UDPMaxFlows,
 		}); err != nil {
 			return fmt.Errorf("client: %w", err)
 		}

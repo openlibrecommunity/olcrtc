@@ -19,55 +19,35 @@ var (
 )
 
 type stubSession struct {
-	caps          engine.Capabilities
-	connectErr    error
-	sendErr       error
-	closeErr      error
-	canSend       bool
+	caps        engine.Capabilities
+	connectErr  error
+	sendErr     error
+	closeErr    error
+	canSend     bool
 	connectCalled bool
-	sent          []byte
-	watched       bool
-	reconnectCB   func(*webrtc.DataChannel)
-	shouldFn      func() bool
-	endedCB       func(string)
+	sent        []byte
+	watched     bool
+	reconnectCB func(*webrtc.DataChannel)
+	shouldFn    func() bool
+	endedCB     func(string)
 }
 
 func (s *stubSession) Capabilities() engine.Capabilities { return s.caps }
-func (s *stubSession) Connect(context.Context) error     { s.connectCalled = true; return s.connectErr }
+func (s *stubSession) Connect(context.Context) error    { s.connectCalled = true; return s.connectErr }
 func (s *stubSession) Send(data []byte) error {
 	s.sent = append([]byte(nil), data...)
 	return s.sendErr
 }
-func (s *stubSession) Close() error                                      { return s.closeErr }
-func (s *stubSession) SetReconnectCallback(cb func(*webrtc.DataChannel)) { s.reconnectCB = cb }
-func (s *stubSession) SetShouldReconnect(fn func() bool)                 { s.shouldFn = fn }
-func (s *stubSession) SetEndedCallback(cb func(string))                  { s.endedCB = cb }
-func (s *stubSession) WatchConnection(context.Context)                   { s.watched = true }
-func (s *stubSession) CanSend() bool                                     { return s.canSend }
-func (s *stubSession) SubscriberCanSend() bool                           { return s.canSend }
-func (s *stubSession) GetSendQueue() chan []byte                         { return nil }
-func (s *stubSession) GetBufferedAmount() uint64                         { return 0 }
-func (s *stubSession) Reconnect(string)                                  {}
-
-type datagramStubSession struct {
-	*stubSession
-	datagramErr error
-	dgCanSend   bool
-	dgSent      []byte
-	dgPeer      string
-}
-
-func (s *datagramStubSession) SendDatagram(data []byte) error {
-	s.dgSent = append([]byte(nil), data...)
-	return s.datagramErr
-}
-
-func (s *datagramStubSession) SendDatagramTo(peerID string, data []byte) error {
-	s.dgPeer = peerID
-	return s.SendDatagram(data)
-}
-
-func (s *datagramStubSession) DatagramCanSend() bool { return s.dgCanSend }
+func (s *stubSession) Close() error                                            { return s.closeErr }
+func (s *stubSession) SetReconnectCallback(cb func(*webrtc.DataChannel))       { s.reconnectCB = cb }
+func (s *stubSession) SetShouldReconnect(fn func() bool)                       { s.shouldFn = fn }
+func (s *stubSession) SetEndedCallback(cb func(string))                        { s.endedCB = cb }
+func (s *stubSession) WatchConnection(context.Context)                         { s.watched = true }
+func (s *stubSession) CanSend() bool                                           { return s.canSend }
+func (s *stubSession) SubscriberCanSend() bool                                 { return s.canSend }
+func (s *stubSession) GetSendQueue() chan []byte                               { return nil }
+func (s *stubSession) GetBufferedAmount() uint64                               { return 0 }
+func (s *stubSession) Reconnect(string)                                        {}
 
 func registerCarrier(name string, sess engine.Session, err error) {
 	enginebuiltin.Register(name, func(context.Context, enginebuiltin.Config) (engine.Session, error) {
@@ -151,44 +131,5 @@ func TestStreamTransportWrapsErrors(t *testing.T) {
 	}
 	if err := tr.Close(); err == nil || err.Error() != "session close: close boom" {
 		t.Fatalf("Close() error = %v", err)
-	}
-}
-
-func TestDatagramDelegation(t *testing.T) {
-	sess := &datagramStubSession{
-		stubSession: &stubSession{caps: engine.Capabilities{ByteStream: true, Datagram: true}},
-		dgCanSend:   true,
-	}
-	tr := &streamTransport{session: sess}
-	if !tr.Features().Datagram {
-		t.Fatal("Features().Datagram = false, want true")
-	}
-	if !tr.DatagramCanSend() {
-		t.Fatal("DatagramCanSend() = false, want true")
-	}
-	if err := tr.SendDatagram([]byte("udp")); err != nil {
-		t.Fatalf("SendDatagram() error = %v", err)
-	}
-	if string(sess.dgSent) != "udp" {
-		t.Fatalf("datagram sent = %q, want udp", sess.dgSent)
-	}
-	if err := tr.SendDatagramTo("peer-a", []byte("direct")); err != nil {
-		t.Fatalf("SendDatagramTo() error = %v", err)
-	}
-	if sess.dgPeer != "peer-a" || string(sess.dgSent) != "direct" {
-		t.Fatalf("peer datagram peer=%q sent=%q", sess.dgPeer, sess.dgSent)
-	}
-}
-
-func TestDatagramUnsupported(t *testing.T) {
-	tr := &streamTransport{session: &stubSession{caps: engine.Capabilities{ByteStream: true}}}
-	if tr.Features().Datagram {
-		t.Fatal("Features().Datagram = true, want false")
-	}
-	if tr.DatagramCanSend() {
-		t.Fatal("DatagramCanSend() = true, want false")
-	}
-	if err := tr.SendDatagram([]byte("udp")); !errors.Is(err, ErrDatagramUnsupported) {
-		t.Fatalf("SendDatagram() error = %v, want %v", err, ErrDatagramUnsupported)
 	}
 }

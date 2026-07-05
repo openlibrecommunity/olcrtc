@@ -20,16 +20,12 @@ var ErrTransportNotFound = errors.New("transport not found")
 // ErrOptionsTypeMismatch is returned when a transport receives options of the wrong type.
 var ErrOptionsTypeMismatch = errors.New("transport options type mismatch")
 
-// ErrDatagramUnsupported is returned when a transport cannot send lossy datagrams.
-var ErrDatagramUnsupported = errors.New("transport does not support datagrams")
-
 // Features describes the delivery semantics of a transport.
 type Features struct {
 	Reliable        bool
 	Ordered         bool
 	MessageOriented bool
 	MaxPayloadSize  int
-	Datagram        bool
 }
 
 // Transport defines a byte transport independent of the underlying carrier.
@@ -73,21 +69,6 @@ type PeerTransport interface {
 	Transport
 	SendTo(peerID string, data []byte) error
 	SupportsPeerRouting() bool
-}
-
-// DatagramTransport is implemented by transports that can send unordered/lossy
-// datagrams independently of the reliable byte stream.
-type DatagramTransport interface {
-	Transport
-	SendDatagram(data []byte) error
-	DatagramCanSend() bool
-}
-
-// PeerDatagramTransport is implemented by datagram transports that can address
-// individual remote endpoints.
-type PeerDatagramTransport interface {
-	DatagramTransport
-	SendDatagramTo(peerID string, data []byte) error
 }
 
 // PeerControlPlane is implemented by transports that support per-peer isolated
@@ -140,17 +121,15 @@ type Config struct {
 	// AuthToken is an optional pre-issued account token forwarded to the auth
 	// provider (e.g. a WB Stream account token). Empty uses the provider's
 	// default guest flow.
-	AuthToken      string
-	ChannelID      string
-	DeviceID       string
-	Name           string
-	OnData         func([]byte)
-	OnPeerData     func(peerID string, data []byte)
-	OnDatagram     func([]byte)
-	OnPeerDatagram func(peerID string, data []byte)
-	DNSServer      string
-	ProxyAddr      string
-	ProxyPort      int
+	AuthToken  string
+	ChannelID  string
+	DeviceID   string
+	Name       string
+	OnData     func([]byte)
+	OnPeerData func(peerID string, data []byte)
+	DNSServer  string
+	ProxyAddr  string
+	ProxyPort  int
 
 	// RequireTargetedPeer makes single-peer engines ignore broadcast frames
 	// from unrelated olcrtc clients until a peer sends a frame addressed to

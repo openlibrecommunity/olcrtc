@@ -72,8 +72,6 @@ olcrtc /etc/olcrtc/client.yaml
 | `lifecycle.max_session_duration` | плановый rebuild сессии, например `6h`; пусто = выключено |
 | `traffic.max_payload_size` | лимит зашифрованного wire-message; `0` = лимит транспорта |
 | `traffic.min_delay` / `traffic.max_delay` | необязательный pacing отправки, например `5ms` / `30ms` |
-| `udp.disabled` | выключает SOCKS5 UDP ASSOCIATE relay; по умолчанию `false` |
-| `udp.max_flows` | максимум живых UDP flow-маппингов на процесс; `0` = стандартно `1024` |
 | `gen.amount` | режим `gen`: сколько комнат создать |
 | `profiles[]` | список failover-профилей для `srv`/`cnc` |
 | `failover.retry_delay` | пауза перед следующим профилем, например `2s` |
@@ -85,8 +83,6 @@ olcrtc /etc/olcrtc/client.yaml
 `crypto.key_file` читается относительно YAML-файла. Нельзя одновременно задавать `crypto.key` и `crypto.key_file`.
 
 `mode: cnc` запрещает слушать не-loopback адрес (`0.0.0.0`, LAN IP и т.п.), если не заданы оба поля `socks.user` и `socks.pass`.
-
-Если задан `socks.proxy_addr`, серверный TCP egress и UDP relay идут через этот upstream SOCKS5-прокси.
 
 ## Обязательный минимум
 

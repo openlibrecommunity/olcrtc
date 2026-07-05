@@ -60,14 +60,6 @@ var (
 	errServerExitedBeforeClientStart = errors.New("server exited cleanly before client start")
 	errClientExitedBeforeReady       = errors.New("client exited cleanly before ready")
 	errServerExitedBeforeClientReady = errors.New("server exited cleanly before client ready")
-
-	errTestJitsiWebSocketTimeout = errors.New(
-		`failed to connect link: jitsi join muc: xmpp dial: failed to WebSocket dial: ` +
-			`Get "https://meet.example/xmpp-websocket": dial tcp 10.40.2.9:443: i/o timeout`,
-	)
-	errTestProviderDNSFailure        = errors.New("failed to create transport: open engine session: no such host")
-	errTestDataPlaneTimeout          = errors.New("read echo response: i/o timeout")
-	errTestProviderUnexpectedFailure = errors.New("failed to connect link: unexpected SOCKS5 reply")
 )
 
 var (
@@ -393,8 +385,8 @@ func (s *memoryStream) SetEndedCallback(cb func(string)) {
 func (s *memoryStream) WatchConnection(ctx context.Context) {
 	<-ctx.Done()
 }
-func (s *memoryStream) CanSend() bool             { return s.isConnected() }
-func (s *memoryStream) SubscriberCanSend() bool   { return s.isConnected() }
+func (s *memoryStream) CanSend() bool           { return s.isConnected() }
+func (s *memoryStream) SubscriberCanSend() bool { return s.isConnected() }
 func (s *memoryStream) GetSendQueue() chan []byte { return nil }
 func (s *memoryStream) GetBufferedAmount() uint64 { return 0 }
 func (s *memoryStream) Reconnect(string)          {}
@@ -760,81 +752,6 @@ func logUnstableOutcome(t *testing.T, label, carrierName, transportName string, 
 	t.Logf("%s FAIL %s/%s: %v", label, carrierName, transportName, err)
 }
 
-func isTransientRealProviderUnavailable(err error) bool {
-	if err == nil {
-		return false
-	}
-	msg := strings.ToLower(err.Error())
-	providerConnectMarkers := []string{
-		"failed to create transport",
-		"failed to connect link",
-		"open engine session",
-		"jitsi join muc",
-		"xmpp dial",
-		"websocket dial",
-		"get token",
-	}
-	if !containsAny(msg, providerConnectMarkers) {
-		return false
-	}
-	transientMarkers := []string{
-		"i/o timeout",
-		"context deadline exceeded",
-		"connection refused",
-		"connection reset by peer",
-		"network is unreachable",
-		"no such host",
-		"temporary failure in name resolution",
-		"tls handshake timeout",
-	}
-	return containsAny(msg, transientMarkers)
-}
-
-func containsAny(s string, needles []string) bool {
-	for _, needle := range needles {
-		if strings.Contains(s, needle) {
-			return true
-		}
-	}
-	return false
-}
-
-func TestIsTransientRealProviderUnavailable(t *testing.T) {
-	tests := []struct {
-		name string
-		err  error
-		want bool
-	}{
-		{
-			name: "jitsi websocket timeout",
-			err:  errTestJitsiWebSocketTimeout,
-			want: true,
-		},
-		{
-			name: "provider dns failure",
-			err:  errTestProviderDNSFailure,
-			want: true,
-		},
-		{
-			name: "data plane timeout after tunnel start",
-			err:  errTestDataPlaneTimeout,
-			want: false,
-		},
-		{
-			name: "protocol failure",
-			err:  errTestProviderUnexpectedFailure,
-			want: false,
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := isTransientRealProviderUnavailable(tt.err); got != tt.want {
-				t.Fatalf("isTransientRealProviderUnavailable() = %t, want %t", got, tt.want)
-			}
-		})
-	}
-}
-
 func TestRealE2ECaseExpectation(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -1098,29 +1015,6 @@ func startEchoServer(t *testing.T) string {
 	return ln.Addr().String()
 }
 
-func startUDPEchoServer(t *testing.T) string {
-	t.Helper()
-
-	conn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
-	if err != nil {
-		t.Fatalf("listen udp echo: %v", err)
-	}
-	t.Cleanup(func() { _ = conn.Close() })
-
-	go func() {
-		buf := make([]byte, 64*1024)
-		for {
-			n, addr, err := conn.ReadFromUDP(buf)
-			if err != nil {
-				return
-			}
-			_, _ = conn.WriteToUDP(buf[:n], addr)
-		}
-	}()
-
-	return conn.LocalAddr().String()
-}
-
 func freeLocalAddr(ctx context.Context, t *testing.T) string {
 	t.Helper()
 	var lc net.ListenConfig
@@ -1164,11 +1058,6 @@ type tunnelRuntime struct {
 
 func startTunnel(t *testing.T) *tunnelRuntime {
 	t.Helper()
-	return startMemoryTunnel(t, transportData, false)
-}
-
-func startMemoryTunnel(t *testing.T, transportName string, unsafeAllowPrivateUDP bool) *tunnelRuntime {
-	t.Helper()
 
 	carrierName, room := registerMemoryCarrier(t)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -1178,13 +1067,11 @@ func startMemoryTunnel(t *testing.T, transportName string, unsafeAllowPrivateUDP
 	serverErr := make(chan error, 1)
 	go func() {
 		serverErr <- server.Run(ctx, server.Config{
-			Transport:                    transportName,
-			Carrier:                      carrierName,
-			RoomURL:                      testRoom,
-			KeyHex:                       testKeyHex,
-			DNSServer:                    localDNSServer,
-			TransportOptions:             e2eTransportOptions(transportName),
-			UnsafeAllowPrivateUDPTargets: unsafeAllowPrivateUDP,
+			Transport: transportData,
+			Carrier:   carrierName,
+			RoomURL:   testRoom,
+			KeyHex:    testKeyHex,
+			DNSServer: localDNSServer,
 		})
 	}()
 	room.waitConnected(t, 1)
@@ -1193,17 +1080,16 @@ func startMemoryTunnel(t *testing.T, transportName string, unsafeAllowPrivateUDP
 	clientErr := make(chan error, 1)
 	go func() {
 		clientErr <- client.RunWithReady(ctx, client.Config{
-			Transport:        transportName,
-			Carrier:          carrierName,
-			RoomURL:          testRoom,
-			KeyHex:           testKeyHex,
-			DeviceID:         testClientDeviceID,
-			LocalAddr:        socksAddr,
-			DNSServer:        localDNSServer,
-			TransportOptions: e2eTransportOptions(transportName),
+			Transport: transportData,
+			Carrier:   carrierName,
+			RoomURL:   testRoom,
+			KeyHex:    testKeyHex,
+			DeviceID:  testClientDeviceID,
+			LocalAddr: socksAddr,
+			DNSServer: localDNSServer,
 		}, func() { close(ready) })
 	}()
-	waitForReadyWithin(t, ready, 20*time.Second)
+	waitForReady(t, ready)
 
 	return &tunnelRuntime{
 		socksAddr: socksAddr,
@@ -1405,96 +1291,6 @@ func connectViaSOCKS(t *testing.T, socksAddr, targetAddr string) net.Conn {
 	return conn
 }
 
-func connectViaSOCKSUDP(t *testing.T, socksAddr string) (*net.UDPConn, net.Conn, *net.UDPAddr) {
-	t.Helper()
-
-	dialer := net.Dialer{Timeout: 5 * time.Second}
-	tcpConn, err := dialer.DialContext(context.Background(), "tcp4", socksAddr)
-	if err != nil {
-		t.Fatalf("dial socks udp tcp control: %v", err)
-	}
-
-	socksUDPHandshake(t, tcpConn)
-	relay := socksUDPAssociate(t, tcpConn)
-	udpConn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
-	if err != nil {
-		_ = tcpConn.Close()
-		t.Fatalf("listen udp client socket: %v", err)
-	}
-	return udpConn, tcpConn, relay
-}
-
-func socksUDPHandshake(t *testing.T, tcpConn net.Conn) {
-	t.Helper()
-	if _, err := tcpConn.Write([]byte{5, 1, 0}); err != nil {
-		_ = tcpConn.Close()
-		t.Fatalf("write socks udp greeting: %v", err)
-	}
-	greeting := make([]byte, 2)
-	if _, err := io.ReadFull(tcpConn, greeting); err != nil {
-		_ = tcpConn.Close()
-		t.Fatalf("read socks udp greeting: %v", err)
-	}
-	if !bytes.Equal(greeting, []byte{5, 0}) {
-		_ = tcpConn.Close()
-		t.Fatalf("socks udp greeting = %v, want [5 0]", greeting)
-	}
-}
-
-func socksUDPAssociate(t *testing.T, tcpConn net.Conn) *net.UDPAddr {
-	t.Helper()
-	req := []byte{5, 3, 0, 1, 0, 0, 0, 0, 0, 0}
-	if _, err := tcpConn.Write(req); err != nil {
-		_ = tcpConn.Close()
-		t.Fatalf("write socks udp associate: %v", err)
-	}
-	reply := make([]byte, 10)
-	if _, err := io.ReadFull(tcpConn, reply); err != nil {
-		_ = tcpConn.Close()
-		t.Fatalf("read socks udp associate reply: %v", err)
-	}
-	if reply[0] != 5 || reply[1] != 0 || reply[3] != 1 {
-		_ = tcpConn.Close()
-		t.Fatalf("socks udp associate reply = %v, want IPv4 success", reply)
-	}
-	port := binary.BigEndian.Uint16(reply[8:10])
-	return &net.UDPAddr{IP: net.IPv4(reply[4], reply[5], reply[6], reply[7]), Port: int(port)}
-}
-
-func buildSocksUDPPacket(t *testing.T, targetAddr string, payload []byte) []byte {
-	t.Helper()
-	host, portText, err := net.SplitHostPort(targetAddr)
-	if err != nil {
-		t.Fatalf("split udp target addr: %v", err)
-	}
-	ip := net.ParseIP(host).To4()
-	if ip == nil {
-		t.Fatalf("udp target host is not IPv4: %s", host)
-	}
-	port, err := strconv.Atoi(portText)
-	if err != nil {
-		t.Fatalf("parse udp target port: %v", err)
-	}
-	packet := make([]byte, 0, 10+len(payload))
-	packet = append(packet, 0, 0, 0, 1)
-	packet = append(packet, ip...)
-	var portBuf [2]byte
-	binary.BigEndian.PutUint16(portBuf[:], uint16(port)) //nolint:gosec // SOCKS5 port is uint16 by definition
-	packet = append(packet, portBuf[:]...)
-	packet = append(packet, payload...)
-	return packet
-}
-
-func parseSocksUDPPacket(t *testing.T, packet []byte) (string, []byte) {
-	t.Helper()
-	if len(packet) < 10 || packet[0] != 0 || packet[1] != 0 || packet[2] != 0 || packet[3] != 1 {
-		t.Fatalf("bad socks udp packet: %v", packet)
-	}
-	ip := net.IP(packet[4:8]).String()
-	port := binary.BigEndian.Uint16(packet[8:10])
-	return net.JoinHostPort(ip, strconv.Itoa(int(port))), packet[10:]
-}
-
 func TestBuiltInProviderTransportMatrixValidates(t *testing.T) {
 	session.RegisterDefaults()
 
@@ -1616,37 +1412,21 @@ func TestRealProviderTransportMatrix(t *testing.T) {
 						authFailed = true
 						t.Skipf("skip %s real e2e: auth failed: %v", carrierName, err)
 					}
-					if err != nil && isTransientRealProviderUnavailable(err) {
-						t.Skipf("skip %s/%s real e2e: transient provider unavailable: %v",
-							carrierName, transportName, err)
+					switch {
+					case err == nil && expectation == realE2EExpectPass:
+						t.Logf("%s %s/%s", label, carrierName, transportName)
+					case err == nil && expectation == realE2EExpectFail:
+						t.Fatalf("UNEXPECTED SUCCESS %s/%s", carrierName, transportName)
+					case err != nil && expectation == realE2EExpectPass:
+						t.Fatalf("EXPECTED SUCCESS %s/%s failed: %v", carrierName, transportName, err)
+					case err != nil && expectation == realE2EExpectFail:
+						t.Logf("%s %s/%s: %v", label, carrierName, transportName, err)
+					case expectation == realE2EExpectUnstable:
+						logUnstableOutcome(t, label, carrierName, transportName, err)
 					}
-					handleRealE2ECaseResult(t, label, carrierName, transportName, expectation, err)
 				})
 			}
 		})
-	}
-}
-
-func handleRealE2ECaseResult(
-	t *testing.T,
-	label string,
-	carrierName string,
-	transportName string,
-	expectation realE2EExpectation,
-	err error,
-) {
-	t.Helper()
-	switch {
-	case err == nil && expectation == realE2EExpectPass:
-		t.Logf("%s %s/%s", label, carrierName, transportName)
-	case err == nil && expectation == realE2EExpectFail:
-		t.Fatalf("UNEXPECTED SUCCESS %s/%s", carrierName, transportName)
-	case err != nil && expectation == realE2EExpectPass:
-		t.Fatalf("EXPECTED SUCCESS %s/%s failed: %v", carrierName, transportName, err)
-	case err != nil && expectation == realE2EExpectFail:
-		t.Logf("%s %s/%s: %v", label, carrierName, transportName, err)
-	case expectation == realE2EExpectUnstable:
-		logUnstableOutcome(t, label, carrierName, transportName, err)
 	}
 }
 
@@ -1710,56 +1490,6 @@ func TestClientServerSOCKSTunnelOverMemoryDatachannel(t *testing.T) {
 	}
 	if !bytes.Equal(line, payload) {
 		t.Fatalf("echo = %q, want %q", line, payload)
-	}
-}
-
-func TestClientServerSOCKSUDPOverMemoryVP8Channel(t *testing.T) {
-	echoAddr := startUDPEchoServer(t)
-	rt := startMemoryTunnel(t, transportVP8, true)
-	defer rt.stop(t)
-
-	udpConn, tcpConn, relayAddr := connectViaSOCKSUDP(t, rt.socksAddr)
-	defer func() { _ = udpConn.Close() }()
-	defer func() { _ = tcpConn.Close() }()
-
-	payload := []byte("olcrtc-udp-e2e")
-	packet := buildSocksUDPPacket(t, echoAddr, payload)
-	if _, err := udpConn.WriteToUDP(packet, relayAddr); err != nil {
-		t.Fatalf("write socks udp packet: %v", err)
-	}
-	if err := udpConn.SetReadDeadline(time.Now().Add(10 * time.Second)); err != nil {
-		t.Fatalf("set udp read deadline: %v", err)
-	}
-	buf := make([]byte, 4096)
-	n, _, err := udpConn.ReadFromUDP(buf)
-	if err != nil {
-		t.Fatalf("read socks udp echo: %v", err)
-	}
-	_, got := parseSocksUDPPacket(t, buf[:n])
-	if !bytes.Equal(got, payload) {
-		t.Fatalf("udp echo = %q, want %q", got, payload)
-	}
-}
-
-func TestClientServerSOCKSUDPBlocksPrivateTargetByDefault(t *testing.T) {
-	echoAddr := startUDPEchoServer(t)
-	rt := startMemoryTunnel(t, transportVP8, false)
-	defer rt.stop(t)
-
-	udpConn, tcpConn, relayAddr := connectViaSOCKSUDP(t, rt.socksAddr)
-	defer func() { _ = udpConn.Close() }()
-	defer func() { _ = tcpConn.Close() }()
-
-	packet := buildSocksUDPPacket(t, echoAddr, []byte("blocked"))
-	if _, err := udpConn.WriteToUDP(packet, relayAddr); err != nil {
-		t.Fatalf("write socks udp packet: %v", err)
-	}
-	if err := udpConn.SetReadDeadline(time.Now().Add(500 * time.Millisecond)); err != nil {
-		t.Fatalf("set udp read deadline: %v", err)
-	}
-	buf := make([]byte, 4096)
-	if n, _, err := udpConn.ReadFromUDP(buf); err == nil {
-		t.Fatalf("unexpected udp response from blocked target: %x", buf[:n])
 	}
 }
 

@@ -3,14 +3,12 @@ package client
 
 import (
 	"context"
-	crand "crypto/rand"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net"
-	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
@@ -26,7 +24,6 @@ import (
 	"github.com/openlibrecommunity/olcrtc/internal/names"
 	"github.com/openlibrecommunity/olcrtc/internal/runtime"
 	"github.com/openlibrecommunity/olcrtc/internal/transport"
-	"github.com/openlibrecommunity/olcrtc/internal/udpwire"
 	"github.com/xtaci/smux"
 )
 
@@ -54,9 +51,9 @@ var (
 
 // Client handles local SOCKS5 connections and tunnels them to the server.
 type Client struct {
-	ln     transport.Transport
-	cipher *crypto.Cipher
-	conn   *muxconn.Conn
+	ln          transport.Transport
+	cipher      *crypto.Cipher
+	conn        *muxconn.Conn
 	// controlConn is a separate muxconn wired to the transport's control-plane
 	// channel (transport.ControlPlane). When non-nil, the smux control session
 	// runs over it instead of the bulk data conn, eliminating head-of-line
@@ -78,11 +75,6 @@ type Client struct {
 	// established (sessionID != ""). Tunnel handlers wait on it so they do
 	// not open smux streams before the server has accepted the handshake.
 	sessionReady chan struct{}
-	udpMu        sync.Mutex
-	udpFlows     map[uint64]clientUDPFlow
-	udpFlowIndex map[clientUDPFlowKey]uint64
-	udpDisabled  bool
-	maxUDPFlows  int
 }
 
 // HealthFunc is called when the client control health snapshot changes.
@@ -106,8 +98,6 @@ type Config struct {
 	AuthToken        string
 	Liveness         control.Config
 	Traffic          transport.TrafficConfig
-	UDPDisabled      bool
-	UDPMaxFlows      int
 
 	// DeviceID overrides the persistent client-side device identifier. Leave
 	// empty to derive one from DeviceIDPath (or generate a random one if both
@@ -155,10 +145,6 @@ func RunWithReady(ctx context.Context, cfg Config, onReady func()) error {
 		socksPass:    cfg.SOCKSPass,
 		health:       runtime.NewHealthTracker(cfg.OnHealth),
 		sessionReady: make(chan struct{}),
-		udpFlows:     make(map[uint64]clientUDPFlow),
-		udpFlowIndex: make(map[clientUDPFlowKey]uint64),
-		udpDisabled:  cfg.UDPDisabled,
-		maxUDPFlows:  normalizeMaxUDPFlows(cfg.UDPMaxFlows),
 	}
 
 	// shutdown is registered BEFORE bringUpLink so we always close any
@@ -210,7 +196,6 @@ func (c *Client) bringUpLink(
 		DeviceID:            c.deviceID,
 		Name:                names.Generate(),
 		OnData:              c.onData,
-		OnDatagram:          c.onDatagram,
 		DNSServer:           cfg.DNSServer,
 		RequireTargetedPeer: true,
 		Options:             cfg.TransportOptions,
@@ -783,7 +768,6 @@ func (c *Client) acceptLoop(ctx context.Context, ln net.Listener) {
 	}
 }
 
-//nolint:cyclop // CONNECT and UDP ASSOCIATE share the SOCKS preface.
 func (c *Client) handleSocks5(ctx context.Context, conn net.Conn) {
 	defer func() { _ = conn.Close() }()
 
@@ -791,15 +775,8 @@ func (c *Client) handleSocks5(ctx context.Context, conn net.Conn) {
 		return
 	}
 
-	req, err := c.readSocks5Request(conn)
+	targetAddr, targetPort, err := c.socks5Request(conn)
 	if err != nil {
-		return
-	}
-	if req.cmd == socksCmdUDPAssociate {
-		c.handleUDPAssociate(ctx, conn, req)
-		return
-	}
-	if req.cmd != socksCmdConnect {
 		return
 	}
 
@@ -815,7 +792,7 @@ func (c *Client) handleSocks5(ctx context.Context, conn net.Conn) {
 		sid := c.sessionID
 		c.sessMu.RUnlock()
 		if sess != nil && !sess.IsClosed() && sid != "" {
-			c.tunnel(conn, sess, req.addr, req.port)
+			c.tunnel(conn, sess, targetAddr, targetPort)
 			return
 		}
 		// sess is nil (no session yet) or closed (reconnect in progress) —
@@ -956,37 +933,26 @@ func (c *Client) socks5UserPassAuth(conn net.Conn) error {
 }
 
 func (c *Client) socks5Request(conn net.Conn) (string, int, error) {
-	req, err := c.readSocks5Request(conn)
-	if err != nil {
-		return "", 0, err
-	}
-	if req.cmd != socksCmdConnect {
-		return "", 0, fmt.Errorf("%w: %d", ErrUnsupportedSOCKSCommand, req.cmd)
-	}
-	return req.addr, req.port, nil
-}
-
-func (c *Client) readSocks5Request(conn net.Conn) (socksRequest, error) {
 	header := make([]byte, 4)
 	if _, err := io.ReadFull(conn, header); err != nil {
-		return socksRequest{}, fmt.Errorf("read socks5 request: %w", err)
+		return "", 0, fmt.Errorf("read socks5 request: %w", err)
 	}
-	if header[1] != socksCmdConnect && header[1] != socksCmdUDPAssociate {
-		return socksRequest{}, fmt.Errorf("%w: %d", ErrUnsupportedSOCKSCommand, header[1])
+	if header[1] != 1 {
+		return "", 0, fmt.Errorf("%w: %d", ErrUnsupportedSOCKSCommand, header[1])
 	}
 
 	addr, err := c.readSocks5Addr(conn, header[3])
 	if err != nil {
-		return socksRequest{}, err
+		return "", 0, err
 	}
 
 	portBuf := make([]byte, 2)
 	if _, err := io.ReadFull(conn, portBuf); err != nil {
-		return socksRequest{}, fmt.Errorf("read socks5 port: %w", err)
+		return "", 0, fmt.Errorf("read socks5 port: %w", err)
 	}
 	port := int(binary.BigEndian.Uint16(portBuf))
 
-	return socksRequest{cmd: header[1], addr: addr, port: port}, nil
+	return addr, port, nil
 }
 
 func (c *Client) readSocks5Addr(conn net.Conn, addrType byte) (string, error) {
@@ -1007,12 +973,6 @@ func (c *Client) readSocks5Addr(conn net.Conn, addrType byte) (string, error) {
 			return "", fmt.Errorf("read socks5 domain: %w", err)
 		}
 		return string(buf), nil
-	case 4: // IPv6
-		buf := make([]byte, 16)
-		if _, err := io.ReadFull(conn, buf); err != nil {
-			return "", fmt.Errorf("read socks5 ipv6: %w", err)
-		}
-		return net.IP(buf).String(), nil
 	default:
 		return "", fmt.Errorf("%w: %d", ErrUnsupportedAddressType, addrType)
 	}
@@ -1024,40 +984,4 @@ func replySuccess() []byte {
 
 func replyHostUnreachable() []byte {
 	return []byte{5, 4, 0, 1, 0, 0, 0, 0, 0, 0}
-}
-
-func randomUDPFlowID() uint64 {
-	var b [8]byte
-	if _, err := crand.Read(b[:]); err != nil {
-		return uint64(time.Now().UnixNano())
-	}
-	v := binary.BigEndian.Uint64(b[:])
-	if v == 0 {
-		return 1
-	}
-	return v
-}
-
-type socksRequest struct {
-	cmd  byte
-	addr string
-	port int
-}
-
-const (
-	socksCmdConnect      byte = 1
-	socksCmdUDPAssociate byte = 3
-)
-
-type clientUDPFlow struct {
-	conn       *net.UDPConn
-	clientAddr *net.UDPAddr
-	target     udpwire.Endpoint
-	lastSeen   time.Time
-}
-
-type clientUDPFlowKey struct {
-	conn       *net.UDPConn
-	clientAddr netip.AddrPort
-	target     udpwire.Endpoint
 }

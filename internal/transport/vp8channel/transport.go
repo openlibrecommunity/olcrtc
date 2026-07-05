@@ -6,7 +6,6 @@
 package vp8channel
 
 import (
-	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/binary"
@@ -43,11 +42,10 @@ const (
 	// Control messages are tiny (ping/pong JSON frames), so a small queue
 	// suffices. We keep it separate from bulk data to guarantee forward
 	// progress even when the data outbound queue is saturated.
-	controlOutboundQueueSize  = 2048 // sized for ~20s publisher reconnect window at 20ms tick
-	datagramOutboundQueueSize = 4096
-	inboundQueueSize          = 4096
-	canSendHighWatermark      = 90 // percent
-	keepaliveIdlePeriod       = 100 * time.Millisecond
+	controlOutboundQueueSize = 2048 // sized for ~20s publisher reconnect window at 20ms tick
+	inboundQueueSize         = 4096
+	canSendHighWatermark     = 90 // percent
+	keepaliveIdlePeriod      = 100 * time.Millisecond
 	// defaultPeerRestartGrace is how long the latched peer must be silent
 	// before a frame from a different epoch is read as a server restart. The
 	// server emits a decodable keepalive every ~2s, so a few missed beats is
@@ -61,8 +59,6 @@ var (
 	ErrVideoTrackUnsupported = errors.New("carrier does not support video tracks")
 	// ErrTransportClosed is returned when operations are attempted on a closed transport.
 	ErrTransportClosed = errors.New("vp8channel transport closed")
-	// ErrDatagramQueueFull is returned when a lossy datagram cannot be queued.
-	ErrDatagramQueueFull = errors.New("vp8channel datagram queue full")
 )
 
 var vp8Keepalive = []byte{ //nolint:gochecknoglobals // package-level state intentional
@@ -101,9 +97,7 @@ const (
 	controlEpochFlag uint32 = 0x80000000
 )
 
-var kcpBatchMagic = [4]byte{'O', 'L', 'K', 'B'}      //nolint:gochecknoglobals // wire marker
-var datagramMagic = [4]byte{'O', 'L', 'U', 'D'}      //nolint:gochecknoglobals // wire marker
-var datagramBatchMagic = [4]byte{'O', 'L', 'U', 'B'} //nolint:gochecknoglobals // wire marker
+var kcpBatchMagic = [4]byte{'O', 'L', 'K', 'B'} //nolint:gochecknoglobals // wire marker
 
 // videoSession is the subset of engine.Session + engine.VideoTrackCapable
 // the vp8channel transport relies on. It necessarily mirrors the engine's
@@ -141,11 +135,9 @@ type streamTransport struct {
 	// Tests inject a writer here to observe the exact byte stream that
 	// reaches the track and to assert that writeSampleLocked serializes
 	// concurrent callers. Always invoked under writeMu.
-	sampleWriter   func([]byte) bool
-	onData         func([]byte)
-	onPeerData     func(peerID string, data []byte)
-	onDatagram     func([]byte)
-	onPeerDatagram func(peerID string, data []byte)
+	sampleWriter func([]byte) bool
+	onData       func([]byte)
+	onPeerData   func(peerID string, data []byte)
 	// onControlData is called with every reassembled message from the
 	// control-plane KCP session.
 	onControlData func([]byte)
@@ -153,17 +145,16 @@ type streamTransport struct {
 	// controlOutbound is the dedicated outbound queue for the control KCP.
 	// Frames here are drained with priority before bulk data frames so that
 	// handshake / liveness messages never wait behind large data writes.
-	controlOutbound  chan []byte
-	datagramOutbound chan []byte
-	closeCh          chan struct{}
-	writerDone       chan struct{}
-	closed           atomic.Bool
-	writerUp         atomic.Bool
-	writerOnce       sync.Once
-	kcpOnce          sync.Once
-	controlKCPOnce   sync.Once
-	frameInterval    time.Duration
-	batchSize        int
+	controlOutbound chan []byte
+	closeCh         chan struct{}
+	writerDone      chan struct{}
+	closed          atomic.Bool
+	writerUp        atomic.Bool
+	writerOnce      sync.Once
+	kcpOnce         sync.Once
+	controlKCPOnce  sync.Once
+	frameInterval   time.Duration
+	batchSize       int
 
 	// localEpoch is stamped into every outgoing VP8 frame. Explicit
 	// upper-layer resets rotate it so the peer can reset its KCP state too.
@@ -294,21 +285,18 @@ func newStreamTransport(
 		batchSize = defaultBatchSize
 	}
 	tr := &streamTransport{
-		stream:           stream,
-		track:            track,
-		onData:           cfg.OnData,
-		onPeerData:       cfg.OnPeerData,
-		onDatagram:       cfg.OnDatagram,
-		onPeerDatagram:   cfg.OnPeerDatagram,
-		outbound:         make(chan []byte, outboundQueueSize),
-		controlOutbound:  make(chan []byte, controlOutboundQueueSize),
-		datagramOutbound: make(chan []byte, datagramOutboundQueueSize),
-		closeCh:          make(chan struct{}),
-		writerDone:       make(chan struct{}),
-		frameInterval:    time.Second / time.Duration(fps),
-		batchSize:        batchSize,
-		bindingToken:     bindingToken(cfg.RoomURL),
-		localEpoch:       randomEpoch(),
+		stream:          stream,
+		track:           track,
+		onData:          cfg.OnData,
+		onPeerData:      cfg.OnPeerData,
+		outbound:        make(chan []byte, outboundQueueSize),
+		controlOutbound: make(chan []byte, controlOutboundQueueSize),
+		closeCh:         make(chan struct{}),
+		writerDone:      make(chan struct{}),
+		frameInterval:   time.Second / time.Duration(fps),
+		batchSize:       batchSize,
+		bindingToken:    bindingToken(cfg.RoomURL),
+		localEpoch:      randomEpoch(),
 		peers:            make(map[uint32]*kcpRuntime),
 		peerOut:          make(map[uint32]chan []byte),
 		ctrlPeers:        make(map[uint32]*peerControlKCP),
@@ -540,55 +528,6 @@ func (p *streamTransport) SendTo(peerID string, data []byte) error {
 	return rt.send(data)
 }
 
-// SendDatagram sends one unordered/lossy frame over the VP8 carrier.
-func (p *streamTransport) SendDatagram(data []byte) error {
-	dst := p.peerEpoch.Load()
-	return p.enqueueDatagram(dst, data)
-}
-
-// SendDatagramTo sends one unordered/lossy frame to a specific peer epoch.
-func (p *streamTransport) SendDatagramTo(peerID string, data []byte) error {
-	epoch, err := parsePeerID(peerID)
-	if err != nil {
-		return fmt.Errorf("vp8channel: invalid peerID %q: %w", peerID, err)
-	}
-	return p.enqueueDatagram(epoch, data)
-}
-
-func (p *streamTransport) enqueueDatagram(dst uint32, data []byte) error {
-	if p.closed.Load() {
-		return ErrTransportClosed
-	}
-	if len(data)+epochHdrLen+len(datagramMagic) > defaultMaxPayloadSize {
-		return transport.ErrTrafficPayloadTooLarge
-	}
-	frame := p.buildDatagramFrame(dst, data)
-	select {
-	case p.datagramOutbound <- frame:
-		return nil
-	default:
-		return ErrDatagramQueueFull
-	}
-}
-
-func (p *streamTransport) buildDatagramFrame(dst uint32, data []byte) []byte {
-	hdr := buildEpochHeaderTo(p.bindingToken, p.localEpochValue(), dst)
-	frame := make([]byte, 0, epochHdrLen+len(datagramMagic)+len(data))
-	frame = append(frame, hdr[:]...)
-	frame = append(frame, datagramMagic[:]...)
-	frame = append(frame, data...)
-	return frame
-}
-
-// DatagramCanSend reports whether the lossy VP8 datagram queue can accept data.
-func (p *streamTransport) DatagramCanSend() bool {
-	if p.closed.Load() {
-		return false
-	}
-	return p.stream.CanSend() &&
-		len(p.datagramOutbound) < cap(p.datagramOutbound)*canSendHighWatermark/100
-}
-
 // SupportsPeerRouting reports whether this transport can address individual peers.
 func (p *streamTransport) SupportsPeerRouting() bool {
 	return p.onPeerData != nil
@@ -627,8 +566,6 @@ func (p *streamTransport) Close() error {
 		p.ctrlPeers = make(map[uint32]*peerControlKCP)
 		p.ctrlPeersMu.Unlock()
 
-		p.drainDatagramOutbound()
-
 		if p.writerUp.Load() {
 			<-p.writerDone
 		}
@@ -653,16 +590,6 @@ func (p *streamTransport) drainControlOutbound() {
 	for {
 		select {
 		case <-p.controlOutbound:
-		default:
-			return
-		}
-	}
-}
-
-func (p *streamTransport) drainDatagramOutbound() {
-	for {
-		select {
-		case <-p.datagramOutbound:
 		default:
 			return
 		}
@@ -771,7 +698,6 @@ func (p *streamTransport) Features() transport.Features {
 		Ordered:         true,
 		MessageOriented: true,
 		MaxPayloadSize:  defaultMaxPayloadSize,
-		Datagram:        true,
 	}
 }
 
@@ -785,8 +711,7 @@ type writerState struct {
 	ticksSinceKeepalive int
 	// pendingControl holds a control frame that failed WriteSample and must be
 	// retried on the next tick before consuming more frames.
-	pendingControl  []byte
-	pendingDatagram []byte
+	pendingControl []byte
 }
 
 func (w *writerState) writeSample(data []byte) bool {
@@ -856,66 +781,6 @@ func (w *writerState) drainControl() bool {
 	}
 }
 
-// drainDatagram sends queued lossy datagrams after control frames and before
-// reliable KCP data. Returns false when a frame must be retried on the next tick.
-func (w *writerState) drainDatagram() bool {
-	if w.pendingDatagram != nil {
-		if !w.writeSample(w.pendingDatagram) {
-			return false
-		}
-		w.pendingDatagram = nil
-	}
-	for {
-		select {
-		case frame := <-w.p.datagramOutbound:
-			sample := w.batchDatagramSample(frame)
-			w.idleTicks = 0
-			if !w.writeSample(sample) {
-				w.pendingDatagram = sample
-				return false
-			}
-		default:
-			return true
-		}
-	}
-}
-
-func (w *writerState) batchDatagramSample(first []byte) []byte {
-	return w.batchDatagramSampleFrom(w.p.datagramOutbound, first)
-}
-
-func (w *writerState) batchDatagramSampleFrom(src <-chan []byte, first []byte) []byte {
-	if len(first) <= epochHdrLen || w.p.batchSize <= 1 {
-		return first
-	}
-	sample := make([]byte, 0, defaultMaxPayloadSize)
-	sample = append(sample, first[:epochHdrLen]...)
-	sample = append(sample, datagramBatchMagic[:]...)
-	sample = appendBatchPacket(sample, first[epochHdrLen:])
-	packets := 1
-	for ; packets < w.p.batchSize; packets++ {
-		select {
-		case frame := <-src:
-			if !sameEpochHeader(first, frame) {
-				w.pendingDatagram = frame
-				return sample
-			}
-			payload := frame[epochHdrLen:]
-			if len(sample)+2+len(payload) > defaultMaxPayloadSize {
-				w.pendingDatagram = frame
-				return sample
-			}
-			sample = appendBatchPacket(sample, payload)
-		default:
-			if packets == 1 {
-				return first
-			}
-			return sample
-		}
-	}
-	return sample
-}
-
 // drainData sends one batched data frame, or a keepalive when idle.
 func (w *writerState) drainData() {
 	select {
@@ -955,10 +820,6 @@ func (p *streamTransport) writerLoop() {
 			// Priority 1+2: drain all control frames before any bulk data.
 			if !w.drainControl() {
 				continue // a control frame is still failing; retry next tick
-			}
-			// Priority 2: drain lossy datagrams before reliable bulk data.
-			if !w.drainDatagram() {
-				continue
 			}
 			// Priority 3: drain a batched data frame (or send keepalive).
 			w.drainData()
@@ -1311,14 +1172,6 @@ func (p *streamTransport) handleIncomingFrame(frame []byte) {
 		p.handleControlFrame(src, dst, kcpPayload)
 		return
 	}
-	if packets, ok := splitDatagramBatchPayload(kcpPayload); ok {
-		p.handleDatagramBatchFrame(src, packets)
-		return
-	}
-	if payload, ok := splitDatagramPayload(kcpPayload); ok {
-		p.handleDatagramFrame(src, payload)
-		return
-	}
 
 	// Multi-peer mode: route each epoch to its own KCP runtime.
 	if p.onPeerData != nil {
@@ -1327,71 +1180,6 @@ func (p *streamTransport) handleIncomingFrame(frame []byte) {
 	}
 
 	p.handleSinglePeerData(src, kcpPayload)
-}
-
-func splitDatagramPayload(payload []byte) ([]byte, bool) {
-	if len(payload) < len(datagramMagic) ||
-		string(payload[:len(datagramMagic)]) != string(datagramMagic[:]) {
-		return nil, false
-	}
-	return payload[len(datagramMagic):], true
-}
-
-func splitDatagramBatchPayload(payload []byte) ([][]byte, bool) {
-	if len(payload) < len(datagramBatchMagic) ||
-		string(payload[:len(datagramBatchMagic)]) != string(datagramBatchMagic[:]) {
-		return nil, false
-	}
-	rest := payload[len(datagramBatchMagic):]
-	packets := make([][]byte, 0, 4)
-	for len(rest) > 0 {
-		if len(rest) < 2 {
-			return nil, false
-		}
-		size := int(binary.BigEndian.Uint16(rest[:2]))
-		rest = rest[2:]
-		if size == 0 || len(rest) < size {
-			return nil, false
-		}
-		packets = append(packets, rest[:size])
-		rest = rest[size:]
-	}
-	return packets, true
-}
-
-func (p *streamTransport) handleDatagramBatchFrame(src uint32, packets [][]byte) {
-	for _, packet := range packets {
-		payload, ok := splitDatagramPayload(packet)
-		if !ok {
-			continue
-		}
-		p.handleDatagramFrame(src, payload)
-	}
-}
-
-func (p *streamTransport) handleDatagramFrame(src uint32, payload []byte) {
-	if p.onPeerData != nil {
-		if p.onPeerDatagram != nil {
-			p.onPeerDatagram(formatPeerID(src), payload)
-		}
-		return
-	}
-	switch {
-	case !p.peerConfirmed.Load():
-		return
-	case src != p.peerEpoch.Load():
-		p.maybePeerRestart(src)
-		return
-	default:
-		p.lastPeerFrameNano.Store(time.Now().UnixNano())
-	}
-	if p.onDatagram != nil {
-		p.onDatagram(payload)
-	}
-}
-
-func sameEpochHeader(a, b []byte) bool {
-	return len(a) >= epochHdrLen && len(b) >= epochHdrLen && bytes.Equal(a[:epochHdrLen], b[:epochHdrLen])
 }
 
 // handleSinglePeerData delivers a data frame in single-peer (client) mode. It

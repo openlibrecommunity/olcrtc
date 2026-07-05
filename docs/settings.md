@@ -120,8 +120,6 @@ its ID into `room.id`. For `jitsi`, specify the room URL.
 If `socks.proxy_user` is empty, the server reaches the proxy without authentication (method `0x00`).
 If it is set, username/password auth per RFC 1929 is used (`proxy_pass` is optional and may be empty).
 
-With `socks.proxy_addr` set, server-side UDP relay uses SOCKS5 UDP ASSOCIATE through the upstream proxy.
-
 ---
 
 ## Client-only fields (`mode: cnc`)

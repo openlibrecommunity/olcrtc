@@ -547,23 +547,6 @@ func TestValidate(t *testing.T) {
 			}(),
 			want: ErrTrafficMaxDelayInvalid,
 		},
-		{
-			name: "udp accepts max flows",
-			cfg: func() Config {
-				cfg := base
-				cfg.UDPMaxFlows = 256
-				return cfg
-			}(),
-		},
-		{
-			name: "udp rejects negative max flows",
-			cfg: func() Config {
-				cfg := base
-				cfg.UDPMaxFlows = -1
-				return cfg
-			}(),
-			want: ErrUDPMaxFlowsInvalid,
-		},
 	}
 
 	for _, tt := range tests {

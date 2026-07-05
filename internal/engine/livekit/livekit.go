@@ -27,7 +27,6 @@ const (
 	defaultSendQueueSize    = 5000
 	defaultSendQueueCapHard = 4000
 	dataPublishTopic        = "olcrtc"
-	datagramPublishTopic    = "olcrtc.udp"
 	videoTrackName          = "videochannel"
 	reconnectWindow         = 5 * time.Minute
 	maxReconnects           = 10
@@ -48,7 +47,6 @@ var (
 
 type roomHandle interface {
 	publishData(data []byte) error
-	publishDatagram(data []byte, peerID string) error
 	publishTrack(track webrtc.TrackLocal) error
 	unpublishLocalTracks()
 	disconnect()
@@ -66,20 +64,6 @@ func (r *sdkRoom) publishData(data []byte) error {
 		lksdk.WithDataPublishReliable(true),
 	); err != nil {
 		return fmt.Errorf("publish data packet: %w", err)
-	}
-	return nil
-}
-
-func (r *sdkRoom) publishDatagram(data []byte, peerID string) error {
-	opts := []lksdk.DataPublishOption{
-		lksdk.WithDataPublishTopic(datagramPublishTopic),
-		lksdk.WithDataPublishReliable(false),
-	}
-	if peerID != "" {
-		opts = append(opts, lksdk.WithDataPublishDestination([]string{peerID}))
-	}
-	if err := r.room.LocalParticipant.PublishDataPacket(lksdk.UserData(data), opts...); err != nil {
-		return fmt.Errorf("publish datagram packet: %w", err)
 	}
 	return nil
 }
@@ -145,8 +129,6 @@ type Session struct {
 	room            roomHandle
 	roomMu          sync.RWMutex
 	onData          func([]byte)
-	onDatagram      func([]byte)
-	onPeerDatagram  func(peerID string, data []byte)
 	onReconnect     func(*webrtc.DataChannel)
 	shouldReconnect func() bool
 	onEnded         func(string)
@@ -177,25 +159,23 @@ func New(ctx context.Context, cfg engine.Config) (engine.Session, error) {
 	}
 	_, cancel := context.WithCancel(ctx)
 	return &Session{
-		url:            cfg.URL,
-		token:          cfg.Token,
-		name:           cfg.Name,
-		refresh:        cfg.Refresh,
-		connectRoom:    connectSDKRoom,
-		onData:         cfg.OnData,
-		onDatagram:     cfg.OnDatagram,
-		onPeerDatagram: cfg.OnPeerDatagram,
-		reconnectCh:    make(chan struct{}, 1),
-		closeCh:        make(chan struct{}),
-		sendQueue:      make(chan []byte, defaultSendQueueSize),
-		done:           make(chan struct{}),
-		cancel:         cancel,
+		url:         cfg.URL,
+		token:       cfg.Token,
+		name:        cfg.Name,
+		refresh:     cfg.Refresh,
+		connectRoom: connectSDKRoom,
+		onData:      cfg.OnData,
+		reconnectCh: make(chan struct{}, 1),
+		closeCh:     make(chan struct{}),
+		sendQueue:   make(chan []byte, defaultSendQueueSize),
+		done:        make(chan struct{}),
+		cancel:      cancel,
 	}, nil
 }
 
 // Capabilities reports what this engine can do.
 func (s *Session) Capabilities() engine.Capabilities {
-	return engine.Capabilities{ByteStream: true, VideoTrack: true, Datagram: true}
+	return engine.Capabilities{ByteStream: true, VideoTrack: true}
 }
 
 // Connect joins the LiveKit room.
@@ -211,8 +191,10 @@ func (s *Session) Connect(ctx context.Context) error {
 func (s *Session) connectSession(_ context.Context) error {
 	roomCB := &lksdk.RoomCallback{
 		ParticipantCallback: lksdk.ParticipantCallback{
-			OnDataReceived: func(data []byte, params lksdk.DataReceiveParams) {
-				s.handleDataReceived(data, params)
+			OnDataReceived: func(data []byte, _ lksdk.DataReceiveParams) {
+				if s.onData != nil {
+					s.onData(data)
+				}
 			},
 			OnTrackSubscribed: func(track *webrtc.TrackRemote, _ *lksdk.RemoteTrackPublication, _ *lksdk.RemoteParticipant) {
 				if track.Kind() != webrtc.RTPCodecTypeVideo {
@@ -246,21 +228,6 @@ func (s *Session) connectSession(_ context.Context) error {
 		return err
 	}
 	return nil
-}
-
-func (s *Session) handleDataReceived(data []byte, params lksdk.DataReceiveParams) {
-	if params.Topic == datagramPublishTopic {
-		switch {
-		case s.onPeerDatagram != nil && params.SenderIdentity != "":
-			s.onPeerDatagram(params.SenderIdentity, data)
-		case s.onDatagram != nil:
-			s.onDatagram(data)
-		}
-		return
-	}
-	if s.onData != nil {
-		s.onData(data)
-	}
 }
 
 func (s *Session) publishPendingTracks() error {
@@ -333,31 +300,6 @@ func (s *Session) Send(data []byte) error {
 	default:
 		return ErrSendQueueFull
 	}
-}
-
-// SendDatagram publishes one unordered/lossy data packet.
-func (s *Session) SendDatagram(data []byte) error {
-	return s.SendDatagramTo("", data)
-}
-
-// SendDatagramTo publishes one unordered/lossy data packet to a specific participant.
-func (s *Session) SendDatagramTo(peerID string, data []byte) error {
-	if s.closed.Load() {
-		return ErrSessionClosed
-	}
-	room := s.currentRoom()
-	if room == nil || room.connectionState() != lksdk.ConnectionStateConnected {
-		return ErrRoomNotConnected
-	}
-	if err := room.publishDatagram(data, peerID); err != nil {
-		return err
-	}
-	return nil
-}
-
-// DatagramCanSend reports whether the lossy data channel is writable.
-func (s *Session) DatagramCanSend() bool {
-	return s.CanSend()
 }
 
 // Close terminates the session.

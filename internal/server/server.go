@@ -78,37 +78,31 @@ type Server struct {
 	// peer-routing mode the data session is nil). reinstallSession compares
 	// the dying session against this so a control-session reinstall is not
 	// silently discarded by the s.session guard (issue #95).
-	controlSess                  *smux.Session
-	controlStrm                  *smux.Stream
-	controlStop                  context.CancelFunc
-	sessMu                       sync.RWMutex
-	peerSessions                 map[string]*peerSession
-	peersMu                      sync.Mutex
-	peerStats                    map[string]peerStat
-	reinstallMu                  sync.Mutex
-	wg                           sync.WaitGroup
-	authHook                     handshake.AuthFunc
-	onOpen                       SessionOpenFunc
-	onClose                      SessionCloseFunc
-	onTraffic                    TrafficFunc
-	deviceID                     string
-	sessionID                    string
-	dnsServer                    string
-	resolver                     *net.Resolver
-	socksProxyAddr               string
-	socksProxyPort               int
-	socksProxyUser               string
-	socksProxyPass               string
-	liveness                     control.Config
-	health                       *runtime.HealthTracker
-	unsafeAllowPrivateUDPTargets bool
-	udpDisabled                  bool
-	maxUDPFlows                  int
-	done                         chan struct{}
-	doneOnce                     sync.Once
-	udpMu                        sync.Mutex
-	udpFlows                     map[serverUDPKey]*serverUDPFlow
-	udpPendingFlows              int
+	controlSess    *smux.Session
+	controlStrm    *smux.Stream
+	controlStop    context.CancelFunc
+	sessMu         sync.RWMutex
+	peerSessions   map[string]*peerSession
+	peersMu        sync.Mutex
+	peerStats      map[string]peerStat
+	reinstallMu    sync.Mutex
+	wg             sync.WaitGroup
+	authHook       handshake.AuthFunc
+	onOpen         SessionOpenFunc
+	onClose        SessionCloseFunc
+	onTraffic      TrafficFunc
+	deviceID       string
+	sessionID      string
+	dnsServer      string
+	resolver       *net.Resolver
+	socksProxyAddr string
+	socksProxyPort int
+	socksProxyUser string
+	socksProxyPass string
+	liveness       control.Config
+	health         *runtime.HealthTracker
+	done           chan struct{}
+	doneOnce       sync.Once
 }
 
 // peerStat holds the per-session info needed to report the live peer count
@@ -158,12 +152,6 @@ type Config struct {
 	AuthToken        string
 	Liveness         control.Config
 	Traffic          transport.TrafficConfig
-	UDPDisabled      bool
-	UDPMaxFlows      int
-	// UnsafeAllowPrivateUDPTargets permits UDP relay targets in loopback,
-	// private, link-local and multicast ranges. Leave false outside local
-	// tests/dev setups; enabling it can expose local-network SSRF.
-	UnsafeAllowPrivateUDPTargets bool
 
 	// AuthHook is invoked after CLIENT_HELLO to authorize the client and
 	// return a session ID. If nil, every client is admitted with a random UUID.
@@ -206,25 +194,21 @@ func Run(ctx context.Context, cfg Config) error {
 		onTraffic = func(string, string, uint64, uint64) {}
 	}
 	s := &Server{
-		cipher:                       cipher,
-		authHook:                     hook,
-		onOpen:                       onOpen,
-		onClose:                      onClose,
-		onTraffic:                    onTraffic,
-		dnsServer:                    cfg.DNSServer,
-		socksProxyAddr:               cfg.SOCKSProxyAddr,
-		socksProxyPort:               cfg.SOCKSProxyPort,
-		socksProxyUser:               cfg.SOCKSProxyUser,
-		socksProxyPass:               cfg.SOCKSProxyPass,
-		liveness:                     cfg.Liveness,
-		health:                       runtime.NewHealthTracker(cfg.OnHealth),
-		unsafeAllowPrivateUDPTargets: cfg.UnsafeAllowPrivateUDPTargets,
-		udpDisabled:                  cfg.UDPDisabled,
-		maxUDPFlows:                  normalizeMaxUDPFlows(cfg.UDPMaxFlows),
-		peerSessions:                 make(map[string]*peerSession),
-		peerStats:                    make(map[string]peerStat),
-		udpFlows:                     make(map[serverUDPKey]*serverUDPFlow),
-		done:                         make(chan struct{}),
+		cipher:         cipher,
+		authHook:       hook,
+		onOpen:         onOpen,
+		onClose:        onClose,
+		onTraffic:      onTraffic,
+		dnsServer:      cfg.DNSServer,
+		socksProxyAddr: cfg.SOCKSProxyAddr,
+		socksProxyPort: cfg.SOCKSProxyPort,
+		socksProxyUser: cfg.SOCKSProxyUser,
+		socksProxyPass: cfg.SOCKSProxyPass,
+		liveness:       cfg.Liveness,
+		health:         runtime.NewHealthTracker(cfg.OnHealth),
+		peerSessions:   make(map[string]*peerSession),
+		peerStats:      make(map[string]peerStat),
+		done:           make(chan struct{}),
 	}
 	s.setupResolver()
 
@@ -303,24 +287,22 @@ func (s *Server) bringUpLink(
 ) error {
 	s.baseCtx = ctx
 	ln, err := transport.New(ctx, cfg.Transport, transport.Config{
-		Carrier:        cfg.Carrier,
-		RoomURL:        cfg.RoomURL,
-		Engine:         cfg.Engine,
-		URL:            cfg.URL,
-		Token:          cfg.Token,
-		AuthToken:      cfg.AuthToken,
-		ChannelID:      cfg.ChannelID,
-		DeviceID:       "",
-		Name:           names.Generate(),
-		OnData:         s.onData,
-		OnPeerData:     s.onPeerData,
-		OnDatagram:     s.onDatagram,
-		OnPeerDatagram: s.onPeerDatagram,
-		DNSServer:      s.dnsServer,
-		ProxyAddr:      s.socksProxyAddr,
-		ProxyPort:      s.socksProxyPort,
-		Options:        cfg.TransportOptions,
-		Traffic:        cfg.Traffic,
+		Carrier:    cfg.Carrier,
+		RoomURL:    cfg.RoomURL,
+		Engine:     cfg.Engine,
+		URL:        cfg.URL,
+		Token:      cfg.Token,
+		AuthToken:  cfg.AuthToken,
+		ChannelID:  cfg.ChannelID,
+		DeviceID:   "",
+		Name:       names.Generate(),
+		OnData:     s.onData,
+		OnPeerData: s.onPeerData,
+		DNSServer:  s.dnsServer,
+		ProxyAddr:  s.socksProxyAddr,
+		ProxyPort:  s.socksProxyPort,
+		Options:    cfg.TransportOptions,
+		Traffic:    cfg.Traffic,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to create transport: %w", err)
@@ -644,7 +626,6 @@ func (s *Server) swapSession(dead *smux.Session, r *replacementSession) bool {
 		s.onClose(oldSID, "reconnect")
 		s.trackPeerClose(oldSID, "reconnect")
 	}
-	s.closeAllUDPFlows()
 	return true
 }
 
@@ -688,7 +669,6 @@ func (s *Server) closeSession() {
 	for _, ps := range peers {
 		s.closePeerSession(ps, "closed")
 	}
-	s.closeAllUDPFlows()
 }
 
 func (s *Server) removePeerSession(peerID, reason string) {
