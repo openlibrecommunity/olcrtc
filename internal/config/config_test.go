@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 
 	"github.com/openlibrecommunity/olcrtc/internal/app/session"
@@ -38,6 +39,9 @@ socks:
   user: u
   pass: p
   max_sessions: 17
+  max_sessions_per_target: 4
+  slot_wait_ms: 750
+  block_ports: [993, 5223]
 vp8:
   fps: 25
   batch_size: 4
@@ -89,28 +93,31 @@ func requireLoadedFile(t *testing.T, f File) {
 func requireAppliedConfig(t *testing.T, got session.Config) {
 	t.Helper()
 	want := session.Config{
-		Mode:                  testModeSrv,
-		Auth:                  testAuthProvider,
-		RoomID:                testRoomID,
-		KeyHex:                testCryptoKey,
-		Transport:             "datachannel",
-		DNSServer:             testDNSServer,
-		SOCKSHost:             "127.0.0.1",
-		SOCKSPort:             1080,
-		SOCKSUser:             "u",
-		SOCKSPass:             "p",
-		SOCKSMaxSessions:      17,
-		VP8:                   session.VP8Config{FPS: 25, BatchSize: 4, MaxBytesPerSec: 120000},
-		LivenessInterval:      "2s",
-		LivenessTimeout:       "500ms",
-		LivenessFailures:      4,
-		MaxSessionDuration:    "6h",
-		TrafficMaxPayloadSize: 4096,
-		TrafficMinDelay:       "5ms",
-		TrafficMaxDelay:       "30ms",
-		Amount:                3,
+		Mode:                      testModeSrv,
+		Auth:                      testAuthProvider,
+		RoomID:                    testRoomID,
+		KeyHex:                    testCryptoKey,
+		Transport:                 "datachannel",
+		DNSServer:                 testDNSServer,
+		SOCKSHost:                 "127.0.0.1",
+		SOCKSPort:                 1080,
+		SOCKSUser:                 "u",
+		SOCKSPass:                 "p",
+		SOCKSMaxSessions:          17,
+		SOCKSMaxSessionsPerTarget: 4,
+		SOCKSSlotWaitMS:           750,
+		SOCKSBlockPorts:           []int{993, 5223},
+		VP8:                       session.VP8Config{FPS: 25, BatchSize: 4, MaxBytesPerSec: 120000},
+		LivenessInterval:          "2s",
+		LivenessTimeout:           "500ms",
+		LivenessFailures:          4,
+		MaxSessionDuration:        "6h",
+		TrafficMaxPayloadSize:     4096,
+		TrafficMinDelay:           "5ms",
+		TrafficMaxDelay:           "30ms",
+		Amount:                    3,
 	}
-	if got != want {
+	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("Apply produced wrong config: %+v, want %+v", got, want)
 	}
 }

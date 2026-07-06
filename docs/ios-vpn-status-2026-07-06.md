@@ -164,3 +164,56 @@ The resolver pinned in `.secrets/runtime/olc-srv-direct.yaml` timed out resolvin
 reliable resolver (`dns: 8.8.8.8:53`) for the local test server. For a local
 Mac exit there is no reason to route DNS through the flaky resolver. The
 deployed VM server config is separate and should be checked independently.
+
+## Evening full-tunnel retests and hardening
+
+Later real-device runs showed that "VPN connected" is still not enough for a
+field-ready full tunnel. The carrier can stay up while individual TLS streams
+fail after the client sends only the TLS ClientHello (`in=517 out=0` on the
+server).
+
+Hardening added after the first evening failures:
+
+- `net.dns` now accepts comma-separated resolver fallbacks and the runtime DNS
+  dial path uses TCP DNS connections. This avoids the UDP resolver timeouts
+  observed during bulk probes.
+- `socks.max_sessions_per_target` is configurable instead of hard-coded.
+- `socks.slot_wait_ms` bounds global SOCKS slot waiting.
+- `socks.block_ports` lets iOS field-test profiles reject noisy background
+  ports before they consume tunnel slots.
+- The local iOS debug profile used for the last run had `max_sessions: 24`,
+  `slot_wait_ms: 500`, DNS fallback, and `block_ports: [993, 5223]`.
+
+Evening harness results on GIA iPhone 11:
+
+- `telemost-qos6-20260706-202136`: red, but no reconnects. `DownloadOK=2/3`,
+  `RoundOK=1/3`, `HTTPError=4`. Round 3 was fully green; early failures were
+  TLS stream failures and DNS/background traffic pressure.
+- `telemost-qos7-20260706-203126`: red with carrier churn. `DownloadOK=2/3`,
+  `RoundOK=1/3`, `HTTPError=3`, `Reconnects=3`.
+- `telemost-qos8-20260706-204331`: red, no reconnects. `DownloadOK=2/3`,
+  `RoundOK=1/3`, `HTTPError=3`. The port blocklist worked for IMAP, but Apple
+  HTTPS background traffic still competed with probes; round 3 was fully green.
+
+Current conclusion: the iOS full tunnel is usable enough to prove real HTTPS and
+1 MiB downloads over Telemost, but it is **not yet stable enough to call
+field-ready**. The remaining problem is per-stream reliability under background
+iOS traffic and low vp8channel throughput, not VPN permission, app installation,
+fresh-room selection, or the readiness gate.
+
+Next technical direction:
+
+- keep the fresh-room rule;
+- keep DNS fallback and SOCKS limits;
+- add host/suffix-level background traffic controls or a real QoS queue for
+  Apple/iCloud background HTTPS flows;
+- add a warm-up/health gate that reports "ready for browsing" only after a
+  successful short HTTPS probe through the tunnel.
+
+Sanitized evening artifacts are under:
+
+- `artifacts/telemost-fix/harness/telemost-qos6-20260706-202136/`
+- `artifacts/telemost-fix/harness/telemost-qos7-20260706-203126/`
+- `artifacts/telemost-fix/harness/telemost-qos8-20260706-204331/`
+
+Raw logs remain under `.secrets/runtime/harness/<stamp>/`.

@@ -13,6 +13,7 @@ import (
 	"github.com/openlibrecommunity/olcrtc/internal/auth"
 	"github.com/openlibrecommunity/olcrtc/internal/client"
 	"github.com/openlibrecommunity/olcrtc/internal/control"
+	"github.com/openlibrecommunity/olcrtc/internal/dnsutil"
 	enginebuiltin "github.com/openlibrecommunity/olcrtc/internal/engine/builtin"
 	"github.com/openlibrecommunity/olcrtc/internal/logger"
 	"github.com/openlibrecommunity/olcrtc/internal/names"
@@ -178,36 +179,39 @@ type SEIConfig struct {
 
 // Config holds runtime session settings.
 type Config struct {
-	Mode                  string
-	Transport             string
-	Auth                  string
-	Engine                string
-	URL                   string
-	Token                 string
-	RoomID                string
-	ChannelID             string
-	KeyHex                string
-	SOCKSHost             string
-	SOCKSPort             int
-	SOCKSUser             string
-	SOCKSPass             string
-	SOCKSMaxSessions      int
-	DNSServer             string
-	SOCKSProxyAddr        string
-	SOCKSProxyPort        int
-	SOCKSProxyUser        string
-	SOCKSProxyPass        string
-	Video                 VideoConfig
-	VP8                   VP8Config
-	SEI                   SEIConfig
-	LivenessInterval      string
-	LivenessTimeout       string
-	LivenessFailures      int
-	MaxSessionDuration    string
-	TrafficMaxPayloadSize int
-	TrafficMinDelay       string
-	TrafficMaxDelay       string
-	Amount                int
+	Mode                      string
+	Transport                 string
+	Auth                      string
+	Engine                    string
+	URL                       string
+	Token                     string
+	RoomID                    string
+	ChannelID                 string
+	KeyHex                    string
+	SOCKSHost                 string
+	SOCKSPort                 int
+	SOCKSUser                 string
+	SOCKSPass                 string
+	SOCKSMaxSessions          int
+	SOCKSMaxSessionsPerTarget int
+	SOCKSSlotWaitMS           int
+	SOCKSBlockPorts           []int
+	DNSServer                 string
+	SOCKSProxyAddr            string
+	SOCKSProxyPort            int
+	SOCKSProxyUser            string
+	SOCKSProxyPass            string
+	Video                     VideoConfig
+	VP8                       VP8Config
+	SEI                       SEIConfig
+	LivenessInterval          string
+	LivenessTimeout           string
+	LivenessFailures          int
+	MaxSessionDuration        string
+	TrafficMaxPayloadSize     int
+	TrafficMinDelay           string
+	TrafficMaxDelay           string
+	Amount                    int
 }
 
 // RegisterDefaults registers built-in carriers and transports.
@@ -639,13 +643,7 @@ func configureDefaultResolver(dnsServer string) {
 	if dnsServer == "" {
 		return
 	}
-	net.DefaultResolver = &net.Resolver{
-		PreferGo: true,
-		Dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
-			d := net.Dialer{Timeout: 3 * time.Second}
-			return d.DialContext(ctx, network, dnsServer)
-		},
-	}
+	net.DefaultResolver = dnsutil.NewResolver(dnsServer, 3*time.Second)
 }
 
 func runOnce(
@@ -691,22 +689,25 @@ func runOnce(
 		return nil
 	case modeCNC:
 		if err := runClientWithReady(ctx, client.Config{
-			Transport:        cfg.Transport,
-			Carrier:          cfg.Auth,
-			RoomURL:          roomURL,
-			ChannelID:        cfg.ChannelID,
-			KeyHex:           cfg.KeyHex,
-			LocalAddr:        fmt.Sprintf("%s:%d", cfg.SOCKSHost, cfg.SOCKSPort),
-			DNSServer:        cfg.DNSServer,
-			SOCKSUser:        cfg.SOCKSUser,
-			SOCKSPass:        cfg.SOCKSPass,
-			MaxSOCKSSessions: cfg.SOCKSMaxSessions,
-			TransportOptions: opts,
-			Engine:           cfg.Engine,
-			URL:              cfg.URL,
-			Token:            cfg.Token,
-			Liveness:         liveness,
-			Traffic:          traffic,
+			Transport:                 cfg.Transport,
+			Carrier:                   cfg.Auth,
+			RoomURL:                   roomURL,
+			ChannelID:                 cfg.ChannelID,
+			KeyHex:                    cfg.KeyHex,
+			LocalAddr:                 fmt.Sprintf("%s:%d", cfg.SOCKSHost, cfg.SOCKSPort),
+			DNSServer:                 cfg.DNSServer,
+			SOCKSUser:                 cfg.SOCKSUser,
+			SOCKSPass:                 cfg.SOCKSPass,
+			MaxSOCKSSessions:          cfg.SOCKSMaxSessions,
+			MaxSOCKSSessionsPerTarget: cfg.SOCKSMaxSessionsPerTarget,
+			SOCKSSlotWait:             time.Duration(cfg.SOCKSSlotWaitMS) * time.Millisecond,
+			SOCKSBlockPorts:           cfg.SOCKSBlockPorts,
+			TransportOptions:          opts,
+			Engine:                    cfg.Engine,
+			URL:                       cfg.URL,
+			Token:                     cfg.Token,
+			Liveness:                  liveness,
+			Traffic:                   traffic,
 		}, onReady); err != nil {
 			return fmt.Errorf("client: %w", err)
 		}

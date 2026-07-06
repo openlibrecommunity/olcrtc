@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"errors"
+	"reflect"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -72,7 +73,7 @@ func TestApplyTransportDefaults(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := ApplyTransportDefaults(tt.in)
-			if got != tt.want {
+			if !reflect.DeepEqual(got, tt.want) {
 				t.Fatalf("ApplyTransportDefaults() = %+v, want %+v", got, tt.want)
 			}
 		})
@@ -105,7 +106,7 @@ func TestApplyLivenessDefaults(t *testing.T) {
 	}
 
 	explicit := Config{LivenessInterval: "1s", LivenessTimeout: "500ms", LivenessFailures: 9}
-	if got := ApplyLivenessDefaults(explicit); got != explicit {
+	if got := ApplyLivenessDefaults(explicit); !reflect.DeepEqual(got, explicit) {
 		t.Fatalf("ApplyLivenessDefaults() = %+v, want %+v", got, explicit)
 	}
 }
@@ -143,6 +144,18 @@ func TestRunWithReadyPassesCallbackToCNC(t *testing.T) {
 		if cfg.LocalAddr != "127.0.0.1:1080" {
 			t.Fatalf("LocalAddr = %q, want 127.0.0.1:1080", cfg.LocalAddr)
 		}
+		if cfg.MaxSOCKSSessions != 24 {
+			t.Fatalf("MaxSOCKSSessions = %d, want 24", cfg.MaxSOCKSSessions)
+		}
+		if cfg.MaxSOCKSSessionsPerTarget != 4 {
+			t.Fatalf("MaxSOCKSSessionsPerTarget = %d, want 4", cfg.MaxSOCKSSessionsPerTarget)
+		}
+		if cfg.SOCKSSlotWait != 500*time.Millisecond {
+			t.Fatalf("SOCKSSlotWait = %s, want 500ms", cfg.SOCKSSlotWait)
+		}
+		if !equalInts(cfg.SOCKSBlockPorts, []int{993, 5223}) {
+			t.Fatalf("SOCKSBlockPorts = %v, want [993 5223]", cfg.SOCKSBlockPorts)
+		}
 		if onReady == nil {
 			t.Fatal("onReady callback was nil")
 		}
@@ -152,7 +165,12 @@ func TestRunWithReadyPassesCallbackToCNC(t *testing.T) {
 	t.Cleanup(func() { runClientWithReady = oldRunClientWithReady })
 
 	var ready atomic.Bool
-	err := RunWithReady(context.Background(), validCNCTestConfig(), func() {
+	cfg := validCNCTestConfig()
+	cfg.SOCKSMaxSessions = 24
+	cfg.SOCKSMaxSessionsPerTarget = 4
+	cfg.SOCKSSlotWaitMS = 500
+	cfg.SOCKSBlockPorts = []int{993, 5223}
+	err := RunWithReady(context.Background(), cfg, func() {
 		ready.Store(true)
 	})
 	if !errors.Is(err, errSessionRunProbe) {
@@ -691,4 +709,16 @@ func TestGenUnsupportedAuth(t *testing.T) {
 	if !errors.Is(err, ErrUnsupportedCarrier) {
 		t.Fatalf("Gen(telemost) error = %v, want ErrUnsupportedCarrier", err)
 	}
+}
+
+func equalInts(a, b []int) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }

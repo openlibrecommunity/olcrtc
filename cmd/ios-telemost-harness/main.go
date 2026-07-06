@@ -7,7 +7,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -15,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/openlibrecommunity/olcrtc/internal/dnsutil"
 	"github.com/openlibrecommunity/olcrtc/internal/iosharness"
 )
 
@@ -541,13 +541,7 @@ func summarize(cfg config, p paths, since time.Time, stdout io.Writer) (iosharne
 }
 
 func preflightResolver(ctx context.Context, resolver string, host string) error {
-	dialer := &net.Dialer{Timeout: 5 * time.Second}
-	r := &net.Resolver{
-		PreferGo: true,
-		Dial: func(ctx context.Context, network string, address string) (net.Conn, error) {
-			return dialer.DialContext(ctx, "udp", resolver)
-		},
-	}
+	r := dnsutil.NewResolver(resolver, 5*time.Second)
 	ips, err := r.LookupHost(ctx, host)
 	if err != nil {
 		return fmt.Errorf("DNS preflight failed for %s via %s: %w", host, resolver, err)

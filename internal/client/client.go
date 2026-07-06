@@ -80,6 +80,8 @@ type Client struct {
 	socksSlots          chan struct{}
 	socksLimit          int64
 	socksActive         atomic.Int64
+	socksSlotWait       time.Duration
+	socksBlockedPorts   map[int]struct{}
 	socksTargetMu       sync.Mutex
 	socksTargets        map[string]int64
 	socksPerTargetLimit int64
@@ -94,22 +96,25 @@ type HealthFunc func(control.Status)
 
 // Config holds runtime configuration for [Run] and [RunWithReady].
 type Config struct {
-	Transport        string
-	Carrier          string
-	RoomURL          string
-	ChannelID        string
-	KeyHex           string
-	LocalAddr        string
-	DNSServer        string
-	SOCKSUser        string
-	SOCKSPass        string
-	MaxSOCKSSessions int
-	TransportOptions transport.Options
-	Engine           string
-	URL              string
-	Token            string
-	Liveness         control.Config
-	Traffic          transport.TrafficConfig
+	Transport                 string
+	Carrier                   string
+	RoomURL                   string
+	ChannelID                 string
+	KeyHex                    string
+	LocalAddr                 string
+	DNSServer                 string
+	SOCKSUser                 string
+	SOCKSPass                 string
+	MaxSOCKSSessions          int
+	MaxSOCKSSessionsPerTarget int
+	SOCKSSlotWait             time.Duration
+	SOCKSBlockPorts           []int
+	TransportOptions          transport.Options
+	Engine                    string
+	URL                       string
+	Token                     string
+	Liveness                  control.Config
+	Traffic                   transport.TrafficConfig
 
 	// DeviceID overrides the persistent client-side device identifier. Leave
 	// empty to derive one from DeviceIDPath (or generate a random one if both
@@ -158,8 +163,10 @@ func RunWithReady(ctx context.Context, cfg Config, onReady func()) error {
 		socksPass:           cfg.SOCKSPass,
 		socksSlots:          make(chan struct{}, socksLimit),
 		socksLimit:          int64(socksLimit),
+		socksSlotWait:       socksSlotWait(cfg.SOCKSSlotWait),
+		socksBlockedPorts:   blockedSOCKSPorts(cfg.SOCKSBlockPorts),
 		socksTargets:        make(map[string]int64),
-		socksPerTargetLimit: defaultMaxSOCKSSessionsPerTarget,
+		socksPerTargetLimit: int64(maxSOCKSSessionsPerTarget(cfg.MaxSOCKSSessionsPerTarget)),
 		health:              runtime.NewHealthTracker(cfg.OnHealth),
 		sessionReady:        make(chan struct{}),
 	}
@@ -210,6 +217,41 @@ func maxSOCKSSessions(configured int) int {
 		return configured
 	}
 	return defaultMaxSOCKSSessions
+}
+
+func socksSlotWait(configured time.Duration) time.Duration {
+	if configured > 0 {
+		return configured
+	}
+	return 0
+}
+
+func maxSOCKSSessionsPerTarget(configured int) int {
+	if configured > 0 {
+		return configured
+	}
+	return defaultMaxSOCKSSessionsPerTarget
+}
+
+func blockedSOCKSPorts(ports []int) map[int]struct{} {
+	if len(ports) == 0 {
+		return nil
+	}
+	blocked := make(map[int]struct{}, len(ports))
+	for _, port := range ports {
+		if port > 0 && port <= 65535 {
+			blocked[port] = struct{}{}
+		}
+	}
+	return blocked
+}
+
+func (c *Client) isSOCKSPortBlocked(port int) bool {
+	if c.socksBlockedPorts == nil {
+		return false
+	}
+	_, ok := c.socksBlockedPorts[port]
+	return ok
 }
 
 func (c *Client) bringUpLink(
@@ -830,6 +872,12 @@ func (c *Client) acquireSOCKSSlot(ctx context.Context, conn net.Conn, target str
 	defer retry.Stop()
 	logTicker := time.NewTicker(5 * time.Second)
 	defer logTicker.Stop()
+	var timeout <-chan time.Time
+	if c.socksSlotWait > 0 {
+		timer := time.NewTimer(c.socksSlotWait)
+		defer timer.Stop()
+		timeout = timer.C
+	}
 	for {
 		select {
 		case <-retry.C:
@@ -849,6 +897,10 @@ func (c *Client) acquireSOCKSSlot(ctx context.Context, conn net.Conn, target str
 		case <-logTicker.C:
 			logger.Warnf("socks slot still waiting wait_ms=%d target=%s active=%d limit=%d remote=%s",
 				time.Since(started).Milliseconds(), target, c.socksActive.Load(), c.socksLimit, conn.RemoteAddr())
+		case <-timeout:
+			logger.Warnf("socks slot wait timeout wait_ms=%d target=%s active=%d limit=%d remote=%s",
+				time.Since(started).Milliseconds(), target, c.socksActive.Load(), c.socksLimit, conn.RemoteAddr())
+			return false
 		case <-ctx.Done():
 			_ = conn.Close()
 			return false
@@ -910,6 +962,11 @@ func (c *Client) handleSocks5(ctx context.Context, conn net.Conn) {
 
 	targetAddr, targetPort, err := c.socks5Request(conn)
 	if err != nil {
+		return
+	}
+	if c.isSOCKSPortBlocked(targetPort) {
+		logger.Infof("socks target blocked addr=%s port=%d remote=%s", targetAddr, targetPort, conn.RemoteAddr())
+		_, _ = conn.Write(replyHostUnreachable())
 		return
 	}
 	target := socksTargetKey(targetAddr, targetPort)

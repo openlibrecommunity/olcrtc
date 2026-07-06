@@ -55,9 +55,13 @@ olcrtc /etc/olcrtc/client.yaml
 | `room.channel` | необязательный ID канала для peer-routing сценариев |
 | `crypto.key` / `crypto.key_file` | общий ключ: 64 hex-символа, напрямую или из файла |
 | `net.transport` | `datachannel`, `vp8channel`, `seichannel`, `videochannel` |
-| `net.dns` | DNS resolver в формате `host:port` |
+| `net.dns` | DNS resolver в формате `host:port`; можно указать несколько через запятую |
 | `socks.host` / `socks.port` | локальный SOCKS5 listener в `mode: cnc` |
 | `socks.user` / `socks.pass` | необязательная auth для входящих SOCKS5-подключений |
+| `socks.max_sessions` | общий лимит одновременных SOCKS-туннелей на клиенте |
+| `socks.max_sessions_per_target` | лимит одновременных SOCKS-туннелей на один `host:port` |
+| `socks.slot_wait_ms` | сколько ждать свободный общий SOCKS slot перед отказом; `0` = ждать до отмены контекста |
+| `socks.block_ports` | список портов, которые клиент будет сразу отклонять на SOCKS-входе |
 | `socks.proxy_addr` / `socks.proxy_port` | исходящий SOCKS5-прокси на серверной стороне |
 | `socks.proxy_user` / `socks.proxy_pass` | необязательная auth для upstream-прокси (RFC 1929) |
 | `engine.name` / `engine.url` / `engine.token` | прямой engine-режим, только при `auth.provider: none` |
@@ -81,6 +85,25 @@ olcrtc /etc/olcrtc/client.yaml
 `crypto.key_file` читается относительно YAML-файла. Нельзя одновременно задавать `crypto.key` и `crypto.key_file`.
 
 `mode: cnc` запрещает слушать не-loopback адрес (`0.0.0.0`, LAN IP и т.п.), если не заданы оба поля `socks.user` и `socks.pass`.
+
+`net.dns` поддерживает fallback-список, например `"8.8.8.8:53,192.168.1.1:53"`.
+Runtime resolver открывает DNS-соединение через TCP, чтобы не зависеть от
+нестабильных UDP DNS ответов на перегруженном или фильтрующем канале.
+
+SOCKS-лимиты полезны для full-tunnel клиентов, где фоновые приложения могут
+открывать десятки потоков и забивать узкий carrier:
+
+```yaml
+socks:
+  max_sessions: 24
+  max_sessions_per_target: 8
+  slot_wait_ms: 500
+  block_ports: [993, 5223]
+```
+
+`block_ports` намеренно грубый механизм. Используйте его только для профилей,
+где допустимо отрезать фоновые сервисы вроде IMAP/Push ради стабильности
+основного веб-трафика.
 
 ## Обязательный минимум
 

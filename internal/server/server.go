@@ -17,6 +17,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/openlibrecommunity/olcrtc/internal/control"
 	"github.com/openlibrecommunity/olcrtc/internal/crypto"
+	"github.com/openlibrecommunity/olcrtc/internal/dnsutil"
 	"github.com/openlibrecommunity/olcrtc/internal/framing"
 	"github.com/openlibrecommunity/olcrtc/internal/handshake"
 	"github.com/openlibrecommunity/olcrtc/internal/logger"
@@ -62,11 +63,11 @@ type Server struct {
 	// baseCtx is the long-lived server context established in bringUpLink. It
 	// is propagated to reconnect-time goroutines (acceptHandshake, control
 	// loops) instead of context.Background() so they observe shutdown.
-	baseCtx        context.Context //nolint:containedctx // server-lifetime ctx for reconnect goroutines
-	ln             transport.Transport
-	peerLn         transport.PeerTransport
-	cipher         *crypto.Cipher
-	conn           *muxconn.Conn
+	baseCtx context.Context //nolint:containedctx // server-lifetime ctx for reconnect goroutines
+	ln      transport.Transport
+	peerLn  transport.PeerTransport
+	cipher  *crypto.Cipher
+	conn    *muxconn.Conn
 	// controlConn is wired to the transport's isolated control-plane channel
 	// (transport.ControlPlane). When non-nil, the smux control session runs
 	// over it so bulk data writes never block control ping/pong.
@@ -235,13 +236,7 @@ func setupCipher(keyHex string) (*crypto.Cipher, error) {
 }
 
 func (s *Server) setupResolver() {
-	s.resolver = &net.Resolver{
-		PreferGo: true,
-		Dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
-			d := net.Dialer{Timeout: 3 * time.Second}
-			return d.DialContext(ctx, network, s.dnsServer)
-		},
-	}
+	s.resolver = dnsutil.NewResolver(s.dnsServer, 3*time.Second)
 }
 
 // dataSmuxConfig returns the data-plane smux config for the server's

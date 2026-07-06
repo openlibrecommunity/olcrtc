@@ -169,6 +169,64 @@ func TestSOCKSSlotWaitsWhenGlobalLimitReached(t *testing.T) {
 	}
 }
 
+func TestSOCKSSlotTimesOutWhenGlobalLimitReached(t *testing.T) {
+	c := &Client{
+		socksSlots:          make(chan struct{}, 1),
+		socksLimit:          1,
+		socksTargets:        make(map[string]int64),
+		socksPerTargetLimit: 8,
+		socksSlotWait:       20 * time.Millisecond,
+	}
+	firstServer, firstClient := net.Pipe()
+	defer func() { _ = firstServer.Close() }()
+	defer func() { _ = firstClient.Close() }()
+	secondServer, secondClient := net.Pipe()
+	defer func() { _ = secondServer.Close() }()
+	defer func() { _ = secondClient.Close() }()
+
+	if !c.acquireSOCKSSlot(context.Background(), firstServer, "one.example:443") {
+		t.Fatal("first acquireSOCKSSlot() = false")
+	}
+
+	started := time.Now()
+	if c.acquireSOCKSSlot(context.Background(), secondServer, "two.example:443") {
+		t.Fatal("second acquireSOCKSSlot() unexpectedly succeeded while global slot was occupied")
+	}
+	if elapsed := time.Since(started); elapsed > 150*time.Millisecond {
+		t.Fatalf("acquireSOCKSSlot() waited %s, want under 150ms", elapsed)
+	}
+}
+
+func TestMaxSOCKSSessionsPerTargetDefault(t *testing.T) {
+	if got := maxSOCKSSessionsPerTarget(0); got != defaultMaxSOCKSSessionsPerTarget {
+		t.Fatalf("maxSOCKSSessionsPerTarget(0) = %d, want %d", got, defaultMaxSOCKSSessionsPerTarget)
+	}
+	if got := maxSOCKSSessionsPerTarget(4); got != 4 {
+		t.Fatalf("maxSOCKSSessionsPerTarget(4) = %d, want 4", got)
+	}
+}
+
+func TestBlockedSOCKSPorts(t *testing.T) {
+	blocked := blockedSOCKSPorts([]int{993, 0, -1, 5223, 993})
+	if _, ok := blocked[993]; !ok {
+		t.Fatal("blockedSOCKSPorts() missing 993")
+	}
+	if _, ok := blocked[5223]; !ok {
+		t.Fatal("blockedSOCKSPorts() missing 5223")
+	}
+	if _, ok := blocked[0]; ok {
+		t.Fatal("blockedSOCKSPorts() included port 0")
+	}
+
+	c := &Client{socksBlockedPorts: blocked}
+	if !c.isSOCKSPortBlocked(993) {
+		t.Fatal("isSOCKSPortBlocked(993) = false")
+	}
+	if c.isSOCKSPortBlocked(443) {
+		t.Fatal("isSOCKSPortBlocked(443) = true")
+	}
+}
+
 func isTimeout(err error) bool {
 	var netErr net.Error
 	return errors.As(err, &netErr) && netErr.Timeout()
