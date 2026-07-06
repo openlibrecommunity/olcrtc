@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/openlibrecommunity/olcrtc/internal/client"
 	"github.com/openlibrecommunity/olcrtc/internal/control"
 	"github.com/openlibrecommunity/olcrtc/internal/runtime"
 	"github.com/openlibrecommunity/olcrtc/internal/transport/vp8channel"
@@ -131,6 +132,34 @@ func TestRunWithSessionRotationRestartsAfterMaxDuration(t *testing.T) {
 	}
 	if got := calls.Load(); got < 2 {
 		t.Fatalf("run calls = %d, want at least 2", got)
+	}
+}
+
+func TestRunWithReadyPassesCallbackToCNC(t *testing.T) {
+	RegisterDefaults()
+
+	oldRunClientWithReady := runClientWithReady
+	runClientWithReady = func(_ context.Context, cfg client.Config, onReady func()) error {
+		if cfg.LocalAddr != "127.0.0.1:1080" {
+			t.Fatalf("LocalAddr = %q, want 127.0.0.1:1080", cfg.LocalAddr)
+		}
+		if onReady == nil {
+			t.Fatal("onReady callback was nil")
+		}
+		onReady()
+		return errSessionRunProbe
+	}
+	t.Cleanup(func() { runClientWithReady = oldRunClientWithReady })
+
+	var ready atomic.Bool
+	err := RunWithReady(context.Background(), validCNCTestConfig(), func() {
+		ready.Store(true)
+	})
+	if !errors.Is(err, errSessionRunProbe) {
+		t.Fatalf("RunWithReady() error = %v, want %v", err, errSessionRunProbe)
+	}
+	if !ready.Load() {
+		t.Fatal("ready callback was not called")
 	}
 }
 
@@ -576,6 +605,24 @@ func TestValidate(t *testing.T) {
 				t.Fatalf("Validate() error = %v, want %v", err, tt.want)
 			}
 		})
+	}
+}
+
+var errSessionRunProbe = errors.New("session run probe")
+
+func validCNCTestConfig() Config {
+	return Config{
+		Mode:             modeCNC,
+		Transport:        "datachannel",
+		Auth:             authNone,
+		RoomID:           "room-1",
+		KeyHex:           "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff",
+		DNSServer:        "8.8.8.8:53",
+		SOCKSHost:        "127.0.0.1",
+		SOCKSPort:        1080,
+		LivenessInterval: control.DefaultInterval.String(),
+		LivenessTimeout:  control.DefaultTimeout.String(),
+		LivenessFailures: control.DefaultFailures,
 	}
 }
 
