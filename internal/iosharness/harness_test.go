@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestWriteServerConfigAppliesFreshRoomAndResolver(t *testing.T) {
@@ -156,6 +157,52 @@ func TestSummarizeLogsAcceptsCopiedAppGroupOlcDirectory(t *testing.T) {
 	}
 	if got := readFile(t, filepath.Join(out, "ios", "app-probes-summary.log")); !strings.Contains(got, "round=1 done ok=2 fail=0") {
 		t.Fatalf("summary did not include app-group olc log:\n%s", got)
+	}
+}
+
+func TestSummarizeLogsFiltersLinesBeforeSince(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	raw := filepath.Join(dir, "raw")
+	out := filepath.Join(dir, "out")
+	if err := os.MkdirAll(raw, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(raw, "app.log"), `2026-07-06 15:00:00 +0000 http probe error label=download host=speed.cloudflare.com duration_ms=60000 The request timed out.
+2026-07-06 15:00:00 +0000 http probe round=1 done ok=2 fail=1
+2026-07-06 16:00:00 +0000 http probe ok label=download host=speed.cloudflare.com status=200 bytes=1048576 duration_ms=10000
+2026-07-06 16:00:00 +0000 http probe round=1 done ok=3 fail=0
+`)
+	writeFile(t, filepath.Join(raw, "tunnel.log"), `2026-07-06 15:00:00 +0000 cnc ENDED err: stale
+2026-07-06 16:00:00 +0000 cnc session ready
+`)
+	serverLog := filepath.Join(dir, "server.log")
+	writeFile(t, serverLog, `2026/07/06 18:00:00 server reconnect reason=old
+2026/07/06 19:00:00 peer connected: device=80da0d66-1111-2222-3333-894108f1ca30 session=278121df-1111-2222-3333-1455d6da212e
+2026/07/06 19:00:10 traffic: session=278121df-1111-2222-3333-1455d6da212e addr=speed.cloudflare.com:443 in=889 out=1056250
+`)
+
+	since := time.Date(2026, 7, 6, 16, 0, 0, 0, time.UTC)
+	verdict, err := SummarizeLogs(RawLogPaths{
+		IOSDir:    raw,
+		ServerLog: serverLog,
+	}, SummaryPaths{
+		IOSDir:        filepath.Join(out, "ios"),
+		ServerSummary: filepath.Join(out, "server-summary.log"),
+	}, Criteria{Rounds: 1, DownloadBytes: 1048576, Since: since})
+	if err != nil {
+		t.Fatalf("SummarizeLogs() error = %v", err)
+	}
+	if !verdict.Green {
+		t.Fatalf("verdict.Green = false, reasons=%v", verdict.Reasons)
+	}
+	appSummary := readFile(t, filepath.Join(out, "ios", "app-probes-summary.log"))
+	if strings.Contains(appSummary, "timed out") {
+		t.Fatalf("old app log line was not filtered:\n%s", appSummary)
+	}
+	serverSummary := readFile(t, filepath.Join(out, "server-summary.log"))
+	if strings.Contains(serverSummary, "server reconnect") {
+		t.Fatalf("old server log line was not filtered:\n%s", serverSummary)
 	}
 }
 

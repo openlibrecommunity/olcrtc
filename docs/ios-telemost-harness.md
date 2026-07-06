@@ -82,6 +82,27 @@ Green requires:
 
 Red writes the concrete reasons into `verdict.json`.
 
+## Live result on 2026-07-06
+
+The first real device run exposed two harness problems that are now fixed:
+
+- Framework Python on this Mac did not have a default CA file, so room creation
+  failed with `CERTIFICATE_VERIFY_FAILED`. The harness now injects the local
+  `certifi` CA bundle for `room_manager.py` when no explicit SSL CA env is set.
+- Xcode 17 stalled in the classic linker when the project-level
+  `OTHER_LDFLAGS=-ld_classic -lresolv` was used. The harness build command
+  overrides this to `OTHER_LDFLAGS=-lresolv`; the same app build completed and
+  installed on the iPhone.
+
+The clean fresh-room iPhone run still ended red as a product result, not as a
+harness/build failure. The VPN connected and the server saw one peer. Two 1 MiB
+Cloudflare downloads completed, but later probe sessions failed with SSL errors
+while the server logged `in=0 out=0` for those probe TCP sessions. The raw log
+also showed bursts of background iOS Mail/iCloud/Apple TCP sessions at the same
+time. Current conclusion: the carrier stayed up, but the narrow vp8channel is
+not yet robust under real full-tunnel background traffic. The next fix should
+target tunnel-side backpressure/QoS/session limits, then rerun this harness.
+
 ## Secret handling
 
 Raw files can contain room IDs, keys, and local configs. They stay under:

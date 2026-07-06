@@ -43,3 +43,33 @@ func TestParseArgsRequiresDeviceForRunUnlessDryRun(t *testing.T) {
 		t.Fatalf("parseArgs() dry-run error = %v", err)
 	}
 }
+
+func TestRoomManagerEnvAddsCertifiBundleWhenUnset(t *testing.T) {
+	env := roomManagerEnv([]string{"PATH=/bin"}, "/certifi/cacert.pem")
+	want := "SSL_CERT_FILE=/certifi/cacert.pem"
+	for _, got := range env {
+		if got == want {
+			return
+		}
+	}
+	t.Fatalf("roomManagerEnv() = %v, missing %q", env, want)
+}
+
+func TestRoomManagerEnvDoesNotOverrideExistingSSLConfig(t *testing.T) {
+	env := roomManagerEnv([]string{"PATH=/bin", "SSL_CERT_FILE=/custom.pem"}, "/certifi/cacert.pem")
+	for _, got := range env {
+		if got == "SSL_CERT_FILE=/certifi/cacert.pem" {
+			t.Fatalf("roomManagerEnv() overrode SSL_CERT_FILE: %v", env)
+		}
+	}
+}
+
+func TestXcodeBuildArgsUseModernLinkerOverride(t *testing.T) {
+	args := xcodeBuildArgs(paths{DerivedData: "/repo/artifacts/DerivedData"})
+	for _, got := range args {
+		if got == "OTHER_LDFLAGS=-lresolv" {
+			return
+		}
+	}
+	t.Fatalf("xcodeBuildArgs() = %v, missing modern linker override", args)
+}

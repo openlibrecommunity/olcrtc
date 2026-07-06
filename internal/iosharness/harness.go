@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -30,6 +31,7 @@ type Subscription struct {
 type Criteria struct {
 	Rounds        int
 	DownloadBytes int64
+	Since         time.Time
 }
 
 // RawLogPaths points at raw logs. These paths may contain sensitive data and
@@ -162,15 +164,15 @@ func SummarizeLogs(raw RawLogPaths, out SummaryPaths, criteria Criteria) (Verdic
 		return Verdict{}, err
 	}
 
-	appLines, appStats, err := summarizeApp(appLog)
+	appLines, appStats, err := summarizeApp(appLog, criteria.Since)
 	if err != nil {
 		return Verdict{}, err
 	}
-	tunnelLines, tunnelStats, err := summarizeTunnel(tunnelLog)
+	tunnelLines, tunnelStats, err := summarizeTunnel(tunnelLog, criteria.Since)
 	if err != nil {
 		return Verdict{}, err
 	}
-	serverLines, serverStats, err := summarizeServer(raw.ServerLog)
+	serverLines, serverStats, err := summarizeServer(raw.ServerLog, criteria.Since)
 	if err != nil {
 		return Verdict{}, err
 	}
@@ -248,8 +250,8 @@ var (
 	longDigitPattern = regexp.MustCompile(`\b[0-9]{12,}\b`)
 )
 
-func summarizeApp(path string) ([]string, appStats, error) {
-	lines, err := selectLines(path, appSummaryPattern)
+func summarizeApp(path string, since time.Time) ([]string, appStats, error) {
+	lines, err := selectLines(path, appSummaryPattern, since, parseAppleLogTime)
 	if err != nil {
 		return nil, appStats{}, fmt.Errorf("summarize app log: %w", err)
 	}
@@ -271,8 +273,8 @@ func summarizeApp(path string) ([]string, appStats, error) {
 	return lines, stats, nil
 }
 
-func summarizeTunnel(path string) ([]string, transportStats, error) {
-	lines, err := selectLines(path, tunnelSummaryPattern)
+func summarizeTunnel(path string, since time.Time) ([]string, transportStats, error) {
+	lines, err := selectLines(path, tunnelSummaryPattern, since, parseAppleLogTime)
 	if err != nil {
 		return nil, transportStats{}, fmt.Errorf("summarize tunnel log: %w", err)
 	}
@@ -285,8 +287,8 @@ func summarizeTunnel(path string) ([]string, transportStats, error) {
 	return lines, stats, nil
 }
 
-func summarizeServer(path string) ([]string, transportStats, error) {
-	lines, err := selectLines(path, serverSummaryPattern)
+func summarizeServer(path string, since time.Time) ([]string, transportStats, error) {
+	lines, err := selectLines(path, serverSummaryPattern, since, parseServerLogTime)
 	if err != nil {
 		return nil, transportStats{}, fmt.Errorf("summarize server log: %w", err)
 	}
@@ -299,7 +301,7 @@ func summarizeServer(path string) ([]string, transportStats, error) {
 	return lines, stats, nil
 }
 
-func selectLines(path string, pattern *regexp.Regexp) ([]string, error) {
+func selectLines(path string, pattern *regexp.Regexp, since time.Time, parseTime func(string) (time.Time, bool)) ([]string, error) {
 	file, err := os.Open(path) // #nosec G304 -- explicit local harness path
 	if err != nil {
 		return nil, err
@@ -310,6 +312,11 @@ func selectLines(path string, pattern *regexp.Regexp) ([]string, error) {
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
 		line := scanner.Text()
+		if !since.IsZero() {
+			if loggedAt, ok := parseTime(line); ok && loggedAt.Before(since) {
+				continue
+			}
+		}
 		if pattern.MatchString(line) {
 			lines = append(lines, sanitize(line))
 		}
@@ -318,6 +325,22 @@ func selectLines(path string, pattern *regexp.Regexp) ([]string, error) {
 		return nil, err
 	}
 	return lines, nil
+}
+
+func parseAppleLogTime(line string) (time.Time, bool) {
+	if len(line) < len("2006-01-02 15:04:05 -0700") {
+		return time.Time{}, false
+	}
+	t, err := time.Parse("2006-01-02 15:04:05 -0700", line[:25])
+	return t, err == nil
+}
+
+func parseServerLogTime(line string) (time.Time, bool) {
+	if len(line) < len("2006/01/02 15:04:05") {
+		return time.Time{}, false
+	}
+	t, err := time.ParseInLocation("2006/01/02 15:04:05", line[:19], time.Local)
+	return t, err == nil
 }
 
 func sanitize(line string) string {

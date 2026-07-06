@@ -197,7 +197,7 @@ func run(ctx context.Context, cfg config, stdout io.Writer, stderr io.Writer) er
 	case "prepare":
 		return prepare(ctx, cfg, p, stdout, stderr)
 	case "summarize":
-		_, err := summarize(cfg, p, stdout)
+		_, err := summarize(cfg, p, time.Time{}, stdout)
 		return err
 	case "run":
 		if err := prepare(ctx, cfg, p, stdout, stderr); err != nil {
@@ -267,12 +267,43 @@ func runRoomManager(ctx context.Context, p paths, stderr io.Writer) error {
 		"subscription",
 	)
 	cmd.Dir = p.ControlPlane
+	cmd.Env = roomManagerEnv(os.Environ(), certifiBundle(ctx))
 	cmd.Stdout = out
 	cmd.Stderr = stderr
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("room_manager subscription: %w", err)
 	}
 	return nil
+}
+
+func roomManagerEnv(base []string, certFile string) []string {
+	if certFile == "" || hasEnv(base, "SSL_CERT_FILE") || hasEnv(base, "SSL_CERT_DIR") {
+		return base
+	}
+	return append(base, "SSL_CERT_FILE="+certFile)
+}
+
+func hasEnv(env []string, key string) bool {
+	prefix := key + "="
+	for _, item := range env {
+		if strings.HasPrefix(item, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+func certifiBundle(ctx context.Context) string {
+	cmd := exec.CommandContext(ctx, "python3", "-c", "import certifi; print(certifi.where())")
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	path := strings.TrimSpace(string(out))
+	if path == "" || !exists(path) {
+		return ""
+	}
+	return path
 }
 
 func readSubscription(path string) (iosharness.Subscription, error) {
@@ -315,6 +346,7 @@ func runProbe(ctx context.Context, cfg config, p paths, stdout io.Writer, stderr
 	}
 	defer stopProcess(server)
 
+	probeSince := time.Now().Add(-2 * time.Second)
 	if err := installAndLaunch(ctx, cfg, p); err != nil {
 		return err
 	}
@@ -327,7 +359,7 @@ func runProbe(ctx context.Context, cfg config, p paths, stdout io.Writer, stderr
 	if err := copyIOSLogs(ctx, cfg, p); err != nil {
 		return err
 	}
-	verdict, err := summarize(cfg, p, stdout)
+	verdict, err := summarize(cfg, p, probeSince, stdout)
 	if err != nil {
 		return err
 	}
@@ -338,9 +370,6 @@ func runProbe(ctx context.Context, cfg config, p paths, stdout io.Writer, stderr
 }
 
 func ensureServerBinary(ctx context.Context, p paths, stderr io.Writer) error {
-	if exists(p.ServerBinary) {
-		return nil
-	}
 	if err := os.MkdirAll(filepath.Dir(p.ServerBinary), 0o700); err != nil {
 		return err
 	}
@@ -360,14 +389,7 @@ func buildIOS(ctx context.Context, p paths) error {
 		return err
 	}
 	defer logFile.Close()
-	cmd := exec.CommandContext(ctx, "xcodebuild",
-		"-project", "OlcClientiOS.xcodeproj",
-		"-scheme", "OlcClientiOS",
-		"-configuration", "Debug",
-		"-destination", "generic/platform=iOS",
-		"-derivedDataPath", p.DerivedData,
-		"build",
-	)
+	cmd := exec.CommandContext(ctx, "xcodebuild", xcodeBuildArgs(p)...)
 	cmd.Dir = p.IOSProject
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
@@ -375,6 +397,18 @@ func buildIOS(ctx context.Context, p paths) error {
 		return fmt.Errorf("xcodebuild iOS app: %w (log: %s)", err, p.XcodeBuildLog)
 	}
 	return nil
+}
+
+func xcodeBuildArgs(p paths) []string {
+	return []string{
+		"-project", "OlcClientiOS.xcodeproj",
+		"-scheme", "OlcClientiOS",
+		"-configuration", "Debug",
+		"-destination", "generic/platform=iOS",
+		"-derivedDataPath", p.DerivedData,
+		"OTHER_LDFLAGS=-lresolv",
+		"build",
+	}
 }
 
 type serverProcess struct {
@@ -482,11 +516,11 @@ func copyIOSLogs(ctx context.Context, cfg config, p paths) error {
 	return nil
 }
 
-func summarize(cfg config, p paths, stdout io.Writer) (iosharness.Verdict, error) {
+func summarize(cfg config, p paths, since time.Time, stdout io.Writer) (iosharness.Verdict, error) {
 	verdict, err := iosharness.SummarizeLogs(
 		iosharness.RawLogPaths{IOSDir: p.RawIOSLogs, ServerLog: p.ServerLog},
 		iosharness.SummaryPaths{IOSDir: p.SummaryIOSLogs, ServerSummary: p.ServerSummary},
-		iosharness.Criteria{Rounds: cfg.Rounds, DownloadBytes: cfg.DownloadBytes},
+		iosharness.Criteria{Rounds: cfg.Rounds, DownloadBytes: cfg.DownloadBytes, Since: since},
 	)
 	if err != nil {
 		return iosharness.Verdict{}, err
