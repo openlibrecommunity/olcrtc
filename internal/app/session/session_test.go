@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"errors"
+	"reflect"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -73,7 +74,7 @@ func TestApplyTransportDefaults(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := ApplyTransportDefaults(tt.in)
-			if got != tt.want {
+			if !reflect.DeepEqual(got, tt.want) {
 				t.Fatalf("ApplyTransportDefaults() = %+v, want %+v", got, tt.want)
 			}
 		})
@@ -93,7 +94,7 @@ func TestApplyLivenessDefaults(t *testing.T) {
 	}
 
 	explicit := Config{LivenessInterval: "1s", LivenessTimeout: "500ms", LivenessFailures: 9}
-	if got := ApplyLivenessDefaults(explicit); got != explicit {
+	if got := ApplyLivenessDefaults(explicit); !reflect.DeepEqual(got, explicit) {
 		t.Fatalf("ApplyLivenessDefaults() = %+v, want %+v", got, explicit)
 	}
 }
@@ -131,6 +132,12 @@ func TestRunWithReadyPassesCallbackToCNC(t *testing.T) {
 		if cfg.LocalAddr != "127.0.0.1:1080" {
 			t.Fatalf("LocalAddr = %q, want 127.0.0.1:1080", cfg.LocalAddr)
 		}
+		if !reflect.DeepEqual(cfg.SOCKSBlockPorts, []int{993, 5223}) ||
+			!reflect.DeepEqual(cfg.SOCKSBlockHosts, []string{"*.apple.com"}) ||
+			!reflect.DeepEqual(cfg.SOCKSBlockCIDRs, []string{"17.0.0.0/8"}) {
+			t.Fatalf("SOCKS block policy = ports=%v hosts=%v cidrs=%v",
+				cfg.SOCKSBlockPorts, cfg.SOCKSBlockHosts, cfg.SOCKSBlockCIDRs)
+		}
 		if onReady == nil {
 			t.Fatal("onReady callback was nil")
 		}
@@ -141,16 +148,19 @@ func TestRunWithReadyPassesCallbackToCNC(t *testing.T) {
 
 	var ready atomic.Bool
 	err := RunWithReady(context.Background(), Config{
-		Mode:      modeCNC,
-		Transport: "datachannel",
-		Auth:      "none",
-		Engine:    "jitsi",
-		URL:       "https://example.test",
-		RoomID:    "room-1",
-		KeyHex:    "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff",
-		DNSServer: "8.8.8.8:53",
-		SOCKSHost: "127.0.0.1",
-		SOCKSPort: 1080,
+		Mode:            modeCNC,
+		Transport:       "datachannel",
+		Auth:            "none",
+		Engine:          "jitsi",
+		URL:             "https://example.test",
+		RoomID:          "room-1",
+		KeyHex:          "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff",
+		DNSServer:       "8.8.8.8:53",
+		SOCKSHost:       "127.0.0.1",
+		SOCKSPort:       1080,
+		SOCKSBlockPorts: []int{993, 5223},
+		SOCKSBlockHosts: []string{"*.apple.com"},
+		SOCKSBlockCIDRs: []string{"17.0.0.0/8"},
 	}, func() {
 		ready.Store(true)
 	})
@@ -479,6 +489,24 @@ func TestValidate(t *testing.T) {
 				cfg.SOCKSPort = 1080
 				return cfg
 			}(),
+		},
+		{
+			name: "socks block rejects invalid port",
+			cfg: func() Config {
+				cfg := base
+				cfg.SOCKSBlockPorts = []int{0}
+				return cfg
+			}(),
+			want: ErrSOCKSBlockPortInvalid,
+		},
+		{
+			name: "socks block rejects invalid cidr",
+			cfg: func() Config {
+				cfg := base
+				cfg.SOCKSBlockCIDRs = []string{"not-a-cidr"}
+				return cfg
+			}(),
+			want: ErrSOCKSBlockCIDRInvalid,
 		},
 		{
 			name: "liveness rejects bad interval",

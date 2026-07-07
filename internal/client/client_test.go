@@ -303,6 +303,81 @@ func TestSocks5RequestDomain(t *testing.T) {
 	}
 }
 
+func TestSOCKSBlockPolicyMatchesPortsHostsAndCIDRs(t *testing.T) {
+	policy, err := newSOCKSBlockPolicy(SOCKSBlockPolicy{
+		Ports: []int{993, 5223},
+		Hosts: []string{"*.apple.com", "mail.example.com"},
+		CIDRs: []string{"17.0.0.0/8"},
+	})
+	if err != nil {
+		t.Fatalf("newSOCKSBlockPolicy() error = %v", err)
+	}
+
+	tests := []struct {
+		name string
+		host string
+		port int
+		want bool
+	}{
+		{name: "blocked port", host: "mail.digitaldealingdesk.eu", port: 993, want: true},
+		{name: "blocked wildcard host", host: "ocsp2.apple.com", port: 443, want: true},
+		{name: "blocked exact host", host: "mail.example.com", port: 443, want: true},
+		{name: "blocked cidr", host: "17.253.144.10", port: 443, want: true},
+		{name: "allowed telegram", host: "149.154.167.51", port: 443},
+		{name: "allowed web", host: "example.com", port: 443},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := policy.blocks(tt.host, tt.port); got != tt.want {
+				t.Fatalf("blocks(%q, %d) = %v, want %v", tt.host, tt.port, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestHandleSocks5BlocksConfiguredPortBeforeSession(t *testing.T) {
+	policy, err := newSOCKSBlockPolicy(SOCKSBlockPolicy{Ports: []int{993}})
+	if err != nil {
+		t.Fatalf("newSOCKSBlockPolicy() error = %v", err)
+	}
+	c := &Client{socksPolicy: policy}
+	server, client := net.Pipe()
+	defer func() {
+		_ = server.Close()
+		_ = client.Close()
+	}()
+
+	go c.handleSocks5(context.Background(), server)
+
+	if _, err := client.Write([]byte{5, 1, 0}); err != nil {
+		t.Fatalf("write greeting: %v", err)
+	}
+	method := make([]byte, 2)
+	if _, err := io.ReadFull(client, method); err != nil {
+		t.Fatalf("read method: %v", err)
+	}
+	if !bytes.Equal(method, []byte{5, 0}) {
+		t.Fatalf("method = %v, want [5 0]", method)
+	}
+
+	req := make([]byte, 0, 32)
+	req = append(req, 5, 1, 0, 3, byte(len("mail.example.com")))
+	req = append(req, []byte("mail.example.com")...)
+	port := make([]byte, 2)
+	binary.BigEndian.PutUint16(port, 993)
+	if _, err := client.Write(append(req, port...)); err != nil {
+		t.Fatalf("write CONNECT: %v", err)
+	}
+
+	reply := make([]byte, 10)
+	if _, err := io.ReadFull(client, reply); err != nil {
+		t.Fatalf("read reply: %v", err)
+	}
+	if !bytes.Equal(reply, replyHostUnreachable()) {
+		t.Fatalf("reply = %v, want %v", reply, replyHostUnreachable())
+	}
+}
+
 func TestSocks5RequestRejectsCommandAndAddressType(t *testing.T) {
 	c := &Client{}
 	server, client := net.Pipe()

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 
 	"github.com/openlibrecommunity/olcrtc/internal/app/session"
@@ -37,6 +38,9 @@ socks:
   port: 1080
   user: u
   pass: p
+  block_ports: [993, 5223]
+  block_hosts: ["*.apple.com"]
+  block_cidrs: ["17.0.0.0/8"]
 vp8:
   fps: 25
   batch_size: 4
@@ -97,6 +101,9 @@ func requireAppliedConfig(t *testing.T, got session.Config) {
 		SOCKSPort:             1080,
 		SOCKSUser:             "u",
 		SOCKSPass:             "p",
+		SOCKSBlockPorts:       []int{993, 5223},
+		SOCKSBlockHosts:       []string{"*.apple.com"},
+		SOCKSBlockCIDRs:       []string{"17.0.0.0/8"},
 		VP8:                   session.VP8Config{FPS: 25, BatchSize: 4},
 		LivenessInterval:      "2s",
 		LivenessTimeout:       "500ms",
@@ -107,7 +114,7 @@ func requireAppliedConfig(t *testing.T, got session.Config) {
 		TrafficMaxDelay:       "30ms",
 		Amount:                3,
 	}
-	if got != want {
+	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("Apply produced wrong config: %+v, want %+v", got, want)
 	}
 }
@@ -149,6 +156,10 @@ crypto:
   key: shared-key
 net:
   dns: 8.8.8.8:53
+socks:
+  block_ports: [993]
+  block_hosts: ["*.apple.com"]
+  block_cidrs: ["17.0.0.0/8"]
 liveness:
   interval: 5s
   timeout: 2s
@@ -167,6 +178,10 @@ profiles:
       id: wb-room
     net:
       transport: vp8channel
+    socks:
+      block_ports: [5223]
+      block_hosts: ["*.icloud.com"]
+      block_cidrs: ["2620:149::/32"]
     vp8:
       fps: 30
     liveness:
@@ -214,6 +229,12 @@ failover:
 		first.TrafficMinDelay != "10ms" || first.TrafficMaxDelay != "20ms" {
 		t.Fatalf("first inherited/overlaid fields = %+v", first)
 	}
+	if !reflect.DeepEqual(first.SOCKSBlockPorts, []int{5223}) ||
+		!reflect.DeepEqual(first.SOCKSBlockHosts, []string{"*.icloud.com"}) ||
+		!reflect.DeepEqual(first.SOCKSBlockCIDRs, []string{"2620:149::/32"}) {
+		t.Fatalf("first socks block policy = ports=%v hosts=%v cidrs=%v",
+			first.SOCKSBlockPorts, first.SOCKSBlockHosts, first.SOCKSBlockCIDRs)
+	}
 	second := ApplyProfile(base, f.Profiles[1])
 	if second.Auth != "jitsi" || second.Transport != "datachannel" ||
 		second.RoomID != "https://meet.example/room" || second.DNSServer != testDNSServer {
@@ -223,6 +244,12 @@ failover:
 		second.MaxSessionDuration != "6h" || second.TrafficMaxPayloadSize != 8192 ||
 		second.TrafficMinDelay != "10ms" || second.TrafficMaxDelay != "40ms" {
 		t.Fatalf("second lifecycle/liveness fields = %+v", second)
+	}
+	if !reflect.DeepEqual(second.SOCKSBlockPorts, []int{993}) ||
+		!reflect.DeepEqual(second.SOCKSBlockHosts, []string{"*.apple.com"}) ||
+		!reflect.DeepEqual(second.SOCKSBlockCIDRs, []string{"17.0.0.0/8"}) {
+		t.Fatalf("second inherited socks block policy = ports=%v hosts=%v cidrs=%v",
+			second.SOCKSBlockPorts, second.SOCKSBlockHosts, second.SOCKSBlockCIDRs)
 	}
 }
 

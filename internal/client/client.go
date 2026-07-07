@@ -11,8 +11,10 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -51,26 +53,28 @@ var (
 
 // Client handles local SOCKS5 connections and tunnels them to the server.
 type Client struct {
-	ln          transport.Transport
-	cipher      *crypto.Cipher
-	conn        *muxconn.Conn
+	ln     transport.Transport
+	cipher *crypto.Cipher
+	conn   *muxconn.Conn
 	// controlConn is a separate muxconn wired to the transport's control-plane
 	// channel (transport.ControlPlane). When non-nil, the smux control session
 	// runs over it instead of the bulk data conn, eliminating head-of-line
 	// blocking of control ping/pong behind large data transfers.
-	controlConn *muxconn.Conn
-	session     *smux.Session
-	controlStrm *smux.Stream
-	controlStop context.CancelFunc
-	sessMu      sync.RWMutex
-	reconnectMu sync.Mutex
-	health      *runtime.HealthTracker
-	deviceID    string
-	sessionID   string
-	claims      map[string]any
-	dnsServer   string
-	socksUser   string
-	socksPass   string
+	controlConn  *muxconn.Conn
+	session      *smux.Session
+	controlStrm  *smux.Stream
+	controlStop  context.CancelFunc
+	sessMu       sync.RWMutex
+	reconnectMu  sync.Mutex
+	health       *runtime.HealthTracker
+	deviceID     string
+	sessionID    string
+	claims       map[string]any
+	dnsServer    string
+	socksUser    string
+	socksPass    string
+	socksPolicy  socksBlockPolicy
+	blockedSOCKS atomic.Uint64
 	// sessionReady is closed (and replaced) each time a session becomes fully
 	// established (sessionID != ""). Tunnel handlers wait on it so they do
 	// not open smux streams before the server has accepted the handshake.
@@ -91,6 +95,9 @@ type Config struct {
 	DNSServer        string
 	SOCKSUser        string
 	SOCKSPass        string
+	SOCKSBlockPorts  []int
+	SOCKSBlockHosts  []string
+	SOCKSBlockCIDRs  []string
 	TransportOptions transport.Options
 	Engine           string
 	URL              string
@@ -136,6 +143,15 @@ func RunWithReady(ctx context.Context, cfg Config, onReady func()) error {
 		return fmt.Errorf("resolve device id: %w", err)
 	}
 
+	socksPolicy, err := newSOCKSBlockPolicy(SOCKSBlockPolicy{
+		Ports: cfg.SOCKSBlockPorts,
+		Hosts: cfg.SOCKSBlockHosts,
+		CIDRs: cfg.SOCKSBlockCIDRs,
+	})
+	if err != nil {
+		return fmt.Errorf("configure SOCKS block policy: %w", err)
+	}
+
 	c := &Client{
 		cipher:       cipher,
 		deviceID:     deviceID,
@@ -143,6 +159,7 @@ func RunWithReady(ctx context.Context, cfg Config, onReady func()) error {
 		dnsServer:    cfg.DNSServer,
 		socksUser:    cfg.SOCKSUser,
 		socksPass:    cfg.SOCKSPass,
+		socksPolicy:  socksPolicy,
 		health:       runtime.NewHealthTracker(cfg.OnHealth),
 		sessionReady: make(chan struct{}),
 	}
@@ -780,6 +797,12 @@ func (c *Client) handleSocks5(ctx context.Context, conn net.Conn) {
 		return
 	}
 
+	if c.socksPolicy.blocks(targetAddr, targetPort) {
+		c.logBlockedSOCKSTarget(net.JoinHostPort(targetAddr, strconv.Itoa(targetPort)))
+		_, _ = conn.Write(replyHostUnreachable())
+		return
+	}
+
 	// Wait until the session handshake is fully complete (sessionID != "").
 	// Without this gate, tunnel streams opened during server-side reinstall
 	// land on a dying smux session and get "closed pipe".
@@ -835,6 +858,13 @@ func (c *Client) tunnel(conn net.Conn, sess *smux.Session, targetAddr string, ta
 		_ = stream.Close()
 	}()
 	_, _ = io.Copy(conn, stream)
+}
+
+func (c *Client) logBlockedSOCKSTarget(target string) {
+	count := c.blockedSOCKS.Add(1)
+	if count <= 10 || count%100 == 0 {
+		logger.Infof("blocked SOCKS target %s by local policy count=%d", target, count)
+	}
 }
 
 func (c *Client) sendConnectRequest(stream *smux.Stream, targetAddr string, targetPort int) error {

@@ -7,8 +7,11 @@ directory listed below.
 
 ## Build under test
 
-- Branch: `ios-wb-ready`
-- Base: `udp-associate-relatch`, head `0219faa`
+- Mergeable branch: `ios-wb-ready-slim`
+- Base: `origin/master`, head `ad57585`
+- Branch commits:
+  - `49a99d9 fix: expose mobile readiness for iOS WB`
+  - `HEAD fix: enforce local SOCKS block policy`
 - Device class: iPhone 11, physical device
 - App profile under test: `wb`
 - Carrier: `wbstream`
@@ -22,6 +25,33 @@ The branch adds the mobile readiness API needed by the iOS Network Extension:
 The readiness callback is fired after the CNC session and local SOCKS listener
 are ready, which lets the iOS tunnel avoid publishing Network Extension routing
 before the data path exists.
+
+## Local SOCKS block policy fix
+
+The later long-run failure was reproduced with high background socket churn from
+Mail/APNs while Telegram was foregrounded. The iOS app rendered:
+
+```yaml
+socks:
+  block_ports: [993, 5223]
+  block_hosts: ["*.apple.com", "*.icloud.com", "*.cdn-apple.com"]
+  block_cidrs: ["17.0.0.0/8"]
+```
+
+but the Go runtime did not parse or enforce these fields. As a result, IMAP
+(`:993`) and Apple push/iCloud sockets were still opening smux streams through
+the WB carrier and could starve the control path under long-running load.
+
+This branch now maps those YAML fields through `internal/config` and
+`internal/app/session`, validates ports/CIDRs, and enforces the policy inside the
+local SOCKS handler before a tunnel stream is opened. TCP `CONNECT` requests get
+a SOCKS host-unreachable reply. The current upstream branch does not include the
+old SOCKS UDP-associate datapath, so the mergeable slim branch intentionally does
+not reintroduce it.
+
+The policy is intentionally local to CNC/SOCKS. It does not require server
+changes and it protects any client platform that routes through the olcrtc SOCKS
+listener, including the iOS Network Extension.
 
 ## WB tunnel probe result
 
@@ -114,12 +144,122 @@ Client app-group logs copied after the reconnect only contained tunnel output
 through `2026-07-07 15:07:44 UTC`, about 89 seconds before the server liveness
 failure. The copied client logs did not contain post-reconnect recovery evidence.
 
-Conclusion: WB is verified for startup, three HTTP/download probe rounds, and a
-Telegram foreground smoke on physical iOS, but it is not yet certified as
-long-running stable under real background app load. The next root-cause target
-is the liveness/control path under sustained Telegram/Mail socket churn, plus
-why iOS tunnel logging stopped before the server declared the control stream
-unhealthy.
+Conclusion before the local SOCKS policy fix: WB was verified for startup,
+three HTTP/download probe rounds, and a Telegram foreground smoke on physical
+iOS, but it was not certified as long-running stable under real background app
+load. This finding is superseded by the policy-fix probe below.
+
+## WB policy-fix probe, 2026-07-07
+
+Artifact root:
+
+`/Users/oxi/unite/whitelist-bypass/artifacts/wb-ios/harness/ios-wb-policy-20260707-190937/`
+
+Files:
+
+- `logs/policy-final-verdict.json`
+- `logs/policy-final-summary.txt`
+- `logs/policy-smoke-summary.txt`
+- `logs/longrun-monitor-targets.txt`
+- `logs/ios-logs-final/app.log`
+- `logs/ios-logs-final/cnc-stderr.log`
+- `logs/server-journal-final.log`
+- `logs/telegram-policy-launch.json`
+
+Short smoke after rebuilding `OlcMobile.xcframework` from this branch:
+
+- VPN ready at `2026-07-07 16:10:25 UTC`
+- HTTP probe loop: `RoundOK=3/3`, `DownloadOK=3/3`, `HTTPError=0`
+- 1 MiB download durations: `10843 ms`, `9763 ms`, `8881 ms`
+- Server journal: `mail_or_apple_lines=0`
+- Server journal: Telegram lines present during foreground Telegram smoke
+- Client log: local policy blocked Mail/APNs/iCloud before tunnel stream open,
+  including `mail.digitaldealingdesk.eu:993`,
+  `2-courier.push.apple.com:5223`, `17.57.146.138:443`, and
+  `probe.icloud.com:443`
+
+Final long-run verdict:
+
+```json
+{
+  "Green": true,
+  "StartedUTC": "2026-07-07 16:10:22 UTC",
+  "EndedUTC": "2026-07-07 16:48:32 UTC",
+  "LongRunSeconds": 2290,
+  "RoundOK": 3,
+  "DownloadOK": 3,
+  "DownloadDurationsMs": [10843, 9763, 8881],
+  "LivenessOrReconnect": 0,
+  "MailOrAppleServerTargetLines": 0,
+  "TelegramServerTargetLines": 3730,
+  "PeerConnectedLines": 1,
+  "LocalSOCKSBlockedMaxLoggedCount": 2100,
+  "SanitizedLeakCheckLines": 0
+}
+```
+
+The policy-fix build stayed up for `38m10s`, crossing the earlier `26m30s`
+failure point. The server journal contains no `control missed pong`, `control
+stream unhealthy`, reconnect, teardown, or server-side Mail/Apple target lines
+for the test window. Telegram was foreground-launched on the iPhone during the
+same run and continued producing server-side target traffic through the WB
+tunnel.
+
+## Mergeable slim-branch probe, 2026-07-07
+
+The upstream PR originally carried older history and conflicted with current
+`origin/master`. To make the PR mergeable, the two iOS/WB fixes were replayed on
+top of `origin/master` as `ios-wb-ready-slim`.
+
+Artifact root:
+
+`/Users/oxi/unite/whitelist-bypass/artifacts/wb-ios/harness/ios-wb-slim-20260707-171335/`
+
+Files:
+
+- `logs/slim-after-deploy-verdict.json`
+- `logs/slim-after-deploy-summary.txt`
+- `logs/server-after-deploy-sanitized.log`
+- `ios-logs-after-deploy-sanitized/app.log`
+- `ios-logs-after-deploy-sanitized/tunnel.log`
+- `ios-logs-after-deploy-sanitized/cnc-stderr.log`
+
+Important setup note: the first slim iOS retry against the previously deployed
+server binary failed with `vp8channel: incoming frame bad header len=36`, which
+was a client/server binary mismatch. After building `./cmd/olcrtc` from the
+same slim branch and deploying it to `/opt/olc-bypass/bin/olcrtc`,
+`olc-wb-srv` was restarted and the physical iOS probe was green.
+
+Verification:
+
+- `go test -count=1 ./...`: passed
+- `gomobile bind -target=ios,iossimulator ./mobile/olcmobile`: passed
+- exported mobile symbols present: `OlcmobileStartCnc`, `OlcmobileWaitReady`,
+  `OlcmobileStop`
+- physical iPhone 11 WB VPN probe: passed
+
+Slim verdict:
+
+```json
+{
+  "Green": true,
+  "StartedUTC": "2026-07-07 17:26:33 UTC",
+  "EndedUTC": "2026-07-07 17:29:26 UTC",
+  "RoundOK": 3,
+  "IpifyOK": 3,
+  "ExampleOK": 3,
+  "DownloadOK": 3,
+  "DownloadDurationsMs": [8690, 9662, 9433],
+  "LivenessReconnectBadHeaderLines": 0,
+  "MailOrAppleServerTargetLines": 0,
+  "ServerPeerConnectedLines": 1,
+  "ServerControlAliveLines": 17,
+  "SanitizedLeakCheckLines": 0
+}
+```
+
+This is a short mergeability/regression probe for the rebased slim branch. The
+longer `38m10s` stability evidence remains the policy-fix run above.
 
 ## Telemost status
 
