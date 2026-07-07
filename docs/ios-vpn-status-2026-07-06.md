@@ -273,3 +273,45 @@ Sanitized q20 artifacts are under:
 Raw q20 logs remain under:
 
 - `.secrets/runtime/harness/telemost-qos20-bulk-20260707-120319/`
+
+## 2026-07-07 deployed-server profile source-of-truth check
+
+The deployed Telemost server run after q20 exposed one operational failure that
+can make a fresh room look broken: the iOS profile was generated from a stale
+`.secrets/olc-stand/deployment.json`, while the deployed server used a different
+Telemost channel/key from `/etc/olc-bypass/tm-srv.yaml`.
+
+The first deployed-server attempt used a newly created room, but the iOS
+subscription shape did not match the server:
+
+- iOS source: `channel_len=9`, `key_sha8=a30e04b2`.
+- Server source: `channel_len=8`, `key_sha8=ef6cd81d`.
+- Result: the client started data/control KCP and latched a peer, but SOCKS did
+  not become usable; the app probe failed with `read welcome: timeout`.
+
+The corrected run generated iOS `BuiltInProfiles.local.json` from the same
+server-matched source of truth:
+
+- Stamp: `ios-telemost-fresh-match-20260707-180434`.
+- Telemost profile shape: `room_len=43`, `channel_len=8`,
+  `key_sha8=ef6cd81d`.
+- Server saw one peer control session and one peer data session.
+- iOS reached `NEVPNStatus.connected`, `cnc session ready`, and `SOCKS ready`.
+- Probe result: `RoundOK=3`, `IpifyOK=3`, `ExampleOK=3`, `DownloadOK=3`.
+- 1 MiB download durations: 7.6 s, 7.1 s, 9.0 s.
+- No `read welcome timeout`, no `handshake failed`, no `bad header`, no
+  publisher close, no server reconnect/teardown markers.
+
+Current operational rule: rotate the Telemost room per session **and** generate
+both server and iOS configs from the same room/channel/key source. `push_room.sh`
+only changes the room id; it does not update channel/key. If the iOS profile is
+built from stale deployment metadata, Telemost will show as "VPN connected" but
+SOCKS/probes will fail.
+
+Sanitized deployed-server artifacts:
+
+- `artifacts/telemost-fix/harness/ios-telemost-fresh-match-20260707-180434/`
+
+Raw deployed-server configs, logs, and the built app with embedded profiles:
+
+- `.secrets/runtime/harness/ios-telemost-fresh-match-20260707-180434/`

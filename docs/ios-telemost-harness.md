@@ -172,3 +172,23 @@ Only sanitized summaries are written under:
 ```text
 /Users/oxi/unite/whitelist-bypass/artifacts/telemost-fix/harness/<stamp>/
 ```
+
+## Deployed-server source-of-truth note
+
+The harness renders local server and iOS configs from one subscription, but the
+deployed-server manual workflow has an extra operational risk: `push_room.sh`
+updates only `room.id`. It does not rewrite Telemost channel/key.
+
+If iOS is generated from a stale `.secrets/olc-stand/deployment.json` while the
+server uses `/etc/olc-bypass/tm-srv.yaml`, the room can be fresh but the
+channel/key can still differ. The observed failure mode on 2026-07-07 was:
+
+- data/control KCP starts;
+- a peer can appear latched;
+- SOCKS never becomes usable;
+- app probes fail with `read welcome: timeout`.
+
+The green deployed-server run `ios-telemost-fresh-match-20260707-180434` used
+server-matched room/channel/key for both sides and completed 3 of 3 iOS rounds
+with 1 MiB downloads in 7.1-9.0 s. Treat server config as the source of truth
+when rebuilding the iOS app for a deployed-server test.
