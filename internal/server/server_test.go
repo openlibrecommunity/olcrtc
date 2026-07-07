@@ -292,6 +292,53 @@ func TestDialProxyError(t *testing.T) {
 	}
 }
 
+func TestDispatchWritesFailureAckOnDialError(t *testing.T) {
+	a, b := net.Pipe()
+	defer func() {
+		_ = a.Close()
+		_ = b.Close()
+	}()
+	serverSess, err := smux.Server(a, smuxConfig(0))
+	if err != nil {
+		t.Fatalf("smux.Server() error = %v", err)
+	}
+	defer func() { _ = serverSess.Close() }()
+	clientSess, err := smux.Client(b, smuxConfig(0))
+	if err != nil {
+		t.Fatalf("smux.Client() error = %v", err)
+	}
+	defer func() { _ = clientSess.Close() }()
+
+	done := make(chan error, 1)
+	go func() {
+		stream, err := serverSess.AcceptStream()
+		if err != nil {
+			done <- err
+			return
+		}
+		defer func() { _ = stream.Close() }()
+		s := &Server{socksProxyAddr: testConnectAddr, socksProxyPort: 1}
+		s.dispatch(stream, ConnectRequest{Addr: "example.com", Port: 443}, "sid-dispatch-fail")
+		done <- nil
+	}()
+
+	stream, err := clientSess.OpenStream()
+	if err != nil {
+		t.Fatalf("OpenStream() error = %v", err)
+	}
+	defer func() { _ = stream.Close() }()
+	ack := make([]byte, 1)
+	if _, err := io.ReadFull(stream, ack); err != nil {
+		t.Fatalf("ReadFull(ack) error = %v", err)
+	}
+	if ack[0] != 0x01 {
+		t.Fatalf("ack = %#x, want 0x01", ack[0])
+	}
+	if err := <-done; err != nil {
+		t.Fatalf("server side error = %v", err)
+	}
+}
+
 func TestSocks5ConnectTruncatesLongDomain(t *testing.T) {
 	s := &Server{}
 	server, client := net.Pipe()

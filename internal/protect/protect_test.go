@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"errors"
+	"io"
 	"net"
 	"net/http"
 	"strings"
@@ -139,6 +140,14 @@ func TestRedactSensitiveBearer(t *testing.T) {
 	}
 }
 
+func TestRetriableErrorIncludesEOF(t *testing.T) {
+	for _, err := range []error{io.EOF, io.ErrUnexpectedEOF} {
+		if !isRetriableError(err) {
+			t.Fatalf("isRetriableError(%v) = false, want true", err)
+		}
+	}
+}
+
 type ioNopCloser struct {
 	*strings.Reader
 }
@@ -179,6 +188,17 @@ func TestDialContextAndProxyDialer(t *testing.T) {
 
 	<-accepted
 	<-accepted
+}
+
+func TestDialNetworksPreferIPv4ForGenericTCP(t *testing.T) {
+	got := dialNetworks("tcp")
+	want := []string{"tcp4", "tcp"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("dialNetworks(tcp) = %v, want %v", got, want)
+	}
+	if got := dialNetworks("udp"); len(got) != 1 || got[0] != "udp" {
+		t.Fatalf("dialNetworks(udp) = %v, want [udp]", got)
+	}
 }
 
 func TestDialFailuresAreWrapped(t *testing.T) {

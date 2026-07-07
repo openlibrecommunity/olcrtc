@@ -156,6 +156,12 @@ func TestRunWithReadyPassesCallbackToCNC(t *testing.T) {
 		if !equalInts(cfg.SOCKSBlockPorts, []int{993, 5223}) {
 			t.Fatalf("SOCKSBlockPorts = %v, want [993 5223]", cfg.SOCKSBlockPorts)
 		}
+		if !equalStrings(cfg.SOCKSBlockHosts, []string{"*.icloud.com", "*.push.apple.com"}) {
+			t.Fatalf("SOCKSBlockHosts = %v, want [*.icloud.com *.push.apple.com]", cfg.SOCKSBlockHosts)
+		}
+		if !equalStrings(cfg.SOCKSBlockCIDRs, []string{"17.0.0.0/8"}) {
+			t.Fatalf("SOCKSBlockCIDRs = %v, want [17.0.0.0/8]", cfg.SOCKSBlockCIDRs)
+		}
 		if onReady == nil {
 			t.Fatal("onReady callback was nil")
 		}
@@ -170,6 +176,8 @@ func TestRunWithReadyPassesCallbackToCNC(t *testing.T) {
 	cfg.SOCKSMaxSessionsPerTarget = 4
 	cfg.SOCKSSlotWaitMS = 500
 	cfg.SOCKSBlockPorts = []int{993, 5223}
+	cfg.SOCKSBlockHosts = []string{"*.icloud.com", "*.push.apple.com"}
+	cfg.SOCKSBlockCIDRs = []string{"17.0.0.0/8"}
 	err := RunWithReady(context.Background(), cfg, func() {
 		ready.Store(true)
 	})
@@ -712,6 +720,18 @@ func TestGenUnsupportedAuth(t *testing.T) {
 }
 
 func equalInts(a, b []int) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func equalStrings(a, b []string) bool {
 	if len(a) != len(b) {
 		return false
 	}

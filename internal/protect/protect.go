@@ -121,6 +121,9 @@ func isRetriableError(err error) bool {
 	if err == nil {
 		return false
 	}
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return true
+	}
 	var dnsErr *net.DNSError
 	if errors.As(err, &dnsErr) {
 		return true
@@ -132,7 +135,8 @@ func isRetriableError(err error) bool {
 	s := err.Error()
 	return strings.Contains(s, "no such host") ||
 		strings.Contains(s, "connection reset") ||
-		strings.Contains(s, "i/o timeout")
+		strings.Contains(s, "i/o timeout") ||
+		strings.Contains(s, "EOF")
 }
 
 // NewWebSocketDialer returns a WebSocket dialer using protected sockets and shared TLS policy.
@@ -169,11 +173,26 @@ func RedactSensitive(text string) string {
 
 // DialContext dials using a protected socket.
 func DialContext(ctx context.Context, network, address string) (net.Conn, error) {
-	conn, err := NewDialer().DialContext(ctx, network, address)
-	if err != nil {
-		return nil, fmt.Errorf("dial failed: %w", err)
+	dialer := NewDialer()
+	var lastErr error
+	for _, candidateNetwork := range dialNetworks(network) {
+		conn, err := dialer.DialContext(ctx, candidateNetwork, address)
+		if err == nil {
+			return conn, nil
+		}
+		lastErr = err
+		if ctx.Err() != nil {
+			return nil, fmt.Errorf("dial failed: %w", ctx.Err())
+		}
 	}
-	return conn, nil
+	return nil, fmt.Errorf("dial failed: %w", lastErr)
+}
+
+func dialNetworks(network string) []string {
+	if network == "tcp" {
+		return []string{"tcp4", "tcp"}
+	}
+	return []string{network}
 }
 
 // ProxyDialer implements golang.org/x/net/proxy.Dialer for pion ICE.

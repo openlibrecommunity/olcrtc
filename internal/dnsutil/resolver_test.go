@@ -44,9 +44,12 @@ func TestDialServerFallsBackToSecondAddress(t *testing.T) {
 	}
 }
 
-func TestResolverNetworkUsesTCPForUDPQueries(t *testing.T) {
-	if got := resolverNetwork("udp"); got != "tcp" {
-		t.Fatalf("resolverNetwork(udp) = %q, want tcp", got)
+func TestResolverNetworkPreservesUDPQueries(t *testing.T) {
+	if got := resolverNetwork("udp"); got != "udp" {
+		t.Fatalf("resolverNetwork(udp) = %q, want udp", got)
+	}
+	if got := resolverNetwork("udp4"); got != "udp4" {
+		t.Fatalf("resolverNetwork(udp4) = %q, want udp4", got)
 	}
 	if got := resolverNetwork("tcp"); got != "tcp" {
 		t.Fatalf("resolverNetwork(tcp) = %q, want tcp", got)

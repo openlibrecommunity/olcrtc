@@ -24,6 +24,7 @@ const (
 	defaultDownloadBytes = 1048576
 	defaultProbeInterval = 8
 	defaultWaitSeconds   = 240
+	serverStartupGrace   = 30 * time.Second
 	telemostSFUHost      = "goloom.strm.yandex.net"
 )
 
@@ -235,7 +236,9 @@ func prepare(ctx context.Context, cfg config, p paths, stdout io.Writer, stderr 
 	if err := preflightResolver(ctx, cfg.Resolver, telemostSFUHost); err != nil {
 		return err
 	}
-	if err := runRoomManager(ctx, p, stderr); err != nil {
+	if err := retryOperation(ctx, 3, 2*time.Second, func() error {
+		return runRoomManager(ctx, p, stderr)
+	}); err != nil {
 		return err
 	}
 	sub, err := readSubscription(p.Subscription)
@@ -274,6 +277,34 @@ func runRoomManager(ctx context.Context, p paths, stderr io.Writer) error {
 		return fmt.Errorf("room_manager subscription: %w", err)
 	}
 	return nil
+}
+
+func retryOperation(ctx context.Context, attempts int, delay time.Duration, fn func() error) error {
+	if attempts <= 0 {
+		attempts = 1
+	}
+	var lastErr error
+	for attempt := 1; attempt <= attempts; attempt++ {
+		if err := fn(); err != nil {
+			lastErr = err
+		} else {
+			return nil
+		}
+		if attempt == attempts {
+			break
+		}
+		if delay <= 0 {
+			continue
+		}
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
+	return fmt.Errorf("operation failed after %d attempts: %w", attempts, lastErr)
 }
 
 func roomManagerEnv(base []string, certFile string) []string {
@@ -340,7 +371,7 @@ func runProbe(ctx context.Context, cfg config, p paths, stdout io.Writer, stderr
 	if err := buildIOS(ctx, p); err != nil {
 		return err
 	}
-	server, err := startServer(ctx, p)
+	server, err := startServerWithRetry(ctx, p, 3, 2*time.Second, serverStartupGrace)
 	if err != nil {
 		return err
 	}
@@ -351,10 +382,12 @@ func runProbe(ctx context.Context, cfg config, p paths, stdout io.Writer, stderr
 		return err
 	}
 	fmt.Fprintf(stdout, "waiting %ds for iOS probes...\n", cfg.WaitSeconds)
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-time.After(time.Duration(cfg.WaitSeconds) * time.Second):
+	if err := waitForProbesOrServerExit(ctx, server, time.Duration(cfg.WaitSeconds)*time.Second); err != nil {
+		_ = copyIOSLogs(ctx, cfg, p)
+		if _, summarizeErr := summarize(cfg, p, probeSince, stdout); summarizeErr != nil {
+			fmt.Fprintf(stderr, "summarize after server exit failed: %v\n", summarizeErr)
+		}
+		return err
 	}
 	if err := copyIOSLogs(ctx, cfg, p); err != nil {
 		return err
@@ -414,10 +447,43 @@ func xcodeBuildArgs(p paths) []string {
 type serverProcess struct {
 	cmd     *exec.Cmd
 	logFile *os.File
+	done    chan error
 }
 
 func startServer(ctx context.Context, p paths) (*serverProcess, error) {
-	logFile, err := os.Create(p.ServerLog) // #nosec G304 -- explicit local harness path
+	return startServerWithGrace(ctx, p, serverStartupGrace)
+}
+
+func startServerWithRetry(ctx context.Context, p paths, attempts int, delay time.Duration, grace time.Duration) (*serverProcess, error) {
+	if attempts <= 0 {
+		attempts = 1
+	}
+	var lastErr error
+	for attempt := 1; attempt <= attempts; attempt++ {
+		server, err := startServerWithGrace(ctx, p, grace)
+		if err == nil {
+			return server, nil
+		}
+		lastErr = err
+		if attempt == attempts {
+			break
+		}
+		if delay <= 0 {
+			continue
+		}
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return nil, ctx.Err()
+		case <-timer.C:
+		}
+	}
+	return nil, fmt.Errorf("local server failed after %d attempts: %w", attempts, lastErr)
+}
+
+func startServerWithGrace(ctx context.Context, p paths, grace time.Duration) (*serverProcess, error) {
+	logFile, err := os.OpenFile(p.ServerLog, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600) // #nosec G304 -- explicit local harness path
 	if err != nil {
 		return nil, err
 	}
@@ -428,8 +494,47 @@ func startServer(ctx context.Context, p paths) (*serverProcess, error) {
 		logFile.Close()
 		return nil, fmt.Errorf("start local server: %w", err)
 	}
-	time.Sleep(3 * time.Second)
-	return &serverProcess{cmd: cmd, logFile: logFile}, nil
+	done := make(chan error, 1)
+	go func() {
+		done <- cmd.Wait()
+	}()
+	if grace <= 0 {
+		grace = serverStartupGrace
+	}
+	timer := time.NewTimer(grace)
+	defer timer.Stop()
+	select {
+	case err := <-done:
+		_ = logFile.Close()
+		if err != nil {
+			return nil, fmt.Errorf("local server exited during startup: %w", err)
+		}
+		return nil, errors.New("local server exited during startup")
+	case <-ctx.Done():
+		_ = cmd.Process.Kill()
+		<-done
+		_ = logFile.Close()
+		return nil, ctx.Err()
+	case <-timer.C:
+		return &serverProcess{cmd: cmd, logFile: logFile, done: done}, nil
+	}
+}
+
+func waitForProbesOrServerExit(ctx context.Context, server *serverProcess, duration time.Duration) error {
+	timer := time.NewTimer(duration)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	case err := <-server.done:
+		server.done <- err
+		if err != nil {
+			return fmt.Errorf("local server exited while waiting for iOS probes: %w", err)
+		}
+		return errors.New("local server exited while waiting for iOS probes")
+	}
 }
 
 func stopProcess(server *serverProcess) {
@@ -439,16 +544,12 @@ func stopProcess(server *serverProcess) {
 	_ = server.cmd.Process.Signal(os.Interrupt)
 	timer := time.NewTimer(5 * time.Second)
 	defer timer.Stop()
-	done := make(chan struct{})
-	go func() {
-		_ = server.cmd.Wait()
-		_ = server.logFile.Close()
-		close(done)
-	}()
 	select {
-	case <-done:
+	case <-server.done:
+		_ = server.logFile.Close()
 	case <-timer.C:
 		_ = server.cmd.Process.Kill()
+		<-server.done
 		_ = server.logFile.Close()
 	}
 }
@@ -541,15 +642,50 @@ func summarize(cfg config, p paths, since time.Time, stdout io.Writer) (iosharne
 }
 
 func preflightResolver(ctx context.Context, resolver string, host string) error {
+	return preflightResolverWithLookup(ctx, resolver, host, 3, lookupHostWithResolver)
+}
+
+type resolverLookup func(context.Context, string, string) ([]string, error)
+
+func preflightResolverWithLookup(ctx context.Context, resolver string, host string, attempts int, lookup resolverLookup) error {
+	servers := dnsutil.SplitServers(resolver)
+	if len(servers) == 0 {
+		return fmt.Errorf("DNS preflight failed for %s via %s: dns resolver has no servers", host, resolver)
+	}
+	if attempts <= 0 {
+		attempts = 1
+	}
+	var lastErr error
+	for attempt := 0; attempt < attempts; attempt++ {
+		for _, server := range servers {
+			ips, err := lookup(ctx, server, host)
+			if err == nil && len(ips) > 0 {
+				return nil
+			}
+			if err == nil {
+				lastErr = fmt.Errorf("DNS preflight returned no addresses for %s via %s", host, server)
+			} else {
+				lastErr = err
+			}
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+		}
+	}
+	return fmt.Errorf("DNS preflight failed for %s via %s: %w", host, resolver, lastErr)
+}
+
+func lookupHostWithResolver(ctx context.Context, resolver string, host string) ([]string, error) {
 	r := dnsutil.NewResolver(resolver, 5*time.Second)
-	ips, err := r.LookupHost(ctx, host)
+	ips, err := r.LookupIP(ctx, "ip4", host)
 	if err != nil {
-		return fmt.Errorf("DNS preflight failed for %s via %s: %w", host, resolver, err)
+		return nil, err
 	}
-	if len(ips) == 0 {
-		return fmt.Errorf("DNS preflight returned no addresses for %s via %s", host, resolver)
+	out := make([]string, 0, len(ips))
+	for _, ip := range ips {
+		out = append(out, ip.String())
 	}
-	return nil
+	return out, nil
 }
 
 func exists(path string) bool {

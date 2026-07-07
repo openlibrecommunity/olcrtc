@@ -3,7 +3,6 @@ package goolom
 import (
 	"context"
 	"fmt"
-	"net"
 	"time"
 
 	"github.com/google/uuid"
@@ -115,11 +114,11 @@ func newWebRTCAPI() (*webrtc.API, error) {
 	// never reach the SFU ("sendto: network is unreachable"). The flood of dead
 	// pairs starves ICE consent-freshness checks on the working pair, so the
 	// SFU stops receiving consent and tears down media after ~30-40 s. Limiting
-	// to IPv4 keeps the candidate set small and consent alive for the session.
+	// to usable IPv4 host interfaces keeps the candidate set small and consent
+	// alive for the session.
 	settingEngine.SetNetworkTypes([]webrtc.NetworkType{webrtc.NetworkTypeUDP4})
-	settingEngine.SetIPFilter(func(ip net.IP) bool {
-		return ip.To4() != nil
-	})
+	settingEngine.SetInterfaceFilter(keepICEInterface)
+	settingEngine.SetIPFilter(keepICEIP)
 
 	// Register the default media engine + interceptors. Without the default
 	// interceptors pion never emits RTCP Receiver Reports (or NACK/TWCC) for

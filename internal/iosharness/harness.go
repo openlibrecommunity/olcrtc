@@ -242,7 +242,7 @@ var (
 	tunnelSummaryPattern = regexp.MustCompile(`=== startTunnel|cnc start|cnc session ready|network settings applied|SOCKS ready|WARN: cnc reported|cnc not ready|tun2socks starting|tun2socks stats|cnc ENDED|stopTunnel|publisher PC closed|ICE connection state: closed|readVP8Track closed`)
 	tunnelBadPattern     = regexp.MustCompile(`cnc not ready|cnc ENDED err|publisher PC closed|ICE connection state: closed|readVP8Track closed`)
 
-	serverSummaryPattern = regexp.MustCompile(`peer connected|traffic: session=.*(speed\.cloudflare\.com|example\.com|api\.ipify\.org)|server reconnect|tearing down|publisher PC closed|readVP8Track closed`)
+	serverSummaryPattern = regexp.MustCompile(`peer connected|traffic: session=.*(speed\.cloudflare\.com|www\.cloudflare\.com|example\.com|api\.ipify\.org)|server reconnect|tearing down|publisher PC closed|readVP8Track closed`)
 	serverBadPattern     = regexp.MustCompile(`server reconnect|tearing down|publisher PC closed|readVP8Track closed`)
 
 	uuidPattern      = regexp.MustCompile(`[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}`)

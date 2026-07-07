@@ -1105,6 +1105,7 @@ func (s *Server) dispatch(stream *smux.Stream, req ConnectRequest, sessionID str
 
 	if err != nil {
 		logger.Infof("sid=%d dial %s failed (%v): %v", stream.ID(), addr, dialElapsed, err)
+		_, _ = stream.Write([]byte{0x01})
 		return
 	}
 	defer func() { _ = conn.Close() }()

@@ -60,8 +60,5 @@ func dialServer(ctx context.Context, network string, servers []string, timeout t
 }
 
 func resolverNetwork(network string) string {
-	if network == "udp" || network == "udp4" || network == "udp6" {
-		return "tcp"
-	}
 	return network
 }

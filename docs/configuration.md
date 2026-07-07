@@ -62,6 +62,8 @@ olcrtc /etc/olcrtc/client.yaml
 | `socks.max_sessions_per_target` | лимит одновременных SOCKS-туннелей на один `host:port` |
 | `socks.slot_wait_ms` | сколько ждать свободный общий SOCKS slot перед отказом; `0` = ждать до отмены контекста |
 | `socks.block_ports` | список портов, которые клиент будет сразу отклонять на SOCKS-входе |
+| `socks.block_hosts` | список host/suffix/wildcard правил, которые клиент будет сразу отклонять на SOCKS-входе |
+| `socks.block_cidrs` | список IP-prefix правил, которые клиент будет сразу отклонять на SOCKS-входе |
 | `socks.proxy_addr` / `socks.proxy_port` | исходящий SOCKS5-прокси на серверной стороне |
 | `socks.proxy_user` / `socks.proxy_pass` | необязательная auth для upstream-прокси (RFC 1929) |
 | `engine.name` / `engine.url` / `engine.token` | прямой engine-режим, только при `auth.provider: none` |
@@ -87,8 +89,10 @@ olcrtc /etc/olcrtc/client.yaml
 `mode: cnc` запрещает слушать не-loopback адрес (`0.0.0.0`, LAN IP и т.п.), если не заданы оба поля `socks.user` и `socks.pass`.
 
 `net.dns` поддерживает fallback-список, например `"8.8.8.8:53,192.168.1.1:53"`.
-Runtime resolver открывает DNS-соединение через TCP, чтобы не зависеть от
-нестабильных UDP DNS ответов на перегруженном или фильтрующем канале.
+Runtime resolver пробует DNS endpoint'ы по порядку и сохраняет network, который
+запрашивает Go resolver (`udp`, `udp4`, `tcp` и т.п.). Это важно для локального
+тестового стенда: можно вынести flaky endpoint из начала списка, не меняя
+семантику DNS-запросов.
 
 SOCKS-лимиты полезны для full-tunnel клиентов, где фоновые приложения могут
 открывать десятки потоков и забивать узкий carrier:
@@ -99,11 +103,13 @@ socks:
   max_sessions_per_target: 8
   slot_wait_ms: 500
   block_ports: [993, 5223]
+  block_hosts: ["*.apple.com", "*.icloud.com", "*.cdn-apple.com"]
+  block_cidrs: ["17.0.0.0/8"]
 ```
 
-`block_ports` намеренно грубый механизм. Используйте его только для профилей,
-где допустимо отрезать фоновые сервисы вроде IMAP/Push ради стабильности
-основного веб-трафика.
+`block_ports`, `block_hosts` и `block_cidrs` намеренно грубые механизмы.
+Используйте их только для профилей, где допустимо отрезать фоновые сервисы
+вроде IMAP/Push/iCloud ради стабильности основного веб-трафика.
 
 ## Обязательный минимум
 

@@ -227,6 +227,68 @@ func TestBlockedSOCKSPorts(t *testing.T) {
 	}
 }
 
+func TestBlockedSOCKSHosts(t *testing.T) {
+	blocked := blockedSOCKSHosts([]string{
+		"Gateway.ICloud.com",
+		"*.push.apple.com",
+		".configuration.apple.com",
+		"",
+	})
+	c := &Client{socksBlockedHosts: blocked}
+
+	for _, host := range []string{
+		"gateway.icloud.com",
+		"34-courier.push.apple.com",
+		"configuration.apple.com",
+		"sub.configuration.apple.com",
+	} {
+		if !c.isSOCKSHostBlocked(host) {
+			t.Fatalf("isSOCKSHostBlocked(%q) = false", host)
+		}
+	}
+
+	for _, host := range []string{
+		"api.ipify.org",
+		"example.com",
+		"speed.cloudflare.com",
+		"push.apple.com.evil.example",
+	} {
+		if c.isSOCKSHostBlocked(host) {
+			t.Fatalf("isSOCKSHostBlocked(%q) = true", host)
+		}
+	}
+}
+
+func TestBlockedSOCKSCIDRs(t *testing.T) {
+	blocked := blockedSOCKSCIDRs([]string{
+		"17.0.0.0/8",
+		"2001:db8::/32",
+		"not-a-cidr",
+		"",
+	})
+	c := &Client{socksBlockedCIDRs: blocked}
+
+	for _, host := range []string{
+		"17.57.146.135",
+		"17.255.255.255",
+		"2001:db8::1",
+	} {
+		if !c.isSOCKSCIDRBlocked(host) {
+			t.Fatalf("isSOCKSCIDRBlocked(%q) = false", host)
+		}
+	}
+
+	for _, host := range []string{
+		"18.57.146.135",
+		"gsp36-ssl.ls.apple.com",
+		"2001:db9::1",
+	} {
+		if c.isSOCKSCIDRBlocked(host) {
+			t.Fatalf("isSOCKSCIDRBlocked(%q) = true", host)
+		}
+	}
+}
+
 func isTimeout(err error) bool {
 	var netErr net.Error
 	return errors.As(err, &netErr) && netErr.Timeout()
@@ -631,8 +693,8 @@ func TestSendConnectRequestRejectsBadAck(t *testing.T) {
 	defer func() { _ = stream.Close() }()
 
 	c := &Client{deviceID: "client-1"}
-	if err := c.sendConnectRequest(stream, "example.com", 443); !errors.Is(err, ErrRemoteNotReady) {
-		t.Fatalf("sendConnectRequest() error = %v, want %v", err, ErrRemoteNotReady)
+	if err := c.sendConnectRequest(stream, "example.com", 443); !errors.Is(err, ErrConnectFailed) {
+		t.Fatalf("sendConnectRequest() error = %v, want %v", err, ErrConnectFailed)
 	}
 }
 
@@ -675,8 +737,11 @@ func TestOpenControlStreamStopsOnContextCancel(t *testing.T) {
 }
 
 type closerLinkStub struct {
-	closed     bool
-	resetCount int
+	closed          bool
+	resetCount      int
+	reconnectCount  int
+	reconnectReason string
+	reconnectCh     chan string
 }
 
 func (s *closerLinkStub) Connect(context.Context) error   { return nil }
@@ -688,8 +753,60 @@ func (s *closerLinkStub) SetEndedCallback(func(string))   {}
 func (s *closerLinkStub) WatchConnection(context.Context) {}
 func (s *closerLinkStub) CanSend() bool                   { return true }
 func (s *closerLinkStub) Features() transport.Features    { return transport.Features{} }
-func (s *closerLinkStub) Reconnect(string)                {}
-func (s *closerLinkStub) ResetPeer()                      { s.resetCount++ }
+func (s *closerLinkStub) Reconnect(reason string) {
+	s.reconnectCount++
+	s.reconnectReason = reason
+	if s.reconnectCh != nil {
+		select {
+		case s.reconnectCh <- reason:
+		default:
+		}
+	}
+}
+func (s *closerLinkStub) ResetPeer() { s.resetCount++ }
+
+func TestDataPathRecoveryCoalescesReconnectRequests(t *testing.T) {
+	cipher, err := cryptopkg.NewCipher("01234567890123456789012345678901")
+	if err != nil {
+		t.Fatalf("NewCipher() error = %v", err)
+	}
+	ln := &closerLinkStub{reconnectCh: make(chan string, 2)}
+	c := &Client{
+		ln:           ln,
+		cipher:       cipher,
+		health:       runtime.NewHealthTracker(nil),
+		sessionReady: make(chan struct{}),
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	c.triggerDataPathRecovery(ctx, Config{}, cancel)
+	c.triggerDataPathRecovery(ctx, Config{}, cancel)
+
+	select {
+	case reason := <-ln.reconnectCh:
+		if reason != reconnectReasonDataPath {
+			t.Fatalf("reconnect reason = %q, want %q", reason, reconnectReasonDataPath)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for data-path reconnect")
+	}
+	time.Sleep(20 * time.Millisecond)
+	if ln.reconnectCount != 1 {
+		t.Fatalf("reconnectCount = %d, want 1", ln.reconnectCount)
+	}
+	if ln.resetCount != 1 {
+		t.Fatalf("resetCount = %d, want 1", ln.resetCount)
+	}
+	if !c.dataPathRecovery.Load() {
+		t.Fatal("dataPathRecovery should stay active until the next ready session")
+	}
+
+	c.signalSessionReady()
+	if c.dataPathRecovery.Load() {
+		t.Fatal("dataPathRecovery should clear when a fresh session becomes ready")
+	}
+}
 
 type peerReadyLinkStub struct {
 	closerLinkStub

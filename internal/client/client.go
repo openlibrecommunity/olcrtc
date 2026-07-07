@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
@@ -53,6 +54,7 @@ var (
 const (
 	defaultMaxSOCKSSessions          = 64
 	defaultMaxSOCKSSessionsPerTarget = 8
+	reconnectReasonDataPath          = "data-path"
 )
 
 // Client handles local SOCKS5 connections and tunnels them to the server.
@@ -82,9 +84,12 @@ type Client struct {
 	socksActive         atomic.Int64
 	socksSlotWait       time.Duration
 	socksBlockedPorts   map[int]struct{}
+	socksBlockedHosts   []socksBlockedHostRule
+	socksBlockedCIDRs   []netip.Prefix
 	socksTargetMu       sync.Mutex
 	socksTargets        map[string]int64
 	socksPerTargetLimit int64
+	dataPathRecovery    atomic.Bool
 	// sessionReady is closed (and replaced) each time a session becomes fully
 	// established (sessionID != ""). Tunnel handlers wait on it so they do
 	// not open smux streams before the server has accepted the handshake.
@@ -109,6 +114,8 @@ type Config struct {
 	MaxSOCKSSessionsPerTarget int
 	SOCKSSlotWait             time.Duration
 	SOCKSBlockPorts           []int
+	SOCKSBlockHosts           []string
+	SOCKSBlockCIDRs           []string
 	TransportOptions          transport.Options
 	Engine                    string
 	URL                       string
@@ -165,6 +172,8 @@ func RunWithReady(ctx context.Context, cfg Config, onReady func()) error {
 		socksLimit:          int64(socksLimit),
 		socksSlotWait:       socksSlotWait(cfg.SOCKSSlotWait),
 		socksBlockedPorts:   blockedSOCKSPorts(cfg.SOCKSBlockPorts),
+		socksBlockedHosts:   blockedSOCKSHosts(cfg.SOCKSBlockHosts),
+		socksBlockedCIDRs:   blockedSOCKSCIDRs(cfg.SOCKSBlockCIDRs),
 		socksTargets:        make(map[string]int64),
 		socksPerTargetLimit: int64(maxSOCKSSessionsPerTarget(cfg.MaxSOCKSSessionsPerTarget)),
 		health:              runtime.NewHealthTracker(cfg.OnHealth),
@@ -198,7 +207,7 @@ func RunWithReady(ctx context.Context, cfg Config, onReady func()) error {
 		onReady()
 	}
 
-	go c.acceptLoop(runCtx, listener)
+	go c.acceptLoop(runCtx, listener, cfg, cancel)
 
 	// промптовое закрытие listener на отмену ctx (не ждать раскрутки defer) — освобождает
 	// SOCKS-порт сразу, чтобы повторный StartCnc / ротация сессии могли ребиндить без
@@ -246,12 +255,109 @@ func blockedSOCKSPorts(ports []int) map[int]struct{} {
 	return blocked
 }
 
+type socksBlockedHostRule struct {
+	value  string
+	suffix bool
+}
+
+func blockedSOCKSHosts(hosts []string) []socksBlockedHostRule {
+	if len(hosts) == 0 {
+		return nil
+	}
+	blocked := make([]socksBlockedHostRule, 0, len(hosts))
+	for _, host := range hosts {
+		raw := strings.TrimSpace(host)
+		if raw == "" {
+			continue
+		}
+		suffix := false
+		if strings.HasPrefix(raw, "*.") {
+			raw = strings.TrimPrefix(raw, "*.")
+			suffix = true
+		} else if strings.HasPrefix(raw, ".") {
+			raw = strings.TrimPrefix(raw, ".")
+			suffix = true
+		}
+		normalized := normalizeSOCKSHost(raw)
+		if normalized == "" {
+			continue
+		}
+		blocked = append(blocked, socksBlockedHostRule{value: normalized, suffix: suffix})
+	}
+	return blocked
+}
+
+func normalizeSOCKSHost(host string) string {
+	return strings.TrimSuffix(strings.ToLower(strings.TrimSpace(host)), ".")
+}
+
+func blockedSOCKSCIDRs(cidrs []string) []netip.Prefix {
+	if len(cidrs) == 0 {
+		return nil
+	}
+	blocked := make([]netip.Prefix, 0, len(cidrs))
+	for _, cidr := range cidrs {
+		raw := strings.TrimSpace(cidr)
+		if raw == "" {
+			continue
+		}
+		prefix, err := netip.ParsePrefix(raw)
+		if err == nil {
+			blocked = append(blocked, prefix.Masked())
+			continue
+		}
+		addr, err := netip.ParseAddr(raw)
+		if err == nil {
+			blocked = append(blocked, netip.PrefixFrom(addr, addr.BitLen()))
+		}
+	}
+	return blocked
+}
+
 func (c *Client) isSOCKSPortBlocked(port int) bool {
 	if c.socksBlockedPorts == nil {
 		return false
 	}
 	_, ok := c.socksBlockedPorts[port]
 	return ok
+}
+
+func (c *Client) isSOCKSHostBlocked(host string) bool {
+	if len(c.socksBlockedHosts) == 0 {
+		return false
+	}
+	normalized := normalizeSOCKSHost(host)
+	if normalized == "" {
+		return false
+	}
+	for _, rule := range c.socksBlockedHosts {
+		if rule.suffix {
+			if normalized == rule.value || strings.HasSuffix(normalized, "."+rule.value) {
+				return true
+			}
+			continue
+		}
+		if normalized == rule.value {
+			return true
+		}
+	}
+	return false
+}
+
+func (c *Client) isSOCKSCIDRBlocked(host string) bool {
+	if len(c.socksBlockedCIDRs) == 0 {
+		return false
+	}
+	addr, err := netip.ParseAddr(normalizeSOCKSHost(host))
+	if err != nil {
+		return false
+	}
+	for _, cidr := range c.socksBlockedCIDRs {
+		if cidr.Contains(addr) {
+			return true
+		}
+	}
+	return false
 }
 
 func (c *Client) bringUpLink(
@@ -540,8 +646,8 @@ func (c *Client) handleReconnect(ctx context.Context, cfg Config, cancel context
 	// Re-handshaking over the dead carrier just times out repeatedly, so
 	// ask the carrier to rebuild itself; the new carrier will fire its own
 	// reconnect callback which then drives a fresh handshake.
-	if reason == "liveness" && c.ln != nil {
-		c.ln.Reconnect("liveness")
+	if (reason == "liveness" || reason == reconnectReasonDataPath) && c.ln != nil {
+		c.ln.Reconnect(reason)
 		// Return immediately - retryHandshake over the dead link would
 		// loop forever with "open control stream: timeout" while holding
 		// reconnectMu, blocking the carrier callback that fires once the
@@ -551,6 +657,18 @@ func (c *Client) handleReconnect(ctx context.Context, cfg Config, cancel context
 	}
 
 	c.retryHandshake(ctx, cfg, cancel, reason)
+}
+
+func (c *Client) triggerDataPathRecovery(ctx context.Context, cfg Config, cancel context.CancelFunc) {
+	if ctx.Err() != nil {
+		return
+	}
+	if !c.dataPathRecovery.CompareAndSwap(false, true) {
+		logger.Warnf("data-path recovery already in progress")
+		return
+	}
+	logger.Warnf("data-path recovery triggered: connect ACK failed")
+	go c.handleReconnect(ctx, cfg, cancel, reconnectReasonDataPath)
 }
 
 func (c *Client) retryHandshake(ctx context.Context, cfg Config, cancel context.CancelFunc, reason string) {
@@ -757,6 +875,7 @@ func (c *Client) signalSessionReady() {
 	old := c.sessionReady
 	c.sessionReady = make(chan struct{})
 	c.sessMu.Unlock()
+	c.dataPathRecovery.Store(false)
 	close(old)
 }
 
@@ -833,7 +952,7 @@ func (c *Client) onData(data []byte) {
 	}
 }
 
-func (c *Client) acceptLoop(ctx context.Context, ln net.Listener) {
+func (c *Client) acceptLoop(ctx context.Context, ln net.Listener, cfg Config, cancel context.CancelFunc) {
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
@@ -845,7 +964,7 @@ func (c *Client) acceptLoop(ctx context.Context, ln net.Listener) {
 				continue
 			}
 		}
-		go c.handleSocks5(ctx, conn)
+		go c.handleSocks5(ctx, conn, cfg, cancel)
 	}
 }
 
@@ -953,7 +1072,7 @@ func (c *Client) releaseSOCKSSlot(target string) {
 	}
 }
 
-func (c *Client) handleSocks5(ctx context.Context, conn net.Conn) {
+func (c *Client) handleSocks5(ctx context.Context, conn net.Conn, cfg Config, cancel context.CancelFunc) {
 	defer func() { _ = conn.Close() }()
 
 	if err := c.socks5Handshake(conn); err != nil {
@@ -962,6 +1081,16 @@ func (c *Client) handleSocks5(ctx context.Context, conn net.Conn) {
 
 	targetAddr, targetPort, err := c.socks5Request(conn)
 	if err != nil {
+		return
+	}
+	if c.isSOCKSHostBlocked(targetAddr) {
+		logger.Infof("socks target blocked addr=%s port=%d remote=%s", targetAddr, targetPort, conn.RemoteAddr())
+		_, _ = conn.Write(replyHostUnreachable())
+		return
+	}
+	if c.isSOCKSCIDRBlocked(targetAddr) {
+		logger.Infof("socks target blocked addr=%s port=%d remote=%s", targetAddr, targetPort, conn.RemoteAddr())
+		_, _ = conn.Write(replyHostUnreachable())
 		return
 	}
 	if c.isSOCKSPortBlocked(targetPort) {
@@ -988,7 +1117,7 @@ func (c *Client) handleSocks5(ctx context.Context, conn net.Conn) {
 		sid := c.sessionID
 		c.sessMu.RUnlock()
 		if sess != nil && !sess.IsClosed() && sid != "" {
-			c.tunnel(conn, sess, targetAddr, targetPort)
+			c.tunnel(ctx, conn, sess, targetAddr, targetPort, cfg, cancel)
 			return
 		}
 		// sess is nil (no session yet) or closed (reconnect in progress) —
@@ -1005,7 +1134,15 @@ func (c *Client) handleSocks5(ctx context.Context, conn net.Conn) {
 	}
 }
 
-func (c *Client) tunnel(conn net.Conn, sess *smux.Session, targetAddr string, targetPort int) {
+func (c *Client) tunnel(
+	ctx context.Context,
+	conn net.Conn,
+	sess *smux.Session,
+	targetAddr string,
+	targetPort int,
+	cfg Config,
+	cancel context.CancelFunc,
+) {
 	stream, err := sess.OpenStream()
 	if err != nil {
 		logger.Warnf("OpenStream failed: %v", err)
@@ -1019,6 +1156,9 @@ func (c *Client) tunnel(conn net.Conn, sess *smux.Session, targetAddr string, ta
 
 	if err := c.sendConnectRequest(stream, targetAddr, targetPort); err != nil {
 		logger.Warnf("sid=%d connect failed: %v", stream.ID(), err)
+		if errors.Is(err, ErrRemoteNotReady) {
+			c.triggerDataPathRecovery(ctx, cfg, cancel)
+		}
 		_, _ = conn.Write(replyHostUnreachable())
 		return
 	}
@@ -1056,8 +1196,11 @@ func (c *Client) sendConnectRequest(stream *smux.Stream, targetAddr string, targ
 	// get a generous deadline. Conventional carriers (jitsi/datachannel) use
 	// the conservative window so a stuck CONNECT fails fast.
 	_ = stream.SetReadDeadline(time.Now().Add(runtime.ConnectAckTimeout(c.ln)))
-	if _, err := io.ReadFull(stream, ack); err != nil || ack[0] != 0x00 {
+	if _, err := io.ReadFull(stream, ack); err != nil {
 		return fmt.Errorf("sid=%d: %w (read_err=%w ack=%v)", stream.ID(), ErrRemoteNotReady, err, ack)
+	}
+	if ack[0] != 0x00 {
+		return fmt.Errorf("sid=%d: %w (ack=%v)", stream.ID(), ErrConnectFailed, ack)
 	}
 	_ = stream.SetReadDeadline(time.Time{})
 	return nil

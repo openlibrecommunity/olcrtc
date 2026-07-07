@@ -10,6 +10,9 @@ previously run by hand.
   poison the test.
 - Runs a DNS preflight for `goloom.strm.yandex.net` through the configured
   resolver, then pins the same resolver into the local srv YAML.
+- Retries transient room creation and local server startup failures. If the
+  local server process exits while iOS probes are waiting, the harness stops the
+  run early and writes diagnostics instead of waiting out the full window.
 - Renders a local srv config and iOS `BuiltInProfiles.local.json` from the same
   subscription.
 - Optionally builds, installs, launches, and probes the iOS app through
@@ -102,6 +105,59 @@ also showed bursts of background iOS Mail/iCloud/Apple TCP sessions at the same
 time. Current conclusion: the carrier stayed up, but the narrow vp8channel is
 not yet robust under real full-tunnel background traffic. The next fix should
 target tunnel-side backpressure/QoS/session limits, then rerun this harness.
+
+## Live result on 2026-07-07
+
+The current green real-device bulk run is:
+
+```text
+artifacts/telemost-fix/harness/telemost-qos20-bulk-20260707-120319/
+```
+
+Run parameters:
+
+- Device: GIA iPhone 11.
+- Resolver: `100.100.100.100:53` for the local Mac harness run. This avoids a
+  local `utun14` route that previously broke public DNS traffic from the Mac
+  side of the server harness.
+- Rounds: `3`.
+- Download bytes: `1048576` per round.
+- Wait window: `300s`.
+
+Verdict:
+
+```json
+{
+  "Green": true,
+  "RoundOK": 3,
+  "DownloadOK": 3,
+  "HTTPError": 0,
+  "Reconnects": 0
+}
+```
+
+The run confirmed:
+
+- VPN reached `NEVPNStatus.connected`.
+- `cnc session ready`, `network settings applied`, `SOCKS ready`, and
+  `tun2socks starting` appeared in order.
+- The server saw one peer and no reconnect/teardown markers.
+- All three 1 MiB downloads completed:
+  - 26.9 s (~39 KB/s, ~0.31 Mbit/s)
+  - 19.4 s (~54 KB/s, ~0.43 Mbit/s)
+  - 41.0 s (~26 KB/s, ~0.20 Mbit/s)
+
+The q20 app probes also showed why retrying short probes is required on this
+carrier: several first TLS attempts ended with iOS `SSL error`, while immediate
+retries over the same VPN session succeeded. This is per-stream flakiness, not
+a carrier teardown: the tunnel stayed up, bulk completed, and reconnect count
+remained zero.
+
+Previous red run `telemost-qos19-bulk-20260707-115148` was not a data-path
+result. The local server failed Telemost carrier auth while fetching connection
+info from Yandex (`EOF` after retries), so iOS waited for a peer that never
+existed. The harness now retries server startup and monitors server exit during
+the probe window.
 
 ## Secret handling
 

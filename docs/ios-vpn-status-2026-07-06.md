@@ -174,15 +174,18 @@ server).
 
 Hardening added after the first evening failures:
 
-- `net.dns` now accepts comma-separated resolver fallbacks and the runtime DNS
-  dial path uses TCP DNS connections. This avoids the UDP resolver timeouts
-  observed during bulk probes.
+- `net.dns` now accepts comma-separated resolver fallbacks. The runtime DNS
+  resolver tries configured endpoints in order while preserving the network
+  requested by Go (`udp`, `udp4`, `tcp`, etc.).
 - `socks.max_sessions_per_target` is configurable instead of hard-coded.
 - `socks.slot_wait_ms` bounds global SOCKS slot waiting.
 - `socks.block_ports` lets iOS field-test profiles reject noisy background
   ports before they consume tunnel slots.
+- `socks.block_hosts` and `socks.block_cidrs` let iOS field-test profiles reject
+  noisy Apple/iCloud background destinations before they consume tunnel slots.
 - The local iOS debug profile used for the last run had `max_sessions: 24`,
-  `slot_wait_ms: 500`, DNS fallback, and `block_ports: [993, 5223]`.
+  `slot_wait_ms: 500`, DNS fallback, `block_ports: [993, 5223]`, Apple/iCloud
+  host blocks, and `17.0.0.0/8` CIDR blocking.
 
 Evening harness results on GIA iPhone 11:
 
@@ -217,3 +220,56 @@ Sanitized evening artifacts are under:
 - `artifacts/telemost-fix/harness/telemost-qos8-20260706-204331/`
 
 Raw logs remain under `.secrets/runtime/harness/<stamp>/`.
+
+## 2026-07-07 real-device retests
+
+The next day confirmed two separate classes of failures:
+
+- q17 (`telemost-qos17-bulk-20260707-110905`) was red because the Mac-side
+  local harness routed public DNS through an active `utun14` path. The server
+  reached the first 1 MiB download, then subsequent server DNS lookups failed
+  with connection resets. This was local harness contamination, not Telemost
+  media teardown.
+- q18 (`telemost-qos18-bulk-20260707-113425`) used the local Tailscale DNS
+  endpoint (`100.100.100.100:53`) and proved the sustained path: all three
+  1 MiB downloads completed and reconnect count stayed zero. The run was still
+  red only because the single-shot `api.ipify.org` app probe failed in two
+  rounds while `example.com` and `speed.cloudflare.com` succeeded.
+- q19 (`telemost-qos19-bulk-20260707-115148`) was not a data-path result. The
+  local server failed Telemost carrier auth while fetching connection info from
+  Yandex (`EOF` after retries), so iOS waited for a peer that never existed. The
+  harness now retries server startup and monitors server exit during the probe
+  window.
+- q20 (`telemost-qos20-bulk-20260707-120319`) is the current green run on GIA
+  iPhone 11: `RoundOK=3`, `DownloadOK=3`, `HTTPError=0`, `Reconnects=0`.
+
+q20 details:
+
+- VPN reached `NEVPNStatus.connected`.
+- `cnc session ready`, `network settings applied`, `SOCKS ready`, and
+  `tun2socks starting` appeared in order.
+- The server saw one peer and no reconnect/teardown markers.
+- All three 1 MiB downloads completed:
+  - 26.9 s (~39 KB/s, ~0.31 Mbit/s)
+  - 19.4 s (~54 KB/s, ~0.43 Mbit/s)
+  - 41.0 s (~26 KB/s, ~0.20 Mbit/s)
+
+The q20 app probes also showed why DEBUG probes now retry short HTTPS requests:
+several first TLS attempts ended with iOS `SSL error`, but immediate retries over
+the same VPN session succeeded. This is per-stream flakiness, not a carrier
+teardown: the tunnel stayed up, bulk completed, and reconnect count remained
+zero.
+
+Current status: Telemost full-tunnel can carry real HTTPS and sustained 1 MiB
+downloads on iOS without carrier reconnects on a fresh room. It is good enough
+for controlled field smoke testing, but throughput is low and first-attempt TLS
+flakiness still means user-facing browsing may need retries/reloads until the
+vp8channel throughput/backpressure path is improved.
+
+Sanitized q20 artifacts are under:
+
+- `artifacts/telemost-fix/harness/telemost-qos20-bulk-20260707-120319/`
+
+Raw q20 logs remain under:
+
+- `.secrets/runtime/harness/telemost-qos20-bulk-20260707-120319/`

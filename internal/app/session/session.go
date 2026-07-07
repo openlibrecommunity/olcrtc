@@ -196,6 +196,8 @@ type Config struct {
 	SOCKSMaxSessionsPerTarget int
 	SOCKSSlotWaitMS           int
 	SOCKSBlockPorts           []int
+	SOCKSBlockHosts           []string
+	SOCKSBlockCIDRs           []string
 	DNSServer                 string
 	SOCKSProxyAddr            string
 	SOCKSProxyPort            int
@@ -702,6 +704,8 @@ func runOnce(
 			MaxSOCKSSessionsPerTarget: cfg.SOCKSMaxSessionsPerTarget,
 			SOCKSSlotWait:             time.Duration(cfg.SOCKSSlotWaitMS) * time.Millisecond,
 			SOCKSBlockPorts:           cfg.SOCKSBlockPorts,
+			SOCKSBlockHosts:           cfg.SOCKSBlockHosts,
+			SOCKSBlockCIDRs:           cfg.SOCKSBlockCIDRs,
 			TransportOptions:          opts,
 			Engine:                    cfg.Engine,
 			URL:                       cfg.URL,

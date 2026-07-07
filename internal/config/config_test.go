@@ -42,6 +42,8 @@ socks:
   max_sessions_per_target: 4
   slot_wait_ms: 750
   block_ports: [993, 5223]
+  block_hosts: ["*.icloud.com", "*.push.apple.com"]
+  block_cidrs: ["17.0.0.0/8"]
 vp8:
   fps: 25
   batch_size: 4
@@ -107,6 +109,8 @@ func requireAppliedConfig(t *testing.T, got session.Config) {
 		SOCKSMaxSessionsPerTarget: 4,
 		SOCKSSlotWaitMS:           750,
 		SOCKSBlockPorts:           []int{993, 5223},
+		SOCKSBlockHosts:           []string{"*.icloud.com", "*.push.apple.com"},
+		SOCKSBlockCIDRs:           []string{"17.0.0.0/8"},
 		VP8:                       session.VP8Config{FPS: 25, BatchSize: 4, MaxBytesPerSec: 120000},
 		LivenessInterval:          "2s",
 		LivenessTimeout:           "500ms",

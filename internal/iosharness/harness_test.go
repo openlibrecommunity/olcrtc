@@ -124,6 +124,47 @@ func TestSummarizeLogsGreenFreshRoomBulk(t *testing.T) {
 	}
 }
 
+func TestSummarizeLogsIncludesPublicIPFallbackTraffic(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	raw := filepath.Join(dir, "raw")
+	out := filepath.Join(dir, "out")
+	if err := os.MkdirAll(raw, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(raw, "app.log"), `2026-07-06 12:54:53 +0000 http probe loop start rounds=1 interval_s=8.0 download_bytes=0
+2026-07-06 12:54:56 +0000 http probe retry label=ipify host=api.ipify.org attempt=1/3 error=The request timed out.
+2026-07-06 12:54:58 +0000 http probe ok label=ipify host=www.cloudflare.com status=200 bytes=120 duration_ms=1000
+2026-07-06 12:55:00 +0000 http probe ok label=example host=example.com status=200 bytes=559 duration_ms=1500
+2026-07-06 12:55:00 +0000 http probe round=1 done ok=2 fail=0
+`)
+	writeFile(t, filepath.Join(raw, "tunnel.log"), `2026-07-06 12:54:44 +0000 === startTunnel ===
+2026-07-06 12:54:46 +0000 cnc session ready
+`)
+	serverLog := filepath.Join(dir, "server.log")
+	writeFile(t, serverLog, `2026/07/06 15:54:56 traffic: session=278121df-1111-2222-3333-1455d6da212e addr=www.cloudflare.com:443 in=900 out=4096
+2026/07/06 15:55:00 traffic: session=278121df-1111-2222-3333-1455d6da212e addr=example.com:443 in=888 out=5624
+`)
+
+	verdict, err := SummarizeLogs(RawLogPaths{
+		IOSDir:    raw,
+		ServerLog: serverLog,
+	}, SummaryPaths{
+		IOSDir:        filepath.Join(out, "ios"),
+		ServerSummary: filepath.Join(out, "server-summary.log"),
+	}, Criteria{Rounds: 1})
+	if err != nil {
+		t.Fatalf("SummarizeLogs() error = %v", err)
+	}
+	if !verdict.Green {
+		t.Fatalf("verdict.Green = false, reasons=%v", verdict.Reasons)
+	}
+	serverSummary := readFile(t, filepath.Join(out, "server-summary.log"))
+	if !strings.Contains(serverSummary, "addr=www.cloudflare.com:443") {
+		t.Fatalf("server summary missing public IP fallback traffic:\n%s", serverSummary)
+	}
+}
+
 func TestSummarizeLogsAcceptsCopiedAppGroupOlcDirectory(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()

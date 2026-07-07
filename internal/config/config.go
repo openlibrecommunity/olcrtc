@@ -101,18 +101,20 @@ type Net struct {
 
 // SOCKS bundles SOCKS5 listener and outbound-proxy settings.
 type SOCKS struct {
-	Host                 string `yaml:"host"`
-	Port                 int    `yaml:"port"`
-	User                 string `yaml:"user"`
-	Pass                 string `yaml:"pass"`
-	MaxSessions          int    `yaml:"max_sessions"`
-	MaxSessionsPerTarget int    `yaml:"max_sessions_per_target"`
-	SlotWaitMS           int    `yaml:"slot_wait_ms"`
-	BlockPorts           []int  `yaml:"block_ports"`
-	ProxyAddr            string `yaml:"proxy_addr"`
-	ProxyPort            int    `yaml:"proxy_port"`
-	ProxyUser            string `yaml:"proxy_user"`
-	ProxyPass            string `yaml:"proxy_pass"`
+	Host                 string   `yaml:"host"`
+	Port                 int      `yaml:"port"`
+	User                 string   `yaml:"user"`
+	Pass                 string   `yaml:"pass"`
+	MaxSessions          int      `yaml:"max_sessions"`
+	MaxSessionsPerTarget int      `yaml:"max_sessions_per_target"`
+	SlotWaitMS           int      `yaml:"slot_wait_ms"`
+	BlockPorts           []int    `yaml:"block_ports"`
+	BlockHosts           []string `yaml:"block_hosts"`
+	BlockCIDRs           []string `yaml:"block_cidrs"`
+	ProxyAddr            string   `yaml:"proxy_addr"`
+	ProxyPort            int      `yaml:"proxy_port"`
+	ProxyUser            string   `yaml:"proxy_user"`
+	ProxyPass            string   `yaml:"proxy_pass"`
 }
 
 // Engine selects a direct SFU connection when Auth.Provider is "none".
@@ -269,6 +271,8 @@ func Apply(dst session.Config, f File) session.Config {
 	dst.SOCKSMaxSessionsPerTarget = pickInt(dst.SOCKSMaxSessionsPerTarget, f.SOCKS.MaxSessionsPerTarget)
 	dst.SOCKSSlotWaitMS = pickInt(dst.SOCKSSlotWaitMS, f.SOCKS.SlotWaitMS)
 	dst.SOCKSBlockPorts = pickIntSlice(dst.SOCKSBlockPorts, f.SOCKS.BlockPorts)
+	dst.SOCKSBlockHosts = pickStringSlice(dst.SOCKSBlockHosts, f.SOCKS.BlockHosts)
+	dst.SOCKSBlockCIDRs = pickStringSlice(dst.SOCKSBlockCIDRs, f.SOCKS.BlockCIDRs)
 	dst.DNSServer = pickString(dst.DNSServer, f.Net.DNS)
 	dst.SOCKSProxyAddr = pickString(dst.SOCKSProxyAddr, f.SOCKS.ProxyAddr)
 	dst.SOCKSProxyPort = pickInt(dst.SOCKSProxyPort, f.SOCKS.ProxyPort)
@@ -321,6 +325,8 @@ func ApplyProfile(base session.Config, p Profile) session.Config {
 	dst.SOCKSMaxSessionsPerTarget = overlayInt(dst.SOCKSMaxSessionsPerTarget, p.SOCKS.MaxSessionsPerTarget)
 	dst.SOCKSSlotWaitMS = overlayInt(dst.SOCKSSlotWaitMS, p.SOCKS.SlotWaitMS)
 	dst.SOCKSBlockPorts = overlayIntSlice(dst.SOCKSBlockPorts, p.SOCKS.BlockPorts)
+	dst.SOCKSBlockHosts = overlayStringSlice(dst.SOCKSBlockHosts, p.SOCKS.BlockHosts)
+	dst.SOCKSBlockCIDRs = overlayStringSlice(dst.SOCKSBlockCIDRs, p.SOCKS.BlockCIDRs)
 	dst.DNSServer = overlayString(dst.DNSServer, p.Net.DNS)
 	dst.SOCKSProxyAddr = overlayString(dst.SOCKSProxyAddr, p.SOCKS.ProxyAddr)
 	dst.SOCKSProxyPort = overlayInt(dst.SOCKSProxyPort, p.SOCKS.ProxyPort)
@@ -374,6 +380,13 @@ func pickIntSlice(cli, yamlVal []int) []int {
 	return append([]int(nil), yamlVal...)
 }
 
+func pickStringSlice(cli, yamlVal []string) []string {
+	if len(cli) != 0 {
+		return append([]string(nil), cli...)
+	}
+	return append([]string(nil), yamlVal...)
+}
+
 func overlayString(base, override string) string {
 	if override != "" {
 		return override
@@ -393,4 +406,11 @@ func overlayIntSlice(base, override []int) []int {
 		return append([]int(nil), override...)
 	}
 	return append([]int(nil), base...)
+}
+
+func overlayStringSlice(base, override []string) []string {
+	if len(override) != 0 {
+		return append([]string(nil), override...)
+	}
+	return append([]string(nil), base...)
 }
