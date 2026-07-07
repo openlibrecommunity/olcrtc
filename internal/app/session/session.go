@@ -52,7 +52,11 @@ const (
 	defaultSEIAckTimeoutMS = 2000
 )
 
-var sessionRestartDelay = 2 * time.Second //nolint:gochecknoglobals // tests shorten lifecycle rotation delay
+var (
+	sessionRestartDelay = 2 * time.Second //nolint:gochecknoglobals // tests shorten lifecycle rotation delay
+	runServer           = server.Run      //nolint:gochecknoglobals // tests replace long-running runners
+	runClientWithReady  = client.RunWithReady
+)
 
 var (
 	// ErrRoomIDRequired indicates that a room id is required for the selected carrier.
@@ -597,6 +601,13 @@ func isLoopbackListenHost(host string) bool {
 
 // Run starts the configured mode.
 func Run(ctx context.Context, cfg Config) error {
+	return RunWithReady(ctx, cfg, nil)
+}
+
+// RunWithReady starts the configured mode and invokes onReady when cnc has
+// established its session and local SOCKS listener. The callback is ignored for
+// server mode.
+func RunWithReady(ctx context.Context, cfg Config, onReady func()) error {
 	cfg = ApplyTransportDefaults(cfg)
 	cfg = ApplyLivenessDefaults(cfg)
 	configureDefaultResolver(cfg.DNSServer)
@@ -615,7 +626,7 @@ func Run(ctx context.Context, cfg Config) error {
 	}
 
 	run := func(ctx context.Context) error {
-		return runOnce(ctx, cfg, roomURL, liveness, traffic)
+		return runOnce(ctx, cfg, roomURL, liveness, traffic, onReady)
 	}
 	if maxDuration > 0 {
 		return runWithSessionRotation(ctx, maxDuration, run)
@@ -642,11 +653,12 @@ func runOnce(
 	roomURL string,
 	liveness control.Config,
 	traffic transport.TrafficConfig,
+	onReady func(),
 ) error {
 	opts := buildTransportOptions(cfg)
 	switch cfg.Mode {
 	case modeSRV:
-		if err := server.Run(ctx, server.Config{
+		if err := runServer(ctx, server.Config{
 			Transport:        cfg.Transport,
 			Carrier:          cfg.Auth,
 			RoomURL:          roomURL,
@@ -678,7 +690,7 @@ func runOnce(
 		}
 		return nil
 	case modeCNC:
-		if err := client.Run(ctx, client.Config{
+		if err := runClientWithReady(ctx, client.Config{
 			Transport:        cfg.Transport,
 			Carrier:          cfg.Auth,
 			RoomURL:          roomURL,
@@ -695,7 +707,7 @@ func runOnce(
 			AuthToken:        cfg.AuthToken,
 			Liveness:         liveness,
 			Traffic:          traffic,
-		}); err != nil {
+		}, onReady); err != nil {
 			return fmt.Errorf("client: %w", err)
 		}
 		return nil
