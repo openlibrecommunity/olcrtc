@@ -4,7 +4,7 @@
 //
 // Quick reference:
 //
-//	mage check          # build + vet + lint + unit tests (pre-commit)
+//	mage check          # build + vet + lint + secrets + unit tests (pre-commit)
 //	mage all            # full pre-merge pipeline (check + e2e smoke matrix)
 //	mage nightly        # everything including stress matrix (~6h)
 //
@@ -67,10 +67,10 @@ func Help() error {
 	return sh.RunV("mage", "-l")
 }
 
-// Check runs the fast pre-commit pipeline: build + vet + lint + unit tests.
+// Check runs the fast pre-commit pipeline: build + vet + lint + secrets + unit tests.
 // Use this before every commit.
 func Check() {
-	mg.SerialDeps(Build, Vet, Lint, TestFull)
+	mg.SerialDeps(Build, Vet, Lint, Secrets, TestFull)
 }
 
 // All runs the full pre-merge pipeline: Check + the real-provider smoke
@@ -162,6 +162,11 @@ func Lint() error {
 		return fmt.Errorf("golangci-lint not found, install it:\n  go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest")
 	}
 	return sh.RunV("golangci-lint", "run", "./...")
+}
+
+// Secrets scans the repository for committed secrets, local paths and runtime artifact references.
+func Secrets() error {
+	return sh.RunV("script/secrets-check.sh")
 }
 
 // Tidy runs go mod tidy and verifies modules.

@@ -1,0 +1,21 @@
+title = "olcrtc gitleaks config"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "documented placeholder keys and deterministic test vectors"
+regexTarget = "match"
+paths = [
+  '''(^|/)[.]git/''',
+  '''(^|/)[.]worktrees/''',
+  '''^build/''',
+]
+regexes = [
+  '''00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff''',
+  '''aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa''',
+  '''bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb''',
+  '''d823fa01cb3e0609b67322f7cf984c4ee2e4ce2e294936fc24ef38c9e59f4799''',
+  '''d823fa01cb3e0609b67322f7cf984c4ee2e294936fc24ef38c9e59f4799[.][.][.]''',
+  '''REPLACE_ME_WITH_64_HEX_CHARS''',
+]
