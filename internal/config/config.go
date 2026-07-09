@@ -17,6 +17,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/openlibrecommunity/olcrtc/internal/app/session"
+	"github.com/openlibrecommunity/olcrtc/internal/transport"
 	"gopkg.in/yaml.v3"
 )
 
@@ -49,8 +50,29 @@ type File struct {
 	Gen       Gen       `yaml:"gen"`
 	Profiles  []Profile `yaml:"profiles"`
 	Failover  Failover  `yaml:"failover"`
+	Paths     Paths     `yaml:"paths"`
 	Data      string    `yaml:"data"`
 	Debug     bool      `yaml:"debug"`
+}
+
+// Paths configures multipath carrier bonding: the tunnel is split across every
+// entry in List and the carriers are aggregated into one logical link. When
+// List is empty the top-level single room/channel/transport is used as a lone
+// path (legacy behaviour, fully backward compatible).
+type Paths struct {
+	// Mode selects the path-selection strategy. "manual" (default) uses List
+	// verbatim. "smart" is reserved for automatic path discovery and is not yet
+	// implemented (rejected at validation).
+	Mode string      `yaml:"mode"`
+	List []PathEntry `yaml:"list"`
+}
+
+// PathEntry is one carrier path in a multipath bond. Empty fields inherit the
+// top-level room/channel/transport so a path can override only what it needs.
+type PathEntry struct {
+	Room      string `yaml:"room"`
+	Channel   string `yaml:"channel"`
+	Transport string `yaml:"transport"`
 }
 
 // Profile is a failover entry that overrides top-level runtime fields.
@@ -291,7 +313,34 @@ func Apply(dst session.Config, f File) session.Config {
 	dst.TrafficMinDelay = pickString(dst.TrafficMinDelay, f.Traffic.MinDelay)
 	dst.TrafficMaxDelay = pickString(dst.TrafficMaxDelay, f.Traffic.MaxDelay)
 	dst.Amount = pickInt(dst.Amount, f.Gen.Amount)
+	dst.PathsMode = pickString(dst.PathsMode, f.Paths.Mode)
+	applyPaths(&dst, f)
 	return dst
+}
+
+// applyPaths maps the YAML paths.list onto dst.Paths. Each entry inherits the
+// already-resolved top-level room/channel/transport for any field it leaves
+// empty, so a path may override only what differs. When a paths list is present
+// but the top-level room/channel/transport were not set, they are seeded from
+// the first path so that the existing single-carrier validation (which checks
+// the top-level fields) still applies. paths.list, when present, takes
+// precedence over the single-carrier fields for the actual link bring-up.
+func applyPaths(dst *session.Config, f File) {
+	if len(dst.Paths) > 0 || len(f.Paths.List) == 0 {
+		return
+	}
+	specs := make([]transport.PathSpec, 0, len(f.Paths.List))
+	for _, e := range f.Paths.List {
+		specs = append(specs, transport.PathSpec{
+			Transport: pickString(e.Transport, dst.Transport),
+			RoomURL:   pickString(e.Room, dst.RoomID),
+			ChannelID: pickString(e.Channel, dst.ChannelID),
+		})
+	}
+	dst.Paths = specs
+	dst.RoomID = pickString(dst.RoomID, specs[0].RoomURL)
+	dst.ChannelID = pickString(dst.ChannelID, specs[0].ChannelID)
+	dst.Transport = pickString(dst.Transport, specs[0].Transport)
 }
 
 // ApplyProfile overlays a failover profile onto an already-applied base config.

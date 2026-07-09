@@ -70,6 +70,11 @@ var (
 	ErrUnsupportedCarrier = errors.New("unsupported carrier")
 	// ErrUnsupportedTransport indicates that transport is not registered.
 	ErrUnsupportedTransport = errors.New("unsupported transport")
+	// ErrPathsModeUnsupported indicates an unknown or not-yet-implemented paths.mode.
+	ErrPathsModeUnsupported = errors.New(
+		"unsupported paths.mode (use manual; smart is not implemented yet)")
+	// ErrPathTransportUnsupported indicates that a path references an unregistered transport.
+	ErrPathTransportUnsupported = errors.New("unsupported transport in paths.list")
 
 	// ErrTransportRequired indicates that transport is not provided.
 	ErrTransportRequired = errors.New(
@@ -203,6 +208,15 @@ type Config struct {
 	TrafficMinDelay       string
 	TrafficMaxDelay       string
 	Amount                int
+
+	// Paths, when it has more than one entry, enables multipath carrier
+	// bonding: the client dials one carrier per PathSpec and the server brings
+	// up a matching carrier per room, all aggregated into a single tunnel. A
+	// single entry (or none) keeps the legacy one-carrier behaviour.
+	Paths []transport.PathSpec
+	// PathsMode selects the path strategy: "" / "manual" use Paths verbatim;
+	// "smart" is reserved and rejected by Validate.
+	PathsMode string
 }
 
 // RegisterDefaults registers built-in carriers and transports.
@@ -334,6 +348,9 @@ func Validate(cfg Config) error {
 	if err := validateTransportRegistration(cfg); err != nil {
 		return err
 	}
+	if err := validatePaths(cfg); err != nil {
+		return err
+	}
 	if err := validateCommon(cfg); err != nil {
 		return err
 	}
@@ -377,6 +394,25 @@ func validateTransportRegistration(cfg Config) error {
 	}
 	if !slices.Contains(transport.Available(), cfg.Transport) {
 		return fmt.Errorf("%w: %s (available: %v)", ErrUnsupportedTransport, cfg.Transport, transport.Available())
+	}
+	return nil
+}
+
+// validatePaths checks the multipath configuration: only "manual" (or empty)
+// mode is implemented, and every path must reference a registered transport.
+func validatePaths(cfg Config) error {
+	switch cfg.PathsMode {
+	case "", "manual":
+	case "smart":
+		return ErrPathsModeUnsupported
+	default:
+		return fmt.Errorf("%w: %s", ErrPathsModeUnsupported, cfg.PathsMode)
+	}
+	for i, ps := range cfg.Paths {
+		if ps.Transport == "" || !slices.Contains(transport.Available(), ps.Transport) {
+			return fmt.Errorf("%w: paths[%d]=%q (available: %v)",
+				ErrPathTransportUnsupported, i, ps.Transport, transport.Available())
+		}
 	}
 	return nil
 }
@@ -664,6 +700,8 @@ func runOnce(
 			AuthToken:        cfg.AuthToken,
 			Liveness:         liveness,
 			Traffic:          traffic,
+			Paths:            cfg.Paths,
+			EnableMultipath:  len(cfg.Paths) > 1,
 			OnSessionOpen: func(sessionID, deviceID string, claims map[string]any) {
 				logger.Infof("session opened: id=%s device=%s claims=%v", sessionID, deviceID, claims)
 			},
@@ -695,6 +733,7 @@ func runOnce(
 			AuthToken:        cfg.AuthToken,
 			Liveness:         liveness,
 			Traffic:          traffic,
+			Paths:            cfg.Paths,
 		}); err != nil {
 			return fmt.Errorf("client: %w", err)
 		}

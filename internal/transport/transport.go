@@ -108,6 +108,17 @@ type TrafficConfig struct {
 	MaxDelay       time.Duration
 }
 
+// PathSpec identifies a single carrier "path" for multipath bonding: which
+// transport to use and which room/channel to join. A multipath deployment
+// dials one carrier per PathSpec and aggregates them into a single logical
+// tunnel (see internal/multipath.Bond). Fields left empty are expected to be
+// filled from the top-level single-carrier configuration by the config layer.
+type PathSpec struct {
+	Transport string
+	RoomURL   string
+	ChannelID string
+}
+
 // Config holds common transport configuration applicable to every transport.
 type Config struct {
 	// Carrier is the auth-provider name; engine/URL/token are resolved through it.

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 
 	"github.com/openlibrecommunity/olcrtc/internal/app/session"
@@ -107,7 +108,7 @@ func requireAppliedConfig(t *testing.T, got session.Config) {
 		TrafficMaxDelay:       "30ms",
 		Amount:                3,
 	}
-	if got != want {
+	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("Apply produced wrong config: %+v, want %+v", got, want)
 	}
 }
