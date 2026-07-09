@@ -52,9 +52,9 @@ var (
 
 // Client handles local SOCKS5 connections and tunnels them to the server.
 type Client struct {
-	ln          transport.Transport
-	cipher      *crypto.Cipher
-	conn        *muxconn.Conn
+	ln     transport.Transport
+	cipher *crypto.Cipher
+	conn   *muxconn.Conn
 	// controlConn is a separate muxconn wired to the transport's control-plane
 	// channel (transport.ControlPlane). When non-nil, the smux control session
 	// runs over it instead of the bulk data conn, eliminating head-of-line
@@ -338,24 +338,26 @@ func (c *Client) dialBond(
 			Traffic:             cfg.Traffic,
 		})
 		if err != nil {
-			_ = bond.Close()
-			return nil, fmt.Errorf("failed to create path %d (%s): %w", i, ps.Transport, err)
+			// Soft degradation: a single path failing to construct (e.g. a
+			// guest-register TLS timeout on one room) must not sink the whole
+			// client. Log it and carry on; the bond runs on whatever paths do
+			// come up. Only a total wipe-out (no path constructed at all) is
+			// fatal, checked after the loop.
+			logger.Warnf("multipath: skipping path %d (%s): create failed: %v", i, ps.Transport, err)
+			continue
 		}
 		bond.AddPath(tr, idx)
 		pathTrs = append(pathTrs, tr)
 	}
 
-	bond.SetEndedCallback(func(reason string) {
-		logger.Infof("Client bond reported all paths ended: %s", reason)
-		cancel()
-	})
+	if len(pathTrs) == 0 {
+		_ = bond.Close()
+		return nil, fmt.Errorf("multipath: no path could be constructed from %d configured", len(cfg.Paths))
+	}
+
+	// SetShouldReconnect must be installed before Connect so every path adopts
+	// the reconnect policy for its own carrier drops from the outset.
 	bond.SetShouldReconnect(func() bool { return ctx.Err() == nil })
-	bond.SetReconnectCallback(func() {
-		if ctx.Err() != nil {
-			return
-		}
-		c.handleReconnect(ctx, cfg, cancel, "carrier")
-	})
 
 	if err := bond.Connect(ctx); err != nil {
 		_ = bond.Close()
@@ -369,14 +371,57 @@ func (c *Client) dialBond(
 	// session up and address us back; WaitForPeer unblocks on that first reply.
 	// Without it the client's handshake could race ahead of the server bridge
 	// being ready. Non-peer paths return immediately (PeerReadyTransport unset).
+	peered := 0
 	for i, tr := range pathTrs {
 		if err := waitForPeer(ctx, tr); err != nil {
-			_ = bond.Close()
-			return nil, fmt.Errorf("path %d wait for peer: %w", i, err)
+			// Soft degradation: a path whose peer never appears is left
+			// registered but stays CanSend()==false, so the bond scheduler
+			// simply never picks it - it is inert, not fatal. Proceed as long
+			// as at least one path did reach its peer; only zero peers is fatal.
+			logger.Warnf("multipath: path %d wait for peer failed, skipping this path: %v", i, err)
+			continue
 		}
+		peered++
+	}
+	if peered == 0 {
+		_ = bond.Close()
+		return nil, fmt.Errorf("multipath: no path reached its peer out of %d", len(pathTrs))
 	}
 
-	logger.Infof("multipath: client bond up with %d paths", bond.NumPaths())
+	logger.Infof("multipath: client bond up with %d/%d paths peered", peered, len(pathTrs))
+
+	// Install the bond-level lifecycle callbacks only NOW, after the bond is up
+	// and its first alive-path transition has already been consumed by Connect
+	// (which primed the bond's wasAlive baseline to true with no callback set).
+	//
+	// This is the crux of the multipath client fix. Bond.checkAliveTransition
+	// fires reconnectCb on every CanSend false->true edge - including the very
+	// first one, when the initial path latches during Connect. A carrier path
+	// (vp8channel) only reports CanSend==true once its peer has latched, so the
+	// bond's first alive edge coincides with normal bring-up of the last path,
+	// NOT with a reconnect. If reconnectCb were installed before Connect (as it
+	// used to be), that initial edge would call handleReconnect and tear down a
+	// smux session that does not even exist yet (c.ln/c.conn are set later in
+	// bringUpLink), killing the whole client the moment the second path latched.
+	//
+	// By installing the callbacks after Connect+waitForPeer, per-carrier
+	// reconnects are absorbed by the bond: a single path dropping and recovering
+	// keeps CanSend true throughout (the other path stays alive), so no bond
+	// transition fires and the smux session survives untouched. A full session
+	// teardown+re-handshake happens ONLY on a genuine bond-wide recovery - all
+	// paths died (endedCb) and then a path came back (reconnectCb) - matching the
+	// single-carrier semantics where reconnect means real re-establishment.
+	bond.SetEndedCallback(func(reason string) {
+		logger.Infof("Client bond reported all paths ended: %s", reason)
+		cancel()
+	})
+	bond.SetReconnectCallback(func() {
+		if ctx.Err() != nil {
+			return
+		}
+		c.handleReconnect(ctx, cfg, cancel, "carrier")
+	})
+
 	// Expose the bond as a control-capable carrier when every path carries an
 	// isolated control plane, so bringUpLink's muxconn.NewControl builds a
 	// dedicated control smux session over the bond (handshake+liveness ride
