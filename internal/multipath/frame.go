@@ -87,6 +87,25 @@ func decodeHello(raw []byte) (helloFrame, error) {
 	return f, nil
 }
 
+// ParsePathHello attempts to decode raw as a PATH_HELLO frame. It reports
+// ok=false (with zero values) for any input that is not a well-formed
+// PATH_HELLO, so a server-side bond registry can cheaply classify a carrier's
+// first message: ok=true means the carrier announced itself as path idx of
+// bond id (out of num paths) and should be grouped into a Bond; ok=false means
+// the frame is something else (e.g. an encrypted legacy smux frame) and the
+// caller should fall back to non-bonded handling. The exact-length check keeps
+// the false-positive rate against random/encrypted first frames negligible.
+func ParsePathHello(raw []byte) (id [16]byte, idx, num uint16, ok bool) {
+	if len(raw) != helloFrameSize || frameType(raw[0]) != frameTypeHello {
+		return id, 0, 0, false
+	}
+	f, err := decodeHello(raw)
+	if err != nil {
+		return id, 0, 0, false
+	}
+	return f.bondID, f.pathIndex, f.numPaths, true
+}
+
 // encodeData serialises a DATA frame around payload. The returned slice
 // owns a fresh backing array; payload is copied into it.
 func encodeData(seq uint64, payload []byte) []byte {
