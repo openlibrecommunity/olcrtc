@@ -81,8 +81,15 @@ func (s *Server) removeBond(id [16]byte) {
 // s.session exactly as it does for a lone carrier). When every path of the
 // bond dies, Bond fires its ended callback and we tear the run down.
 func (s *Server) startBondSession(be *bondEntry) {
-	conn := muxconn.New(be.bond, s.cipher)
-	sess, err := smux.Server(conn, dataSmuxConfig(be.bond))
+	// AsCarrier returns a control-capable wrapper only when every path of the
+	// bond exposes an isolated control plane (vp8channel); otherwise the bare
+	// bond, for which muxconn.NewControl below returns nil and the handshake
+	// stays inline on the data session (serveSingle drives it). Paths are
+	// homogeneous, so classifying on the first path is sound.
+	carrier := multipath.AsCarrier(be.bond)
+
+	conn := muxconn.New(carrier, s.cipher)
+	sess, err := smux.Server(conn, dataSmuxConfig(carrier))
 	if err != nil {
 		logger.Warnf("multipath: smux server init failed for bond %x: %v", be.id, err)
 		_ = conn.Close()
@@ -97,15 +104,37 @@ func (s *Server) startBondSession(be *bondEntry) {
 		}
 	})
 
+	// When the bond exposes an isolated control plane, build a dedicated
+	// control smux session over it and launch the handshake acceptor - mirror
+	// of installSession (server.go). serveSingle then sees s.controlConn != nil
+	// and spin-waits for this goroutine instead of driving the handshake on the
+	// data session, so handshake+liveness ride the priority control channel and
+	// do not head-of-line block behind bulk data.
+	controlConn := muxconn.NewControl(carrier, s.cipher)
+	var ctrlSess *smux.Session
+	if controlConn != nil {
+		controlSess, cerr := smux.Server(controlConn, controlSmuxConfig(linkMaxPayload(carrier)))
+		if cerr != nil {
+			logger.Warnf("multipath: control smux server init failed for bond %x: %v", be.id, cerr)
+			_ = controlConn.Close()
+			controlConn = nil
+		} else {
+			ctrlSess = controlSess
+			go s.acceptHandshake(s.baseCtx, controlSess)
+		}
+	}
+
 	s.bondMu.Lock()
 	be.started = true
 	s.bondMu.Unlock()
 
 	s.sessMu.Lock()
 	s.conn = conn
+	s.controlConn = controlConn
+	s.controlSess = ctrlSess
 	s.session = sess
 	s.sessMu.Unlock()
-	logger.Infof("multipath: bond %x session started", be.id)
+	logger.Infof("multipath: bond %x session started (control=%t)", be.id, ctrlSess != nil)
 }
 
 // routeBondFrame is the multipath data path for a single carrier tr: it
