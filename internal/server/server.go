@@ -122,6 +122,10 @@ type Server struct {
 	// that every frame is forwarded through it. onData for a given carrier is
 	// single-producer, so the first-frame classification needs no extra lock.
 	bondRouter atomic.Pointer[func([]byte)]
+	// carriers holds every carrier brought up by bringUpMultipath so shutdown
+	// can close them all. Carriers that joined a bond are also closed via
+	// bond.Close (Close is idempotent); this covers any that never did.
+	carriers []transport.Transport
 }
 
 // peerStat holds the per-session info needed to report the live peer count
@@ -171,6 +175,13 @@ type Config struct {
 	AuthToken        string
 	Liveness         control.Config
 	Traffic          transport.TrafficConfig
+
+	// Paths, when it has more than one entry, makes the server bring up one
+	// carrier per PathSpec (each in its own room/channel) instead of a single
+	// carrier. Every carrier's first frame is read as a multipath PATH_HELLO and
+	// the carriers sharing a bond id are aggregated into one session. A single
+	// entry (or none) keeps the legacy single-carrier behaviour.
+	Paths []transport.PathSpec
 
 	// EnableMultipath makes the server treat its incoming carrier as a
 	// multipath bond path: the first frame is read as a multipath PATH_HELLO
@@ -315,6 +326,9 @@ func (s *Server) bringUpLink(
 	cancel context.CancelFunc,
 ) error {
 	s.baseCtx = ctx
+	if len(cfg.Paths) > 1 {
+		return s.bringUpMultipath(ctx, cfg, cancel)
+	}
 	ln, err := transport.New(ctx, cfg.Transport, transport.Config{
 		Carrier:    cfg.Carrier,
 		RoomURL:    cfg.RoomURL,
@@ -390,6 +404,91 @@ func (s *Server) bringUpLink(
 		defer s.wg.Done()
 		ln.WatchConnection(ctx)
 	}()
+	return nil
+}
+
+// bringUpMultipath brings up one carrier per configured path and wires each
+// into the bond registry. Every carrier's frames are classified independently
+// (each gets its own first-frame router); carriers announcing the same bond id
+// are aggregated into a single session by the registry (see bondregistry.go).
+// Because the aggregated session runs over the Bond (which the registry builds
+// on first PATH_HELLO), serveSingle drives the handshake and accept loop over
+// s.session exactly as for a lone carrier. This path is used only for
+// non-peer-routing, non-control-plane transports; peer/control transports are
+// not supported for multipath and should be configured as a single carrier.
+func (s *Server) bringUpMultipath(
+	ctx context.Context,
+	cfg Config,
+	cancel context.CancelFunc,
+) error {
+	s.multipath = true
+	s.bondCancel = cancel
+	s.bonds = make(map[[16]byte]*bondEntry)
+
+	carriers := make([]transport.Transport, 0, len(cfg.Paths))
+	for i, ps := range cfg.Paths {
+		var router atomic.Pointer[func([]byte)]
+		// carrier is assigned right after transport.New below; it is captured by
+		// reference so the OnData closure can pass the exact transport that
+		// received a frame to the bond registry. Data only starts flowing after
+		// Connect (called after this loop), by which point carrier is set.
+		var carrier transport.Transport
+		onData := func(data []byte) {
+			s.routeBondFrame(carrier, &router, data, func([]byte) {
+				logger.Warnf("multipath: carrier expected PATH_HELLO but got a non-bond frame; " +
+					"dropping this carrier's stream (configure this carrier as a single path if it is a legacy client)")
+				drop := func([]byte) {}
+				router.Store(&drop)
+			})
+		}
+		tr, err := transport.New(ctx, ps.Transport, transport.Config{
+			Carrier:   cfg.Carrier,
+			RoomURL:   ps.RoomURL,
+			Engine:    cfg.Engine,
+			URL:       cfg.URL,
+			Token:     cfg.Token,
+			AuthToken: cfg.AuthToken,
+			ChannelID: ps.ChannelID,
+			DeviceID:  "",
+			Name:      names.Generate(),
+			OnData:    onData,
+			DNSServer: s.dnsServer,
+			ProxyAddr: s.socksProxyAddr,
+			ProxyPort: s.socksProxyPort,
+			Options:   cfg.TransportOptions,
+			Traffic:   cfg.Traffic,
+		})
+		if err != nil {
+			return fmt.Errorf("failed to create multipath carrier %d (%s): %w", i, ps.Transport, err)
+		}
+		carrier = tr
+		// Keep each carrier reconnecting on its own; the bond takes over its
+		// ended/reconnect callbacks once the carrier joins a bond (AddPath).
+		tr.SetShouldReconnect(func() bool { return ctx.Err() == nil })
+		carriers = append(carriers, tr)
+	}
+	s.ln = carriers[0]
+	s.carriers = carriers
+
+	logger.Infof("Connecting %d multipath carriers transport(s) ...", len(carriers))
+	connected := 0
+	for i, tr := range carriers {
+		if err := tr.Connect(ctx); err != nil {
+			logger.Warnf("multipath carrier %d failed to connect: %v", i, err)
+			continue
+		}
+		connected++
+		s.wg.Add(1)
+		go func(t transport.Transport) {
+			defer s.wg.Done()
+			t.WatchConnection(ctx)
+		}(tr)
+	}
+	if connected == 0 {
+		return fmt.Errorf("failed to connect any of %d multipath carriers", len(carriers))
+	}
+	logger.Infof("Multipath carriers connected: %d/%d", connected, len(carriers))
+	s.logPeersLine()
 	return nil
 }
 
@@ -716,9 +815,14 @@ func (s *Server) closeSession() {
 	s.bondMu.Lock()
 	bonds := s.bonds
 	s.bonds = make(map[[16]byte]*bondEntry)
+	carriers := s.carriers
+	s.carriers = nil
 	s.bondMu.Unlock()
 	for _, be := range bonds {
 		_ = be.bond.Close()
+	}
+	for _, tr := range carriers {
+		_ = tr.Close()
 	}
 }
 

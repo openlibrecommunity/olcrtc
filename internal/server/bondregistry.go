@@ -1,6 +1,8 @@
 package server
 
 import (
+	"sync/atomic"
+
 	"github.com/openlibrecommunity/olcrtc/internal/logger"
 	"github.com/openlibrecommunity/olcrtc/internal/multipath"
 	"github.com/openlibrecommunity/olcrtc/internal/muxconn"
@@ -106,24 +108,51 @@ func (s *Server) startBondSession(be *bondEntry) {
 	logger.Infof("multipath: bond %x session started", be.id)
 }
 
-// routeCarrierFrame is the multipath data path: it classifies the carrier's
-// first frame and then forwards every frame through the sink that
-// classification selected.
+// routeBondFrame is the multipath data path for a single carrier tr: it
+// classifies that carrier's first frame and then forwards every frame through
+// the sink that classification selected. router is that carrier's own
+// first-frame classification cell (each carrier keeps its own, so N carriers
+// classify independently).
 //
 // The first PATH_HELLO tells us which bond this carrier belongs to; from then
 // on frames are handed to that bond's path sink (which itself expects to
 // receive the PATH_HELLO first, so the classifying frame is forwarded too and
-// never lost). A first frame that is not a PATH_HELLO means a legacy,
-// non-bonded client: we fall back to a plain single-carrier session over the
-// raw carrier so old clients keep working with the flag enabled.
-func (s *Server) routeCarrierFrame(data []byte) {
-	if r := s.bondRouter.Load(); r != nil {
+// never lost). A first frame that is not a PATH_HELLO is handled by onNotHello,
+// which the caller supplies (legacy single-carrier fallback for the lone
+// carrier; a drop sink for explicit multi-carrier deployments).
+func (s *Server) routeBondFrame(
+	tr transport.Transport,
+	router *atomic.Pointer[func([]byte)],
+	data []byte,
+	onNotHello func([]byte),
+) {
+	if r := router.Load(); r != nil {
 		(*r)(data)
 		return
 	}
 
 	id, idx, _, ok := multipath.ParsePathHello(data)
 	if !ok {
+		onNotHello(data)
+		return
+	}
+
+	be, created := s.getOrCreateBond(id)
+	s.addBondPath(be, tr, idx)
+	if created {
+		s.startBondSession(be)
+	}
+	sink := be.bond.PathOnData(idx)
+	router.Store(&sink)
+	sink(data)
+}
+
+// routeCarrierFrame is the single-carrier multipath entry point (s.onData). It
+// classifies s.ln's frames and, for a first frame that is not a PATH_HELLO,
+// falls back to a plain single-carrier session over the raw carrier so a legacy
+// (non-bonded) client keeps working with EnableMultipath set.
+func (s *Server) routeCarrierFrame(data []byte) {
+	s.routeBondFrame(s.ln, &s.bondRouter, data, func(d []byte) {
 		s.installSession()
 		legacy := func(b []byte) {
 			s.sessMu.RLock()
@@ -134,16 +163,6 @@ func (s *Server) routeCarrierFrame(data []byte) {
 			}
 		}
 		s.bondRouter.Store(&legacy)
-		legacy(data)
-		return
-	}
-
-	be, created := s.getOrCreateBond(id)
-	s.addBondPath(be, s.ln, idx)
-	if created {
-		s.startBondSession(be)
-	}
-	sink := be.bond.PathOnData(idx)
-	s.bondRouter.Store(&sink)
-	sink(data)
+		legacy(d)
+	})
 }
