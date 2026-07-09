@@ -64,7 +64,7 @@ func (b *Bond) controlKind() controlKind {
 	}
 	ctrl := 0
 	for _, p := range b.paths {
-		if p.control != nil {
+		if p.hasControl() {
 			ctrl++
 		}
 	}
@@ -155,7 +155,7 @@ func (b *Bond) controlSend(data []byte) error {
 		if p == nil {
 			break
 		}
-		if err := p.control.ControlSend(data); err != nil {
+		if err := p.sendControl(data); err != nil {
 			lastErr = err
 			b.clearControlSelection(p.index)
 			continue

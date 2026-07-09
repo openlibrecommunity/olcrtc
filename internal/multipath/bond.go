@@ -282,6 +282,52 @@ func (b *Bond) AddPath(tr transport.Transport, pathIndex uint16) {
 	}
 }
 
+// AddPeerPath registers a peer-routing carrier pt (addressed by peerID) as path
+// pathIndex (Phase 5b). Unlike AddPath it does NOT install ended/reconnect
+// callbacks on the carrier: the carrier is shared across bonds and owned by the
+// server, so per-client death is detected by the bond's control-liveness loop,
+// not by a carrier callback that a second bond would clobber. Inbound frames for
+// this path are demultiplexed by the server (by peerID) and fed via
+// PathOnData/ControlIn rather than by the bond subscribing to the carrier.
+func (b *Bond) AddPeerPath(pt transport.PeerTransport, peerID string, pathIndex uint16) {
+	p := newPeerPath(pathIndex, pt, peerID)
+
+	if f := pt.Features(); !f.Reliable || !f.Ordered {
+		logger.Errorf("multipath: peer path %d transport is not Reliable+Ordered "+
+			"(reliable=%t ordered=%t) - unsuitable as a bond path; aggregate stream may corrupt",
+			pathIndex, f.Reliable, f.Ordered)
+	}
+
+	b.mu.Lock()
+	b.paths[pathIndex] = p
+	started := b.started
+	b.mu.Unlock()
+
+	b.manager.OnPathAdded(pathIndex)
+
+	if started {
+		p.markAlive()
+		b.sendHello(p)
+		b.checkAliveTransition()
+	}
+}
+
+// ControlIn feeds one inbound control frame (received by the server for one of
+// this bond's peer paths and demultiplexed by peerID) into the bond's shared
+// control receive sink. Plain (non-peer) paths deliver control frames by
+// subscribing the carrier directly (see setControlOnData); peer paths cannot,
+// because the carrier hands the server a single callback for every peer, so the
+// server calls this instead. Which path a control frame arrived on is
+// irrelevant to delivery: the sink is bond-wide.
+func (b *Bond) ControlIn(data []byte) {
+	b.controlMu.Lock()
+	cb := b.controlOnData
+	b.controlMu.Unlock()
+	if cb != nil {
+		cb(data)
+	}
+}
+
 // orderedPathsLocked returns paths sorted by index. Callers must hold at
 // least a read lock on b.mu.
 func (b *Bond) orderedPathsLocked() []*path {
@@ -775,7 +821,7 @@ func (b *Bond) Close() error {
 
 	var firstErr error
 	for _, p := range paths {
-		if err := p.tr.Close(); err != nil && firstErr == nil {
+		if err := p.closeTransport(); err != nil && firstErr == nil {
 			firstErr = err
 		}
 	}
