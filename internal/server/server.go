@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -103,6 +104,24 @@ type Server struct {
 	health         *runtime.HealthTracker
 	done           chan struct{}
 	doneOnce       sync.Once
+
+	// multipath is set once in bringUpLink (before the carrier connects, so
+	// onData never races it) when the incoming carrier should be treated as a
+	// bond path rather than a standalone session. See bondregistry.go.
+	multipath bool
+	// bondCancel tears the whole run down when a bond reports that every one
+	// of its paths has died (Bond.SetEndedCallback), mirroring the single
+	// carrier's SetEndedCallback(cancel).
+	bondCancel context.CancelFunc
+	// bonds indexes live server-side Bonds by their 16-byte bond id so that N
+	// carriers announcing the same id are aggregated into one session.
+	bonds  map[[16]byte]*bondEntry
+	bondMu sync.Mutex
+	// bondRouter is the classified sink for the carrier's frames. It is nil
+	// until the first frame is seen and classified (bonded vs legacy); after
+	// that every frame is forwarded through it. onData for a given carrier is
+	// single-producer, so the first-frame classification needs no extra lock.
+	bondRouter atomic.Pointer[func([]byte)]
 }
 
 // peerStat holds the per-session info needed to report the live peer count
@@ -152,6 +171,16 @@ type Config struct {
 	AuthToken        string
 	Liveness         control.Config
 	Traffic          transport.TrafficConfig
+
+	// EnableMultipath makes the server treat its incoming carrier as a
+	// multipath bond path: the first frame is read as a multipath PATH_HELLO
+	// to learn the bond id, and N carriers sharing a bond id are aggregated
+	// into a single session (see bondregistry.go). It only takes effect for
+	// non-peer-routing, non-control-plane transports; other modes keep the
+	// legacy "one carrier = one session" behaviour. Carriers that do not
+	// announce a PATH_HELLO fall back to a legacy single session, so old
+	// clients keep working with the flag on.
+	EnableMultipath bool
 
 	// AuthHook is invoked after CLIENT_HELLO to authorize the client and
 	// return a session ID. If nil, every client is admitted with a random UUID.
@@ -312,6 +341,15 @@ func (s *Server) bringUpLink(
 		s.peerLn = peerLn
 	}
 
+	// Multipath bonding only applies to the single-carrier, single-plane path:
+	// peer-routing and control-plane transports keep their existing handshake
+	// wiring untouched. Set before ln.Connect so onData observes it race-free.
+	if s.peerLn == nil && cfg.EnableMultipath && !runtime.IsControlPlane(ln) {
+		s.multipath = true
+		s.bondCancel = cancel
+		s.bonds = make(map[[16]byte]*bondEntry)
+	}
+
 	ln.SetEndedCallback(func(reason string) {
 		logger.Infof("Server link reported conference end: %s", reason)
 		cancel()
@@ -326,7 +364,12 @@ func (s *Server) bringUpLink(
 
 	logger.Infof("Connecting transport=%s carrier=%s ...", cfg.Transport, cfg.Carrier)
 	if s.peerLn == nil {
-		s.installSession()
+		// In multipath mode the data session is built lazily once the first
+		// carrier frame has been classified (routeCarrierFrame), so the
+		// session runs over the Bond rather than over the raw carrier.
+		if !s.multipath {
+			s.installSession()
+		}
 	} else {
 		// Peer-routing mode: installSession is skipped, but we still need to
 		// wire up the control-plane smux session so that liveness ping/pong
@@ -669,6 +712,14 @@ func (s *Server) closeSession() {
 	for _, ps := range peers {
 		s.closePeerSession(ps, "closed")
 	}
+
+	s.bondMu.Lock()
+	bonds := s.bonds
+	s.bonds = make(map[[16]byte]*bondEntry)
+	s.bondMu.Unlock()
+	for _, be := range bonds {
+		_ = be.bond.Close()
+	}
 }
 
 func (s *Server) removePeerSession(peerID, reason string) {
@@ -766,6 +817,10 @@ func notifyControlClose(stream *smux.Stream) {
 }
 
 func (s *Server) onData(data []byte) {
+	if s.multipath {
+		s.routeCarrierFrame(data)
+		return
+	}
 	s.sessMu.RLock()
 	conn := s.conn
 	s.sessMu.RUnlock()
