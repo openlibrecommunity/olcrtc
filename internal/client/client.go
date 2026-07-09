@@ -318,6 +318,7 @@ func (c *Client) dialBond(
 	cancel context.CancelFunc,
 ) (transport.Transport, error) {
 	bond := multipath.NewBond(multipath.NewBondID(), multipath.RoleClient)
+	pathTrs := make([]transport.Transport, 0, len(cfg.Paths))
 	for i, ps := range cfg.Paths {
 		idx := uint16(i) //nolint:gosec // path counts are small, bounded by config
 		tr, err := transport.New(ctx, ps.Transport, transport.Config{
@@ -341,6 +342,7 @@ func (c *Client) dialBond(
 			return nil, fmt.Errorf("failed to create path %d (%s): %w", i, ps.Transport, err)
 		}
 		bond.AddPath(tr, idx)
+		pathTrs = append(pathTrs, tr)
 	}
 
 	bond.SetEndedCallback(func(reason string) {
@@ -359,6 +361,21 @@ func (c *Client) dialBond(
 		_ = bond.Close()
 		return nil, fmt.Errorf("failed to connect bond: %w", err)
 	}
+
+	// For peer-routing carriers (vp8channel), wait per path until the server's
+	// epoch is observed before handing the bond up to the handshake, mirroring
+	// the single-carrier client (bringUpLink -> waitForPeer). Bond.Connect has
+	// already sent each path's PATH_HELLO, so the server can bring the bond
+	// session up and address us back; WaitForPeer unblocks on that first reply.
+	// Without it the client's handshake could race ahead of the server bridge
+	// being ready. Non-peer paths return immediately (PeerReadyTransport unset).
+	for i, tr := range pathTrs {
+		if err := waitForPeer(ctx, tr); err != nil {
+			_ = bond.Close()
+			return nil, fmt.Errorf("path %d wait for peer: %w", i, err)
+		}
+	}
+
 	logger.Infof("multipath: client bond up with %d paths", bond.NumPaths())
 	// Expose the bond as a control-capable carrier when every path carries an
 	// isolated control plane, so bringUpLink's muxconn.NewControl builds a
