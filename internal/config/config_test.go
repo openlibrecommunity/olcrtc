@@ -334,3 +334,37 @@ func TestLoadInvalidUTF8(t *testing.T) {
 		t.Fatalf("Load() error = %v, want invalid UTF-8 error", err)
 	}
 }
+
+func TestLoadAndApplyVP8BrutalKbps(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "olcrtc.yaml")
+	body := `
+vp8:
+  fps: 30
+  batch_size: 64
+  brutal_kbps: 6000
+`
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	f, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if f.VP8.BrutalKbps != 6000 {
+		t.Fatalf("File.VP8.BrutalKbps = %d, want 6000", f.VP8.BrutalKbps)
+	}
+
+	got := Apply(session.Config{}, f)
+	if got.VP8.BrutalKbps != 6000 {
+		t.Fatalf("Apply VP8.BrutalKbps = %d, want 6000", got.VP8.BrutalKbps)
+	}
+}
+
+func TestApplyVP8BrutalKbpsDefaultsOff(t *testing.T) {
+	// Field absent in YAML must yield 0 (feature off), preserving legacy behaviour.
+	got := Apply(session.Config{}, File{VP8: VP8{FPS: 30, BatchSize: 64}})
+	if got.VP8.BrutalKbps != 0 {
+		t.Fatalf("VP8.BrutalKbps = %d, want 0 (off by default)", got.VP8.BrutalKbps)
+	}
+}

@@ -15,6 +15,10 @@ const (
 type Options struct {
 	FPS       int
 	BatchSize int
+	// BrutalKbps enables Hysteria "brutal"-style congestion control (paced send
+	// rate + loss compensation) on the bulk data-KCP session at the given target
+	// in kilobits/sec. 0 disables it entirely (legacy full-window behaviour).
+	BrutalKbps int
 }
 
 // TransportOptions marks Options as belonging to the transport options family.

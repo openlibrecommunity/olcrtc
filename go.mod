@@ -22,6 +22,7 @@ require (
 	golang.org/x/crypto v0.52.0
 	golang.org/x/mobile v0.0.0-20260520154334-0e4426e1883d
 	golang.org/x/sys v0.45.0
+	golang.org/x/time v0.15.0
 	google.golang.org/genproto v0.0.0-20260523011958-0a33c5d7ca68
 	gopkg.in/yaml.v3 v3.0.1
 )
@@ -85,7 +86,6 @@ require (
 	golang.org/x/net v0.55.0 // indirect
 	golang.org/x/sync v0.20.0 // indirect
 	golang.org/x/text v0.37.0 // indirect
-	golang.org/x/time v0.15.0 // indirect
 	golang.org/x/tools v0.45.0 // indirect
 	golang.org/x/xerrors v0.0.0-20240903120638-7835f813f4da // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20260523011958-0a33c5d7ca68 // indirect

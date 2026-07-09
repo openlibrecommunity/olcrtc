@@ -106,6 +106,8 @@ var (
 	ErrVP8FPSRequired = errors.New("vp8 fps required for vp8channel (set vp8.fps)")
 	// ErrVP8BatchSizeRequired indicates that vp8 batch size is required for vp8channel.
 	ErrVP8BatchSizeRequired = errors.New("vp8 batch size required for vp8channel (set vp8.batch_size)")
+	// ErrVP8BrutalKbpsNegative indicates that vp8 brutal_kbps must be non-negative.
+	ErrVP8BrutalKbpsNegative = errors.New("vp8 brutal_kbps must be non-negative (0 disables brutal CC)")
 	// ErrSEIFPSRequired indicates that seichannel fps is required.
 	ErrSEIFPSRequired = errors.New("fps required for seichannel (set sei.fps)")
 	// ErrSEIBatchSizeRequired indicates that seichannel batch size is required.
@@ -166,6 +168,9 @@ type VideoConfig struct {
 type VP8Config struct {
 	FPS       int
 	BatchSize int
+	// BrutalKbps enables Hysteria "brutal" congestion control on the data-KCP
+	// at the given target in kilobits/sec. 0 disables it (legacy behaviour).
+	BrutalKbps int
 }
 
 // SEIConfig holds tunables for the seichannel transport.
@@ -478,6 +483,9 @@ func validateVP8Channel(cfg Config) error {
 	}
 	if cfg.VP8.BatchSize == 0 {
 		return ErrVP8BatchSizeRequired
+	}
+	if cfg.VP8.BrutalKbps < 0 {
+		return ErrVP8BrutalKbpsNegative
 	}
 	return nil
 }

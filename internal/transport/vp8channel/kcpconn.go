@@ -9,6 +9,7 @@ import (
 	"hash/crc32"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -57,6 +58,14 @@ type kcpConn struct {
 	mu        sync.Mutex
 	rDeadline time.Time
 	wDeadline time.Time
+
+	// delivered/dropped count inbound wire packets that reached KCP versus
+	// those lost on the receive side (CRC failure = carrier corruption, or
+	// inbound-queue overflow). They feed the brutal congestion controller's
+	// per-path loss estimate (see kcpRuntime.brutalLoop). Both are monotonic
+	// process-lifetime counters; the controller works on per-interval deltas.
+	delivered atomic.Uint64
+	dropped   atomic.Uint64
 }
 
 // setHeader re-points the outgoing frame header (used to update the dst epoch
@@ -86,19 +95,24 @@ func newKCPConn(out chan<- []byte, inboundCap int, epochHdr [epochHdrLen]byte) *
 // overflow are intentional - KCP will detect the loss via SACK and retransmit.
 func (c *kcpConn) deliver(payload []byte) {
 	if len(payload) < wireCRCLen {
+		c.dropped.Add(1)
 		return
 	}
 	body := payload[:len(payload)-wireCRCLen]
 	want := binary.BigEndian.Uint32(payload[len(payload)-wireCRCLen:])
 	if crc32.Checksum(body, crcTable) != want {
+		c.dropped.Add(1)
 		return
 	}
 	cp := make([]byte, len(body))
 	copy(cp, body)
 	select {
 	case c.in <- cp:
+		c.delivered.Add(1)
 	case <-c.closed:
+		// Session closing: not a loss, do not skew the estimate.
 	default:
+		c.dropped.Add(1)
 	}
 }
 

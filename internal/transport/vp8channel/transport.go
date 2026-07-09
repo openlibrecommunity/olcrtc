@@ -155,6 +155,11 @@ type streamTransport struct {
 	controlKCPOnce  sync.Once
 	frameInterval   time.Duration
 	batchSize       int
+	// brutalBps is the Hysteria "brutal" pacing target in bytes/sec for the
+	// data-KCP session, pre-converted from Options.BrutalKbps. 0 = disabled
+	// (no rate limiter, legacy behaviour). Applied only to data-KCP sessions,
+	// never the control plane.
+	brutalBps int
 
 	// localEpoch is stamped into every outgoing VP8 frame. Explicit
 	// upper-layer resets rotate it so the peer can reset its KCP state too.
@@ -295,8 +300,11 @@ func newStreamTransport(
 		writerDone:      make(chan struct{}),
 		frameInterval:   time.Second / time.Duration(fps),
 		batchSize:       batchSize,
-		bindingToken:    bindingToken(cfg.RoomURL),
-		localEpoch:      randomEpoch(),
+		// Kbps → bytes/sec. Non-negative BrutalKbps is enforced upstream at
+		// config validation; 0 keeps brutalBps 0 and disables pacing.
+		brutalBps:        opts.BrutalKbps * 1000 / 8,
+		bindingToken:     bindingToken(cfg.RoomURL),
+		localEpoch:       randomEpoch(),
 		peers:            make(map[uint32]*kcpRuntime),
 		peerOut:          make(map[uint32]chan []byte),
 		ctrlPeers:        make(map[uint32]*peerControlKCP),
@@ -335,7 +343,7 @@ func (p *streamTransport) Connect(ctx context.Context) error {
 	// would deadlock: muxconn.Write spins on CanSend (which checks kcp!=nil)
 	// and KCP was only started lazily on the first incoming peer frame.
 	p.kcpOnce.Do(func() {
-		rt, err := startKCP(p.outbound, p.onData, p.epochHeader())
+		rt, err := startKCP(p.outbound, p.onData, p.epochHeader(), p.brutalBps)
 		if err != nil {
 			logger.Infof("vp8channel: startKCP failed: %v", err)
 			return
@@ -361,7 +369,8 @@ func (p *streamTransport) Connect(ctx context.Context) error {
 			}
 		}
 		chdr := p.controlEpochHeader()
-		rt, err := startKCP(p.controlOutbound, controlCb, chdr)
+		// Control plane is low-volume; never pace it (brutalBps = 0).
+		rt, err := startKCP(p.controlOutbound, controlCb, chdr, 0)
 		if err != nil {
 			logger.Infof("vp8channel: startControlKCP failed: %v", err)
 			return
@@ -787,6 +796,11 @@ func (w *writerState) drainData() {
 	case frame := <-w.p.outbound:
 		sample := w.p.batchSample(frame)
 		w.idleTicks = 0
+		// Brutal pacing (data-KCP only): block for the sample's byte budget
+		// before emitting. No-op when brutal is disabled. Control frames drained
+		// above are never paced. Slowing the drain lets the outbound queue fill
+		// and back-pressure KCP's send window naturally.
+		w.p.paceData(len(sample))
 		_ = w.writeSample(sample)
 	default:
 		w.idleTicks++
@@ -829,6 +843,19 @@ func (p *streamTransport) writerLoop() {
 
 func (p *streamTransport) batchSample(first []byte) []byte {
 	return p.batchSampleFrom(p.outbound, first)
+}
+
+// paceData applies the single-peer data-KCP's brutal pacer to an n-byte sample
+// about to be written. It is a no-op when brutal is disabled (limiter nil) or
+// the data KCP is not up. Only the data plane calls this; control is never
+// paced.
+func (p *streamTransport) paceData(n int) {
+	p.kcpMu.RLock()
+	rt := p.kcp
+	p.kcpMu.RUnlock()
+	if rt != nil {
+		rt.pace(n)
+	}
 }
 
 // batchSampleFrom coalesces up to batchSize KCP frames drained from src into a
@@ -883,7 +910,7 @@ func (p *streamTransport) restartKCP(epochHdr [epochHdrLen]byte) {
 	if old != nil {
 		old.close()
 	}
-	rt, err := startKCP(p.outbound, p.onData, epochHdr)
+	rt, err := startKCP(p.outbound, p.onData, epochHdr, p.brutalBps)
 	if err != nil {
 		return
 	}
@@ -911,7 +938,7 @@ func (p *streamTransport) restartControlKCPWithHeader(hdr [epochHdrLen]byte) {
 			cb(data)
 		}
 	}
-	rt, err := startKCP(p.controlOutbound, controlCb, hdr)
+	rt, err := startKCP(p.controlOutbound, controlCb, hdr, 0)
 	if err != nil {
 		return
 	}
@@ -1323,7 +1350,7 @@ func (p *streamTransport) getOrCreatePeerKCP(epoch uint32) *kcpRuntime {
 		if p.onPeerData != nil {
 			p.onPeerData(peerID, data)
 		}
-	}, hdr)
+	}, hdr, p.brutalBps)
 	if err != nil {
 		logger.Warnf("vp8channel: startKCP for peer 0x%08x failed: %v", epoch, err)
 		return nil
@@ -1333,7 +1360,7 @@ func (p *streamTransport) getOrCreatePeerKCP(epoch uint32) *kcpRuntime {
 	logger.Infof("vp8channel: peer session created epoch=0x%08x", epoch)
 
 	// Pump outbound frames from this peer's queue into the writer.
-	go p.peerWriterPump(epoch, out)
+	go p.peerWriterPump(rt, out)
 
 	return rt
 }
@@ -1345,7 +1372,7 @@ func (p *streamTransport) getOrCreatePeerKCP(epoch uint32) *kcpRuntime {
 // queued) keeps the per-peer writes interleaved with the keyframe injection
 // below and lets batchSampleFrom coalesce segments into full samples. Stops
 // when the channel is closed or the transport shuts down.
-func (p *streamTransport) peerWriterPump(_ uint32, out chan []byte) {
+func (p *streamTransport) peerWriterPump(rt *kcpRuntime, out chan []byte) {
 	ticker := time.NewTicker(p.frameInterval)
 	defer ticker.Stop()
 
@@ -1377,6 +1404,10 @@ func (p *streamTransport) peerWriterPump(_ uint32, out chan []byte) {
 					return
 				}
 				sample := p.batchSampleFrom(out, frame)
+				// Brutal pacing for this peer's data-KCP (no-op when disabled).
+				// Blocking the pump lets this peer's outbound queue fill and
+				// back-pressure its KCP send window naturally.
+				rt.pace(len(sample))
 				_ = p.writeSampleLocked(sample)
 			default:
 			}
@@ -1481,7 +1512,7 @@ func (p *streamTransport) getOrCreatePeerControlKCP(dataEpoch uint32) *peerContr
 			onPeerCtrl(peerID, data)
 		}
 	}
-	rt, err := startKCP(p.controlOutbound, cb, hdr)
+	rt, err := startKCP(p.controlOutbound, cb, hdr, 0)
 	if err != nil {
 		logger.Warnf("vp8channel: startKCP for peer control 0x%08x failed: %v", dataEpoch, err)
 		return nil

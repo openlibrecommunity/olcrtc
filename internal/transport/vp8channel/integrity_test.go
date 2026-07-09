@@ -69,12 +69,12 @@ func TestKCPDropsCarrierCorruptedPackets(t *testing.T) {
 	b2a := make(chan []byte, 1024)
 	cb, doneB, getRecv := buildReceiver(len(msgs))
 
-	rtA, err := startKCP(a2b, nil, testEpochHdr(1))
+	rtA, err := startKCP(a2b, nil, testEpochHdr(1), 0)
 	if err != nil {
 		t.Fatalf("startKCP A: %v", err)
 	}
 	defer rtA.close()
-	rtB, err := startKCP(b2a, cb, testEpochHdr(2))
+	rtB, err := startKCP(b2a, cb, testEpochHdr(2), 0)
 	if err != nil {
 		t.Fatalf("startKCP B: %v", err)
 	}

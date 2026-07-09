@@ -159,6 +159,11 @@ type Video struct {
 type VP8 struct {
 	FPS       int `yaml:"fps"`
 	BatchSize int `yaml:"batch_size"`
+	// BrutalKbps enables Hysteria "brutal" congestion control (paced send rate
+	// + loss compensation) on the bulk data-KCP at the given target in
+	// kilobits/sec. 0 (default / field absent) disables it, preserving the
+	// legacy full-window behaviour.
+	BrutalKbps int `yaml:"brutal_kbps"`
 }
 
 // SEI tunes the seichannel transport.
@@ -301,6 +306,7 @@ func Apply(dst session.Config, f File) session.Config {
 	dst.Video.TileRS = pickInt(dst.Video.TileRS, f.Video.TileRS)
 	dst.VP8.FPS = pickInt(dst.VP8.FPS, f.VP8.FPS)
 	dst.VP8.BatchSize = pickInt(dst.VP8.BatchSize, f.VP8.BatchSize)
+	dst.VP8.BrutalKbps = pickInt(dst.VP8.BrutalKbps, f.VP8.BrutalKbps)
 	dst.SEI.FPS = pickInt(dst.SEI.FPS, f.SEI.FPS)
 	dst.SEI.BatchSize = pickInt(dst.SEI.BatchSize, f.SEI.BatchSize)
 	dst.SEI.FragmentSize = pickInt(dst.SEI.FragmentSize, f.SEI.FragmentSize)
@@ -376,6 +382,7 @@ func ApplyProfile(base session.Config, p Profile) session.Config {
 	dst.Video.TileRS = overlayInt(dst.Video.TileRS, p.Video.TileRS)
 	dst.VP8.FPS = overlayInt(dst.VP8.FPS, p.VP8.FPS)
 	dst.VP8.BatchSize = overlayInt(dst.VP8.BatchSize, p.VP8.BatchSize)
+	dst.VP8.BrutalKbps = overlayInt(dst.VP8.BrutalKbps, p.VP8.BrutalKbps)
 	dst.SEI.FPS = overlayInt(dst.SEI.FPS, p.SEI.FPS)
 	dst.SEI.BatchSize = overlayInt(dst.SEI.BatchSize, p.SEI.BatchSize)
 	dst.SEI.FragmentSize = overlayInt(dst.SEI.FragmentSize, p.SEI.FragmentSize)
