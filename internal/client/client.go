@@ -20,6 +20,7 @@ import (
 	"github.com/openlibrecommunity/olcrtc/internal/crypto"
 	"github.com/openlibrecommunity/olcrtc/internal/handshake"
 	"github.com/openlibrecommunity/olcrtc/internal/logger"
+	"github.com/openlibrecommunity/olcrtc/internal/multipath"
 	"github.com/openlibrecommunity/olcrtc/internal/muxconn"
 	"github.com/openlibrecommunity/olcrtc/internal/names"
 	"github.com/openlibrecommunity/olcrtc/internal/runtime"
@@ -98,6 +99,13 @@ type Config struct {
 	AuthToken        string
 	Liveness         control.Config
 	Traffic          transport.TrafficConfig
+
+	// Paths, when it has more than one entry, makes the client dial one carrier
+	// per PathSpec and aggregate them into a single multipath bond (each path
+	// joins its own room/channel). One entry (or none) keeps the legacy
+	// single-carrier behaviour, and Transport/RoomURL/ChannelID above are used
+	// instead.
+	Paths []transport.PathSpec
 
 	// DeviceID overrides the persistent client-side device identifier. Leave
 	// empty to derive one from DeviceIDPath (or generate a random one if both
@@ -185,46 +193,11 @@ func (c *Client) bringUpLink(
 	cfg Config,
 	cancel context.CancelFunc,
 ) error {
-	ln, err := transport.New(ctx, cfg.Transport, transport.Config{
-		Carrier:             cfg.Carrier,
-		RoomURL:             cfg.RoomURL,
-		Engine:              cfg.Engine,
-		URL:                 cfg.URL,
-		Token:               cfg.Token,
-		AuthToken:           cfg.AuthToken,
-		ChannelID:           cfg.ChannelID,
-		DeviceID:            c.deviceID,
-		Name:                names.Generate(),
-		OnData:              c.onData,
-		DNSServer:           cfg.DNSServer,
-		RequireTargetedPeer: true,
-		Options:             cfg.TransportOptions,
-		Traffic:             cfg.Traffic,
-	})
+	ln, err := c.dialCarrier(ctx, cfg, cancel)
 	if err != nil {
-		return fmt.Errorf("failed to create link: %w", err)
+		return err
 	}
 	c.ln = ln
-
-	ln.SetEndedCallback(func(reason string) {
-		logger.Infof("Client link reported conference end: %s", reason)
-		cancel()
-	})
-	ln.SetShouldReconnect(func() bool { return ctx.Err() == nil })
-	ln.SetReconnectCallback(func() {
-		if ctx.Err() != nil {
-			return
-		}
-		// Carrier callback fires after the link is back up. If handshake
-		// still fails it usually means the server hasn't completed its
-		// own reinstall yet - keep the listener up and wait for either
-		// another callback or a future liveness loss to re-trigger.
-		c.handleReconnect(ctx, cfg, cancel, "carrier")
-	})
-
-	if err := ln.Connect(ctx); err != nil {
-		return fmt.Errorf("failed to connect link: %w", err)
-	}
 
 	if err := waitForPeer(ctx, ln); err != nil {
 		return err
@@ -232,6 +205,14 @@ func (c *Client) bringUpLink(
 
 	c.conn = muxconn.New(ln, c.cipher)
 	c.controlConn = muxconn.NewControl(ln, c.cipher)
+
+	// For a multipath bond the aggregate, reassembled byte stream is delivered
+	// through Bond.SetOnData rather than a per-carrier OnData. Route it to
+	// c.onData, which always pushes into the current c.conn (surviving
+	// reconnect-time swaps just like the single-carrier path).
+	if bond, ok := ln.(*multipath.Bond); ok {
+		bond.SetOnData(c.onData)
+	}
 
 	sess, controlSess, err := buildSmuxClient(ln, c.conn, c.controlConn)
 	if err != nil {
@@ -267,6 +248,117 @@ func (c *Client) bringUpLink(
 
 	go ln.WatchConnection(ctx)
 	return nil
+}
+
+// dialCarrier constructs and connects the client's carrier link. With more than
+// one configured path it builds a multipath bond (dialBond); otherwise it dials
+// the single legacy carrier. Both variants return an already-connected
+// transport.Transport with reconnect callbacks installed.
+func (c *Client) dialCarrier(
+	ctx context.Context,
+	cfg Config,
+	cancel context.CancelFunc,
+) (transport.Transport, error) {
+	if len(cfg.Paths) > 1 {
+		return c.dialBond(ctx, cfg, cancel)
+	}
+
+	ln, err := transport.New(ctx, cfg.Transport, transport.Config{
+		Carrier:             cfg.Carrier,
+		RoomURL:             cfg.RoomURL,
+		Engine:              cfg.Engine,
+		URL:                 cfg.URL,
+		Token:               cfg.Token,
+		AuthToken:           cfg.AuthToken,
+		ChannelID:           cfg.ChannelID,
+		DeviceID:            c.deviceID,
+		Name:                names.Generate(),
+		OnData:              c.onData,
+		DNSServer:           cfg.DNSServer,
+		RequireTargetedPeer: true,
+		Options:             cfg.TransportOptions,
+		Traffic:             cfg.Traffic,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to create link: %w", err)
+	}
+
+	ln.SetEndedCallback(func(reason string) {
+		logger.Infof("Client link reported conference end: %s", reason)
+		cancel()
+	})
+	ln.SetShouldReconnect(func() bool { return ctx.Err() == nil })
+	ln.SetReconnectCallback(func() {
+		if ctx.Err() != nil {
+			return
+		}
+		// Carrier callback fires after the link is back up. If handshake
+		// still fails it usually means the server hasn't completed its
+		// own reinstall yet - keep the listener up and wait for either
+		// another callback or a future liveness loss to re-trigger.
+		c.handleReconnect(ctx, cfg, cancel, "carrier")
+	})
+
+	if err := ln.Connect(ctx); err != nil {
+		return nil, fmt.Errorf("failed to connect link: %w", err)
+	}
+	return ln, nil
+}
+
+// dialBond builds a multipath bond from cfg.Paths: one carrier per path, each
+// joining its own room/channel and feeding the bond's per-path sink. Bond.Connect
+// sends the PATH_HELLO on every path, so the server-side bond registry can group
+// them by bond id. The bond satisfies transport.Transport, so the rest of
+// bringUpLink (muxconn + inline smux handshake) runs over it unchanged.
+func (c *Client) dialBond(
+	ctx context.Context,
+	cfg Config,
+	cancel context.CancelFunc,
+) (transport.Transport, error) {
+	bond := multipath.NewBond(multipath.NewBondID(), multipath.RoleClient)
+	for i, ps := range cfg.Paths {
+		idx := uint16(i) //nolint:gosec // path counts are small, bounded by config
+		tr, err := transport.New(ctx, ps.Transport, transport.Config{
+			Carrier:             cfg.Carrier,
+			RoomURL:             ps.RoomURL,
+			Engine:              cfg.Engine,
+			URL:                 cfg.URL,
+			Token:               cfg.Token,
+			AuthToken:           cfg.AuthToken,
+			ChannelID:           ps.ChannelID,
+			DeviceID:            c.deviceID,
+			Name:                names.Generate(),
+			OnData:              bond.PathOnData(idx),
+			DNSServer:           cfg.DNSServer,
+			RequireTargetedPeer: true,
+			Options:             cfg.TransportOptions,
+			Traffic:             cfg.Traffic,
+		})
+		if err != nil {
+			_ = bond.Close()
+			return nil, fmt.Errorf("failed to create path %d (%s): %w", i, ps.Transport, err)
+		}
+		bond.AddPath(tr, idx)
+	}
+
+	bond.SetEndedCallback(func(reason string) {
+		logger.Infof("Client bond reported all paths ended: %s", reason)
+		cancel()
+	})
+	bond.SetShouldReconnect(func() bool { return ctx.Err() == nil })
+	bond.SetReconnectCallback(func() {
+		if ctx.Err() != nil {
+			return
+		}
+		c.handleReconnect(ctx, cfg, cancel, "carrier")
+	})
+
+	if err := bond.Connect(ctx); err != nil {
+		_ = bond.Close()
+		return nil, fmt.Errorf("failed to connect bond: %w", err)
+	}
+	logger.Infof("multipath: client bond up with %d paths", bond.NumPaths())
+	return bond, nil
 }
 
 // peerWaitTimeout bounds how long bringUpLink/tryReopenSession will block
