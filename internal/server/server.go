@@ -133,7 +133,14 @@ type Server struct {
 	// carriers holds every carrier brought up by bringUpMultipath so shutdown
 	// can close them all. Carriers that joined a bond are also closed via
 	// bond.Close (Close is idempotent); this covers any that never did.
+	// Guarded by bondMu because background path-retry goroutines append to it
+	// concurrently with teardown.
 	carriers []transport.Transport
+	// carriersClosed is set (under bondMu) by closeSession so a late path-retry
+	// goroutine that constructs a carrier after teardown began does not leak it
+	// into an already-drained carriers slice; registerCarrier closes such a
+	// carrier itself instead.
+	carriersClosed bool
 }
 
 // peerStat holds the per-session info needed to report the live peer count
@@ -433,94 +440,243 @@ func (s *Server) bringUpMultipath(
 	s.bondCancel = cancel
 	s.bonds = make(map[[16]byte]*bondEntry)
 
-	carriers := make([]transport.Transport, 0, len(cfg.Paths))
-	for i, ps := range cfg.Paths {
-		var router atomic.Pointer[func([]byte)]
-		// carrier is assigned right after transport.New below; it is captured by
-		// reference so the OnData closure can pass the exact transport that
-		// received a frame to the bond registry. Data only starts flowing after
-		// Connect (called after this loop), by which point carrier is set.
-		var carrier transport.Transport
-		onData := func(data []byte) {
-			s.routeBondFrame(carrier, &router, data, func([]byte) {
-				logger.Warnf("multipath: carrier expected PATH_HELLO but got a non-bond frame; " +
-					"dropping this carrier's stream (configure this carrier as a single path if it is a legacy client)")
-				drop := func([]byte) {}
-				router.Store(&drop)
-			})
-		}
-		// demux handles this carrier's per-peer frames when the transport turns
-		// out to support peer-routing (Phase 5b). OnPeerData is set up front so
-		// the transport reports SupportsPeerRouting()==true (vp8channel gates it
-		// on onPeerData!=nil); for non-peer transports the callback stays dormant
-		// and OnData/routeBondFrame drives the 5a path instead.
-		demux := newPeerCarrierDemux(s)
-		onPeerData := func(peerID string, data []byte) {
-			s.routePeerBondData(demux, peerID, data)
-		}
-		tr, err := transport.New(ctx, ps.Transport, transport.Config{
-			Carrier:    cfg.Carrier,
-			RoomURL:    ps.RoomURL,
-			Engine:     cfg.Engine,
-			URL:        cfg.URL,
-			Token:      cfg.Token,
-			AuthToken:  cfg.AuthToken,
-			ChannelID:  ps.ChannelID,
-			DeviceID:   "",
-			Name:       names.Generate(),
-			OnData:     onData,
-			OnPeerData: onPeerData,
-			DNSServer:  s.dnsServer,
-			ProxyAddr:  s.socksProxyAddr,
-			ProxyPort:  s.socksProxyPort,
-			Options:    cfg.TransportOptions,
-			Traffic:    cfg.Traffic,
-		})
-		if err != nil {
-			return fmt.Errorf("failed to create multipath carrier %d (%s): %w", i, ps.Transport, err)
-		}
-		carrier = tr
-		// If this carrier really does peer-routing, switch it into 5b mode:
-		// record the PeerTransport for reverse addressing and register the
-		// per-peer control callback so each client's handshake/liveness rides
-		// its own control KCP.
-		if pt, ok := tr.(transport.PeerTransport); ok && pt.SupportsPeerRouting() {
-			demux.tr = pt
-			s.multipathPeer = true
-			if pcp, ok := tr.(transport.PeerControlPlane); ok {
-				pcp.SetControlOnPeerData(func(peerID string, data []byte) {
-					s.routePeerBondControl(demux, peerID, data)
-				})
-			}
-		}
-		// Keep each carrier reconnecting on its own; the bond takes over its
-		// ended/reconnect callbacks once the carrier joins a bond (AddPath).
-		tr.SetShouldReconnect(func() bool { return ctx.Err() == nil })
-		carriers = append(carriers, tr)
-	}
-	s.ln = carriers[0]
-	s.carriers = carriers
+	logger.Infof("Connecting %d multipath carriers transport(s) ...", len(cfg.Paths))
 
-	logger.Infof("Connecting %d multipath carriers transport(s) ...", len(carriers))
+	// Soft degradation, mirroring the client (client.go dialBond): a path that
+	// fails to build (transport.New) or connect - e.g. a guest-register TLS
+	// handshake timeout on one room - must not sink the whole server. Bring up
+	// each path independently; the bond registry groups whatever comes up by
+	// bond id, and the server is only a producer of carriers into its rooms.
+	// Only a total wipe-out (no path up at all) is fatal, as before.
+	type pathJob struct {
+		i  int
+		ps transport.PathSpec
+	}
 	connected := 0
-	for i, tr := range carriers {
-		if err := tr.Connect(ctx); err != nil {
-			logger.Warnf("multipath carrier %d failed to connect: %v", i, err)
+	var failed []pathJob
+	for i, ps := range cfg.Paths {
+		if s.bringUpOnePath(ctx, cfg, ps, i) {
+			connected++
 			continue
 		}
-		connected++
-		s.wg.Add(1)
-		go func(t transport.Transport) {
-			defer s.wg.Done()
-			t.WatchConnection(ctx)
-		}(tr)
+		failed = append(failed, pathJob{i: i, ps: ps})
 	}
 	if connected == 0 {
-		return fmt.Errorf("failed to connect any of %d multipath carriers", len(carriers))
+		return fmt.Errorf("failed to bring up any of %d multipath carriers", len(cfg.Paths))
 	}
-	logger.Infof("Multipath carriers connected: %d/%d", connected, len(carriers))
+
+	// Retry every path that did not come up at startup with exponential backoff.
+	// A path that recovers rejoins the bond registry through the very same
+	// onData/onPeerData wiring (buildMultipathCarrier), and its own
+	// WatchConnection loop then handles later runtime drops.
+	for _, j := range failed {
+		s.startPathRetry(ctx, cfg, j.ps, j.i)
+	}
+
+	logger.Infof("Multipath carriers connected: %d/%d", connected, len(cfg.Paths))
 	s.logPeersLine()
 	return nil
+}
+
+// buildMultipathCarrier constructs (transport.New) one path's carrier with its
+// per-carrier bond-routing closures wired in, but does not Connect it. The
+// returned transport feeds the bond registry through onData (5a) or the peer
+// demux (5b) exactly as the original inline loop did, so a carrier built here
+// at startup and one rebuilt later by a retry are indistinguishable to the
+// registry.
+func (s *Server) buildMultipathCarrier(
+	ctx context.Context,
+	cfg Config,
+	ps transport.PathSpec,
+) (transport.Transport, error) {
+	var router atomic.Pointer[func([]byte)]
+	// carrier is assigned right after transport.New below; it is captured by
+	// reference so the OnData closure can pass the exact transport that received
+	// a frame to the bond registry. Data only starts flowing after Connect, by
+	// which point carrier is set.
+	var carrier transport.Transport
+	onData := func(data []byte) {
+		s.routeBondFrame(carrier, &router, data, func([]byte) {
+			logger.Warnf("multipath: carrier expected PATH_HELLO but got a non-bond frame; " +
+				"dropping this carrier's stream (configure this carrier as a single path if it is a legacy client)")
+			drop := func([]byte) {}
+			router.Store(&drop)
+		})
+	}
+	// demux handles this carrier's per-peer frames when the transport turns
+	// out to support peer-routing (Phase 5b). OnPeerData is set up front so
+	// the transport reports SupportsPeerRouting()==true (vp8channel gates it
+	// on onPeerData!=nil); for non-peer transports the callback stays dormant
+	// and OnData/routeBondFrame drives the 5a path instead.
+	demux := newPeerCarrierDemux(s)
+	onPeerData := func(peerID string, data []byte) {
+		s.routePeerBondData(demux, peerID, data)
+	}
+	tr, err := transport.New(ctx, ps.Transport, transport.Config{
+		Carrier:    cfg.Carrier,
+		RoomURL:    ps.RoomURL,
+		Engine:     cfg.Engine,
+		URL:        cfg.URL,
+		Token:      cfg.Token,
+		AuthToken:  cfg.AuthToken,
+		ChannelID:  ps.ChannelID,
+		DeviceID:   "",
+		Name:       names.Generate(),
+		OnData:     onData,
+		OnPeerData: onPeerData,
+		DNSServer:  s.dnsServer,
+		ProxyAddr:  s.socksProxyAddr,
+		ProxyPort:  s.socksProxyPort,
+		Options:    cfg.TransportOptions,
+		Traffic:    cfg.Traffic,
+	})
+	if err != nil {
+		return nil, err
+	}
+	carrier = tr
+	// If this carrier really does peer-routing, switch it into 5b mode:
+	// record the PeerTransport for reverse addressing and register the
+	// per-peer control callback so each client's handshake/liveness rides
+	// its own control KCP.
+	if pt, ok := tr.(transport.PeerTransport); ok && pt.SupportsPeerRouting() {
+		demux.tr = pt
+		// multipathPeer is read by serve() (possibly from another goroutine when
+		// a peer path only comes up via retry), so write it under sessMu.
+		s.sessMu.Lock()
+		s.multipathPeer = true
+		s.sessMu.Unlock()
+		if pcp, ok := tr.(transport.PeerControlPlane); ok {
+			pcp.SetControlOnPeerData(func(peerID string, data []byte) {
+				s.routePeerBondControl(demux, peerID, data)
+			})
+		}
+	}
+	// Keep each carrier reconnecting on its own; the bond takes over its
+	// ended/reconnect callbacks once the carrier joins a bond (AddPath).
+	tr.SetShouldReconnect(func() bool { return ctx.Err() == nil })
+	return tr, nil
+}
+
+// bringUpOnePath builds, connects, and registers a single multipath path,
+// launching its WatchConnection loop on success. It reports whether the path
+// came up; on any failure it logs, cleans up, and returns false so the caller
+// can schedule a retry. It never returns an error to avoid taking the whole
+// server down for one bad path.
+func (s *Server) bringUpOnePath(
+	ctx context.Context,
+	cfg Config,
+	ps transport.PathSpec,
+	i int,
+) bool {
+	tr, err := s.buildMultipathCarrier(ctx, cfg, ps)
+	if err != nil {
+		logger.Warnf("multipath: carrier %d (%s) create failed (will retry): %v", i, ps.Transport, err)
+		return false
+	}
+	// Register before Connect so s.ln (the liveness-tuning reference read by the
+	// bond session's control loop, which can fire as soon as this carrier's
+	// first PATH_HELLO arrives during Connect) is set race-free. On Connect
+	// failure we deregister so a dead carrier is not left in the slice.
+	if !s.registerCarrier(tr) {
+		_ = tr.Close() // teardown already began
+		return false
+	}
+	if err := tr.Connect(ctx); err != nil {
+		logger.Warnf("multipath: carrier %d (%s) connect failed (will retry): %v", i, ps.Transport, err)
+		s.deregisterCarrier(tr)
+		_ = tr.Close()
+		return false
+	}
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		tr.WatchConnection(ctx)
+	}()
+	logger.Infof("multipath: carrier %d (%s) connected", i, ps.Transport)
+	return true
+}
+
+// registerCarrier records tr for teardown and adopts it as the liveness-tuning
+// reference (s.ln) when none is set yet. It returns false when teardown has
+// already begun, in which case the caller owns closing tr.
+func (s *Server) registerCarrier(tr transport.Transport) bool {
+	s.bondMu.Lock()
+	if s.carriersClosed {
+		s.bondMu.Unlock()
+		return false
+	}
+	s.carriers = append(s.carriers, tr)
+	s.bondMu.Unlock()
+	s.sessMu.Lock()
+	if s.ln == nil {
+		s.ln = tr
+	}
+	s.sessMu.Unlock()
+	return true
+}
+
+// deregisterCarrier undoes registerCarrier for a carrier that failed to connect,
+// removing it from the teardown slice and clearing s.ln if it pointed at it.
+func (s *Server) deregisterCarrier(tr transport.Transport) {
+	s.bondMu.Lock()
+	for idx, c := range s.carriers {
+		if c == tr {
+			s.carriers = append(s.carriers[:idx], s.carriers[idx+1:]...)
+			break
+		}
+	}
+	s.bondMu.Unlock()
+	s.sessMu.Lock()
+	if s.ln == tr {
+		s.ln = nil
+	}
+	s.sessMu.Unlock()
+}
+
+// startPathRetry launches a background goroutine that keeps retrying one failed
+// path until it comes up, ctx is cancelled, or the server shuts down.
+func (s *Server) startPathRetry(ctx context.Context, cfg Config, ps transport.PathSpec, i int) {
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		s.retryPathLoop(ctx, cfg, ps, i)
+	}()
+}
+
+// retryPathLoop re-attempts a single failed path with exponential backoff
+// (1s doubling to a 30s ceiling), honouring baseCtx cancellation and shutdown.
+// Once the path comes up its own WatchConnection loop (started by bringUpOnePath)
+// takes over runtime reconnection, so this goroutine exits after one success.
+func (s *Server) retryPathLoop(ctx context.Context, cfg Config, ps transport.PathSpec, i int) {
+	const (
+		baseDelay = 1 * time.Second
+		maxDelay  = 30 * time.Second
+	)
+	delay := baseDelay
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-s.done:
+			return
+		case <-time.After(delay):
+		}
+		if ctx.Err() != nil || s.stopping() {
+			return
+		}
+		logger.Infof("multipath: retrying carrier %d (%s) ...", i, ps.Transport)
+		if s.bringUpOnePath(ctx, cfg, ps, i) {
+			logger.Infof("multipath: carrier %d (%s) recovered", i, ps.Transport)
+			s.logPeersLine()
+			return
+		}
+		if delay < maxDelay {
+			delay *= 2
+			if delay > maxDelay {
+				delay = maxDelay
+			}
+		}
+	}
 }
 
 func (s *Server) installSession() {
@@ -848,6 +1004,10 @@ func (s *Server) closeSession() {
 	s.bonds = make(map[[16]byte]*bondEntry)
 	carriers := s.carriers
 	s.carriers = nil
+	// Block any in-flight path-retry goroutine from re-registering a freshly
+	// built carrier into the now-drained slice (it would otherwise leak, never
+	// getting Closed).
+	s.carriersClosed = true
 	s.bondMu.Unlock()
 	for _, be := range bonds {
 		if be.sess != nil {
@@ -1033,7 +1193,10 @@ func (s *Server) getPeerSession(peerID string) *peerSession {
 // smux session is the control stream - the handshake runs there. Subsequent
 // streams are tunnel streams and proxy traffic.
 func (s *Server) serve(ctx context.Context) {
-	if s.peerLn != nil || s.multipathPeer {
+	s.sessMu.RLock()
+	peerRouted := s.peerLn != nil || s.multipathPeer
+	s.sessMu.RUnlock()
+	if peerRouted {
 		// Peer-routing (single carrier or multipath bond): per-peer / per-bond
 		// accept loops run in their own goroutines, so there is no singleton
 		// session for serveSingle to drive.
