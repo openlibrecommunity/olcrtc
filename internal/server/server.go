@@ -109,6 +109,14 @@ type Server struct {
 	// onData never races it) when the incoming carrier should be treated as a
 	// bond path rather than a standalone session. See bondregistry.go.
 	multipath bool
+	// multipathPeer is set in bringUpMultipath when at least one carrier is a
+	// peer-routing transport (Phase 5b). In that mode several clients share the
+	// SFU-room carriers, each client is a distinct bond keyed by bond id, and
+	// every bond runs its OWN muxconn+smux session with its own accept loop
+	// (mirroring peerSessions). serve() therefore just blocks on ctx like the
+	// single-carrier peer-routing path instead of driving the singleton
+	// serveSingle loop over a shared s.session (which cannot serve two clients).
+	multipathPeer bool
 	// bondCancel tears the whole run down when a bond reports that every one
 	// of its paths has died (Bond.SetEndedCallback), mirroring the single
 	// carrier's SetEndedCallback(cancel).
@@ -441,27 +449,50 @@ func (s *Server) bringUpMultipath(
 				router.Store(&drop)
 			})
 		}
+		// demux handles this carrier's per-peer frames when the transport turns
+		// out to support peer-routing (Phase 5b). OnPeerData is set up front so
+		// the transport reports SupportsPeerRouting()==true (vp8channel gates it
+		// on onPeerData!=nil); for non-peer transports the callback stays dormant
+		// and OnData/routeBondFrame drives the 5a path instead.
+		demux := newPeerCarrierDemux(s)
+		onPeerData := func(peerID string, data []byte) {
+			s.routePeerBondData(demux, peerID, data)
+		}
 		tr, err := transport.New(ctx, ps.Transport, transport.Config{
-			Carrier:   cfg.Carrier,
-			RoomURL:   ps.RoomURL,
-			Engine:    cfg.Engine,
-			URL:       cfg.URL,
-			Token:     cfg.Token,
-			AuthToken: cfg.AuthToken,
-			ChannelID: ps.ChannelID,
-			DeviceID:  "",
-			Name:      names.Generate(),
-			OnData:    onData,
-			DNSServer: s.dnsServer,
-			ProxyAddr: s.socksProxyAddr,
-			ProxyPort: s.socksProxyPort,
-			Options:   cfg.TransportOptions,
-			Traffic:   cfg.Traffic,
+			Carrier:    cfg.Carrier,
+			RoomURL:    ps.RoomURL,
+			Engine:     cfg.Engine,
+			URL:        cfg.URL,
+			Token:      cfg.Token,
+			AuthToken:  cfg.AuthToken,
+			ChannelID:  ps.ChannelID,
+			DeviceID:   "",
+			Name:       names.Generate(),
+			OnData:     onData,
+			OnPeerData: onPeerData,
+			DNSServer:  s.dnsServer,
+			ProxyAddr:  s.socksProxyAddr,
+			ProxyPort:  s.socksProxyPort,
+			Options:    cfg.TransportOptions,
+			Traffic:    cfg.Traffic,
 		})
 		if err != nil {
 			return fmt.Errorf("failed to create multipath carrier %d (%s): %w", i, ps.Transport, err)
 		}
 		carrier = tr
+		// If this carrier really does peer-routing, switch it into 5b mode:
+		// record the PeerTransport for reverse addressing and register the
+		// per-peer control callback so each client's handshake/liveness rides
+		// its own control KCP.
+		if pt, ok := tr.(transport.PeerTransport); ok && pt.SupportsPeerRouting() {
+			demux.tr = pt
+			s.multipathPeer = true
+			if pcp, ok := tr.(transport.PeerControlPlane); ok {
+				pcp.SetControlOnPeerData(func(peerID string, data []byte) {
+					s.routePeerBondControl(demux, peerID, data)
+				})
+			}
+		}
 		// Keep each carrier reconnecting on its own; the bond takes over its
 		// ended/reconnect callbacks once the carrier joins a bond (AddPath).
 		tr.SetShouldReconnect(func() bool { return ctx.Err() == nil })
@@ -819,6 +850,9 @@ func (s *Server) closeSession() {
 	s.carriers = nil
 	s.bondMu.Unlock()
 	for _, be := range bonds {
+		if be.sess != nil {
+			s.closePeerSession(be.sess, "closed")
+		}
 		_ = be.bond.Close()
 	}
 	for _, tr := range carriers {
@@ -999,7 +1033,10 @@ func (s *Server) getPeerSession(peerID string) *peerSession {
 // smux session is the control stream - the handshake runs there. Subsequent
 // streams are tunnel streams and proxy traffic.
 func (s *Server) serve(ctx context.Context) {
-	if s.peerLn != nil {
+	if s.peerLn != nil || s.multipathPeer {
+		// Peer-routing (single carrier or multipath bond): per-peer / per-bond
+		// accept loops run in their own goroutines, so there is no singleton
+		// session for serveSingle to drive.
 		<-ctx.Done()
 		return
 	}
