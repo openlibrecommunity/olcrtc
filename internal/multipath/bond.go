@@ -95,6 +95,18 @@ type Bond struct {
 	onDataMu sync.RWMutex
 	onData   func([]byte)
 
+	// control-plane proxy state (see control.go). controlOnData is the single
+	// callback shared by every control-capable path so a control frame arriving
+	// on any path is delivered up exactly once. controlSelected/controlHasSel
+	// implement sticky path selection for ControlSend: the control/handshake
+	// stream is a single ordered smux stream, so it must ride one path and only
+	// fail over when that path dies - never stripe, which would reorder it.
+	// Lock ordering: controlMu is always acquired before b.mu, never after.
+	controlMu       sync.Mutex
+	controlOnData   func([]byte)
+	controlSelected uint16
+	controlHasSel   bool
+
 	cbMu            sync.Mutex
 	reconnectCb     func()
 	endedCb         func(string)
@@ -222,6 +234,16 @@ func (b *Bond) SetOnData(cb func([]byte)) {
 func (b *Bond) AddPath(tr transport.Transport, pathIndex uint16) {
 	p := newPath(pathIndex, tr)
 
+	// Bond has no ARQ of its own - it leans entirely on each path being a
+	// reliable, in-order carrier (frame.go header comment). A path that is not
+	// Reliable+Ordered would silently corrupt the aggregate stream, so surface
+	// it loudly rather than degrade quietly.
+	if f := tr.Features(); !f.Reliable || !f.Ordered {
+		logger.Errorf("multipath: path %d transport is not Reliable+Ordered "+
+			"(reliable=%t ordered=%t) - unsuitable as a bond path; aggregate stream may corrupt",
+			pathIndex, f.Reliable, f.Ordered)
+	}
+
 	tr.SetEndedCallback(func(reason string) { b.handlePathEnded(pathIndex, reason) })
 	tr.SetReconnectCallback(func() { b.handlePathReconnected(pathIndex) })
 
@@ -238,6 +260,20 @@ func (b *Bond) AddPath(tr transport.Transport, pathIndex uint16) {
 	b.mu.Unlock()
 
 	b.manager.OnPathAdded(pathIndex)
+
+	// If this path carries a control plane and a control callback was already
+	// registered (SetControlOnData ran before this path joined), wire it now so
+	// control frames arriving on this path reach the shared sink. Paths that
+	// join before SetControlOnData are handled by setControlOnData itself, which
+	// walks every present control-capable path.
+	if p.control != nil {
+		b.controlMu.Lock()
+		ctrlCb := b.controlOnData
+		b.controlMu.Unlock()
+		if ctrlCb != nil {
+			p.control.SetControlOnData(ctrlCb)
+		}
+	}
 
 	if started {
 		p.markAlive()

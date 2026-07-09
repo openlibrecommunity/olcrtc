@@ -13,15 +13,23 @@ import (
 type path struct {
 	index uint16
 	tr    transport.Transport
+	// control is tr type-asserted to transport.ControlPlane, or nil when the
+	// underlying carrier has no isolated control plane. When non-nil the path
+	// can carry the bond's control/handshake stream out-of-band of the striped
+	// data plane (see control.go).
+	control transport.ControlPlane
 
 	mu    sync.RWMutex
 	alive bool
 }
 
 // newPath wraps tr as bond path pathIndex. Paths start alive optimistically;
-// the first failed Connect/Send flips them dead.
+// the first failed Connect/Send flips them dead. If tr exposes an isolated
+// control plane (transport.ControlPlane) it is recorded so the bond can route
+// control traffic over it.
 func newPath(pathIndex uint16, tr transport.Transport) *path {
-	return &path{index: pathIndex, tr: tr, alive: true}
+	control, _ := tr.(transport.ControlPlane)
+	return &path{index: pathIndex, tr: tr, control: control, alive: true}
 }
 
 // isAlive reports whether the path is currently usable for scheduling. It
@@ -53,4 +61,17 @@ func (p *path) markDead() {
 // send writes frame to the underlying transport.
 func (p *path) send(frame []byte) error {
 	return p.tr.Send(frame)
+}
+
+// controlAlive reports whether this path can currently carry control traffic:
+// it must have an isolated control plane, be marked alive by the bond, and its
+// control plane must itself report ready-to-send.
+func (p *path) controlAlive() bool {
+	if p.control == nil {
+		return false
+	}
+	p.mu.RLock()
+	alive := p.alive
+	p.mu.RUnlock()
+	return alive && p.control.ControlCanSend()
 }
