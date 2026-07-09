@@ -209,9 +209,11 @@ func (c *Client) bringUpLink(
 	// For a multipath bond the aggregate, reassembled byte stream is delivered
 	// through Bond.SetOnData rather than a per-carrier OnData. Route it to
 	// c.onData, which always pushes into the current c.conn (surviving
-	// reconnect-time swaps just like the single-carrier path).
-	if bond, ok := ln.(*multipath.Bond); ok {
-		bond.SetOnData(c.onData)
+	// reconnect-time swaps just like the single-carrier path). ln may be either
+	// a bare *multipath.Bond or its control-capable wrapper (both expose
+	// SetOnData), so match on the method set rather than the concrete type.
+	if sink, ok := ln.(interface{ SetOnData(func([]byte)) }); ok {
+		sink.SetOnData(c.onData)
 	}
 
 	sess, controlSess, err := buildSmuxClient(ln, c.conn, c.controlConn)
@@ -358,7 +360,12 @@ func (c *Client) dialBond(
 		return nil, fmt.Errorf("failed to connect bond: %w", err)
 	}
 	logger.Infof("multipath: client bond up with %d paths", bond.NumPaths())
-	return bond, nil
+	// Expose the bond as a control-capable carrier when every path carries an
+	// isolated control plane, so bringUpLink's muxconn.NewControl builds a
+	// dedicated control smux session over the bond (handshake+liveness ride
+	// their own channel, out of the bulk stream). Otherwise the bare bond is
+	// returned and control stays inline, exactly as in Phase 3.
+	return multipath.AsCarrier(bond), nil
 }
 
 // peerWaitTimeout bounds how long bringUpLink/tryReopenSession will block
