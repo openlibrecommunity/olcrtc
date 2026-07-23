@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/SolverNA/mpq-brutal/core"
@@ -70,6 +71,10 @@ type Client struct {
 	// backs the smux session when TransportProto is "mpq". Closing it tears down
 	// the QUIC paths; it is nil in the legacy muxconn path.
 	mpqSession io.Closer
+	// mpqCarriers holds every raw carrier brought up for an mpq multipath dial
+	// (one per path); shutdown closes them all. For a single-path mpq dial only
+	// c.ln is used and this stays nil.
+	mpqCarriers []transport.Transport
 	sessMu      sync.RWMutex
 	reconnectMu sync.Mutex
 	health      *runtime.HealthTracker
@@ -285,64 +290,44 @@ func (c *Client) bringUpLinkMPQ(
 		return fmt.Errorf("mpq: %w", err)
 	}
 
-	pc := mpqx.New(nil)
-	ln, err := transport.New(ctx, cfg.Transport, transport.Config{
-		Carrier:             cfg.Carrier,
-		RoomURL:             cfg.RoomURL,
-		Engine:              cfg.Engine,
-		URL:                 cfg.URL,
-		Token:               cfg.Token,
-		AuthToken:           cfg.AuthToken,
-		ChannelID:           cfg.ChannelID,
-		DeviceID:            c.deviceID,
-		Name:                names.Generate(),
-		OnData:              pc.Deliver,
-		DNSServer:           cfg.DNSServer,
-		RequireTargetedPeer: true,
-		Options:             cfg.TransportOptions,
-		Traffic:             cfg.Traffic,
-	})
+	// Split the tunnel across N carrier paths when the config lists more than
+	// one; each path is a raw carrier wrapped in its own 1:1 PacketConn and
+	// exposed to mpq as a distinct QUIC path (no multipath.Bond — mpq does the
+	// bonding). A single path degenerates to the original 1:1 bring-up.
+	pathConns, primary, err := c.bringUpCarriersMPQ(ctx, cfg, cancel)
 	if err != nil {
-		return fmt.Errorf("mpq: failed to create link: %w", err)
-	}
-	c.ln = ln
-	pc.Bind(ln)
-
-	ln.SetEndedCallback(func(reason string) {
-		logger.Infof("Client link reported conference end: %s", reason)
-		cancel()
-	})
-	ln.SetShouldReconnect(func() bool { return ctx.Err() == nil })
-	// Carrier-level reconnect of a live mpq session is a later step: the QUIC
-	// session cannot simply be re-pointed at a fresh carrier here. For the
-	// single-client bring-up we log and let liveness/ctx drive teardown.
-	ln.SetReconnectCallback(func() {
-		logger.Warnf("mpq: carrier reconnect signalled; mpq session reconnect not yet implemented")
-	})
-
-	if err := ln.Connect(ctx); err != nil {
-		return fmt.Errorf("mpq: failed to connect link: %w", err)
-	}
-	if err := waitForPeer(ctx, ln); err != nil {
 		return err
 	}
+	c.ln = primary
 
 	tlsConf, err := mpqx.ClientTLS(psk)
 	if err != nil {
 		return fmt.Errorf("mpq: client TLS: %w", err)
 	}
+	n := len(pathConns)
 	sess, err := core.Dial(ctx, core.Config{
-		DialPath: func(context.Context, int, string) (net.PacketConn, net.Addr, error) {
-			return pc, mpqx.RemoteAddr(), nil
+		DialPath: func(_ context.Context, pathIndex int, _ string) (net.PacketConn, net.Addr, error) {
+			return pathConns[pathIndex], mpqx.RemoteAddr(), nil
 		},
 		TLSConfig:     tlsConf,
-		ExpectedPaths: 1,
-		MaxPaths:      1,
+		ExpectedPaths: n,
+		MaxPaths:      n,
 	})
 	if err != nil {
 		return fmt.Errorf("mpq: dial session: %w", err)
 	}
 	c.mpqSession = sess
+	// Bring up the remaining paths on the live session (path 0 was dialled
+	// above). Soft degradation: a path that fails to attach is logged and
+	// skipped; mpq keeps bonding over whatever paths did come up.
+	for i := 1; i < n; i++ {
+		if err := sess.AddPath(ctx, ""); err != nil {
+			logger.Warnf("mpq: AddPath %d failed, continuing on %d path(s): %v", i, i, err)
+		}
+	}
+	if got := len(sess.Paths()); got > 1 {
+		logger.Infof("mpq: bonding session up with %d paths", got)
+	}
 
 	smuxSess, err := smux.Client(sess, runtime.SmuxConfig(0))
 	if err != nil {
@@ -366,8 +351,106 @@ func (c *Client) bringUpLinkMPQ(
 	c.recordSession(sid)
 	c.startControlLoop(ctx, cfg, cancel, control)
 
-	go ln.WatchConnection(ctx)
+	go primary.WatchConnection(ctx)
 	return nil
+}
+
+// bringUpCarriersMPQ brings up one raw carrier per configured path (or a single
+// carrier when no multipath is configured), wraps each in its own 1:1
+// mpqx.PacketConn, connects it and waits for its server peer. It returns the
+// per-path PacketConns (index i == mpq pathIndex i) and the primary carrier
+// (path 0, used for the WatchConnection/lifecycle hooks). All brought-up
+// carriers are recorded on the client so shutdown can close them.
+func (c *Client) bringUpCarriersMPQ(
+	ctx context.Context,
+	cfg Config,
+	cancel context.CancelFunc,
+) ([]*mpqx.PacketConn, transport.Transport, error) {
+	// Normalise to a list of path specs: multipath uses cfg.Paths verbatim, the
+	// single-carrier case synthesises one spec from the top-level fields.
+	specs := cfg.Paths
+	if len(specs) < 2 {
+		specs = []transport.PathSpec{{
+			Transport: cfg.Transport,
+			RoomURL:   cfg.RoomURL,
+			ChannelID: cfg.ChannelID,
+		}}
+	}
+
+	// endedPaths counts carriers that have reported conference end; only when
+	// every path has ended is the whole client torn down. A single path dropping
+	// is absorbed by mpq's bonding over the surviving paths.
+	var endedPaths atomic.Int32
+	total := int32(len(specs)) //nolint:gosec // path counts are small, bounded by config
+
+	pathConns := make([]*mpqx.PacketConn, 0, len(specs))
+	carriers := make([]transport.Transport, 0, len(specs))
+	for i, ps := range specs {
+		pc := mpqx.New(nil)
+		ln, err := transport.New(ctx, ps.Transport, transport.Config{
+			Carrier:             cfg.Carrier,
+			RoomURL:             ps.RoomURL,
+			Engine:              cfg.Engine,
+			URL:                 cfg.URL,
+			Token:               cfg.Token,
+			AuthToken:           cfg.AuthToken,
+			ChannelID:           ps.ChannelID,
+			DeviceID:            c.deviceID,
+			Name:                names.Generate(),
+			OnData:              pc.Deliver,
+			DNSServer:           cfg.DNSServer,
+			RequireTargetedPeer: true,
+			Options:             cfg.TransportOptions,
+			Traffic:             cfg.Traffic,
+		})
+		if err != nil {
+			c.closeCarriers(carriers)
+			return nil, nil, fmt.Errorf("mpq: failed to create link (path %d): %w", i, err)
+		}
+		pc.Bind(ln)
+
+		ln.SetEndedCallback(func(reason string) {
+			logger.Infof("mpq: path reported conference end: %s", reason)
+			if endedPaths.Add(1) >= total {
+				logger.Infof("mpq: all %d path(s) ended, tearing down", total)
+				cancel()
+			}
+		})
+		ln.SetShouldReconnect(func() bool { return ctx.Err() == nil })
+		// Carrier-level reconnect of a live mpq session is a later step: the QUIC
+		// session cannot simply be re-pointed at a fresh carrier here. Log and let
+		// mpq's own path liveness / ctx drive teardown.
+		ln.SetReconnectCallback(func() {
+			logger.Warnf("mpq: carrier reconnect signalled; mpq session reconnect not yet implemented")
+		})
+
+		if err := ln.Connect(ctx); err != nil {
+			_ = ln.Close()
+			c.closeCarriers(carriers)
+			return nil, nil, fmt.Errorf("mpq: failed to connect link (path %d): %w", i, err)
+		}
+		if err := waitForPeer(ctx, ln); err != nil {
+			_ = ln.Close()
+			c.closeCarriers(carriers)
+			return nil, nil, fmt.Errorf("mpq: path %d wait for peer: %w", i, err)
+		}
+
+		pathConns = append(pathConns, pc)
+		carriers = append(carriers, ln)
+	}
+
+	c.sessMu.Lock()
+	c.mpqCarriers = carriers
+	c.sessMu.Unlock()
+	return pathConns, carriers[0], nil
+}
+
+// closeCarriers closes a set of carriers, ignoring errors. Used to unwind a
+// partially built multipath bring-up.
+func (c *Client) closeCarriers(carriers []transport.Transport) {
+	for _, ln := range carriers {
+		_ = ln.Close()
+	}
 }
 
 // dialCarrier constructs and connects the client's carrier link. With more than
@@ -975,12 +1058,14 @@ func (c *Client) shutdown() {
 	conn := c.conn
 	ctrlConn := c.controlConn
 	mpqSess := c.mpqSession
+	mpqCarriers := c.mpqCarriers
 	c.controlStrm = nil
 	c.controlStop = nil
 	c.session = nil
 	c.conn = nil
 	c.controlConn = nil
 	c.mpqSession = nil
+	c.mpqCarriers = nil
 	c.sessMu.Unlock()
 
 	notifyControlClose(control)
@@ -999,7 +1084,11 @@ func (c *Client) shutdown() {
 	if ctrlConn != nil {
 		_ = ctrlConn.Close()
 	}
-	if c.ln != nil {
+	if len(mpqCarriers) > 0 {
+		// mpq multipath (or single) bring-up: close every raw carrier path.
+		// mpqCarriers[0] is also c.ln, so this subsumes the c.ln close below.
+		c.closeCarriers(mpqCarriers)
+	} else if c.ln != nil {
 		_ = c.ln.Close()
 	}
 	if control != nil {
