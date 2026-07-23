@@ -79,6 +79,13 @@ var (
 	// ErrTransportRequired indicates that transport is not provided.
 	ErrTransportRequired = errors.New(
 		"transport required (set transport to datachannel, videochannel, seichannel or vp8channel)")
+	// ErrTransportProtoUnsupported indicates an unknown net.proto value.
+	ErrTransportProtoUnsupported = errors.New(
+		"unsupported net.proto (use legacy or mpq)")
+	// ErrTransportProtoMultipath indicates that net.proto=mpq was combined with
+	// multipath paths, which is not supported yet (single carrier only).
+	ErrTransportProtoMultipath = errors.New(
+		"net.proto=mpq does not support multipath paths yet (use a single carrier)")
 	// ErrKeyRequired indicates that encryption key is not provided.
 	ErrKeyRequired = errors.New("key required (set crypto.key)")
 	// ErrDNSServerRequired indicates that dns server is not provided.
@@ -185,6 +192,10 @@ type SEIConfig struct {
 type Config struct {
 	Mode                  string
 	Transport             string
+	// TransportProto selects the tunnel protocol layered over the carrier:
+	// "" / "legacy" keeps the muxconn+smux stack; "mpq" runs the mpq-brutal
+	// bonding QUIC session over the carrier instead. Single-carrier only.
+	TransportProto        string
 	Auth                  string
 	AuthToken             string
 	Engine                string
@@ -353,6 +364,9 @@ func Validate(cfg Config) error {
 	if err := validateTransportRegistration(cfg); err != nil {
 		return err
 	}
+	if err := validateTransportProto(cfg); err != nil {
+		return err
+	}
 	if err := validatePaths(cfg); err != nil {
 		return err
 	}
@@ -401,6 +415,23 @@ func validateTransportRegistration(cfg Config) error {
 		return fmt.Errorf("%w: %s (available: %v)", ErrUnsupportedTransport, cfg.Transport, transport.Available())
 	}
 	return nil
+}
+
+// validateTransportProto checks the tunnel protocol selector. Only the legacy
+// muxconn+smux stack (empty/"legacy") and the mpq-brutal bonding session ("mpq")
+// are supported. mpq is single-carrier only for now.
+func validateTransportProto(cfg Config) error {
+	switch cfg.TransportProto {
+	case "", "legacy":
+		return nil
+	case "mpq":
+		if len(cfg.Paths) > 1 {
+			return ErrTransportProtoMultipath
+		}
+		return nil
+	default:
+		return fmt.Errorf("%w: %s", ErrTransportProtoUnsupported, cfg.TransportProto)
+	}
 }
 
 // validatePaths checks the multipath configuration: only "manual" (or empty)
@@ -692,6 +723,7 @@ func runOnce(
 	case modeSRV:
 		if err := server.Run(ctx, server.Config{
 			Transport:        cfg.Transport,
+			TransportProto:   cfg.TransportProto,
 			Carrier:          cfg.Auth,
 			RoomURL:          roomURL,
 			ChannelID:        cfg.ChannelID,
@@ -726,6 +758,7 @@ func runOnce(
 	case modeCNC:
 		if err := client.Run(ctx, client.Config{
 			Transport:        cfg.Transport,
+			TransportProto:   cfg.TransportProto,
 			Carrier:          cfg.Auth,
 			RoomURL:          roomURL,
 			ChannelID:        cfg.ChannelID,

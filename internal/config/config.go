@@ -120,6 +120,10 @@ type Crypto struct {
 type Net struct {
 	Transport string `yaml:"transport"` // datachannel, videochannel, seichannel, vp8channel
 	DNS       string `yaml:"dns"`
+	// Proto selects the tunnel transport protocol layered over the carrier:
+	// "legacy" (default, empty) keeps muxconn+smux; "mpq" runs the bonding
+	// mpq-brutal QUIC session over the carrier instead.
+	Proto string `yaml:"proto"`
 }
 
 // SOCKS bundles SOCKS5 listener and outbound-proxy settings.
@@ -277,6 +281,7 @@ func readKeyFile(configPath, keyFile string) (string, error) {
 func Apply(dst session.Config, f File) session.Config {
 	dst.Mode = pickString(dst.Mode, f.Mode)
 	dst.Transport = pickString(dst.Transport, f.Net.Transport)
+	dst.TransportProto = pickString(dst.TransportProto, f.Net.Proto)
 	dst.Auth = pickString(dst.Auth, f.Auth.Provider)
 	dst.AuthToken = pickString(dst.AuthToken, f.Auth.Token)
 	dst.Engine = pickString(dst.Engine, f.Engine.Name)
