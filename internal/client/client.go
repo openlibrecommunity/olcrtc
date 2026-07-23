@@ -4,6 +4,7 @@ package client
 import (
 	"context"
 	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/SolverNA/mpq-brutal/core"
 	"github.com/google/uuid"
 	"github.com/openlibrecommunity/olcrtc/internal/control"
 	"github.com/openlibrecommunity/olcrtc/internal/crypto"
@@ -25,6 +27,7 @@ import (
 	"github.com/openlibrecommunity/olcrtc/internal/names"
 	"github.com/openlibrecommunity/olcrtc/internal/runtime"
 	"github.com/openlibrecommunity/olcrtc/internal/transport"
+	"github.com/openlibrecommunity/olcrtc/internal/transport/mpqx"
 	"github.com/xtaci/smux"
 )
 
@@ -63,6 +66,10 @@ type Client struct {
 	session     *smux.Session
 	controlStrm *smux.Stream
 	controlStop context.CancelFunc
+	// mpqSession is the mpq-brutal bonding session (io.ReadWriteCloser) that
+	// backs the smux session when TransportProto is "mpq". Closing it tears down
+	// the QUIC paths; it is nil in the legacy muxconn path.
+	mpqSession io.Closer
 	sessMu      sync.RWMutex
 	reconnectMu sync.Mutex
 	health      *runtime.HealthTracker
@@ -84,6 +91,9 @@ type HealthFunc func(control.Status)
 // Config holds runtime configuration for [Run] and [RunWithReady].
 type Config struct {
 	Transport        string
+	// TransportProto selects the tunnel protocol over the carrier: "" / "legacy"
+	// uses muxconn+smux; "mpq" runs an mpq-brutal bonding QUIC session.
+	TransportProto   string
 	Carrier          string
 	RoomURL          string
 	ChannelID        string
@@ -193,6 +203,9 @@ func (c *Client) bringUpLink(
 	cfg Config,
 	cancel context.CancelFunc,
 ) error {
+	if cfg.TransportProto == "mpq" {
+		return c.bringUpLinkMPQ(ctx, cfg, cancel)
+	}
 	ln, err := c.dialCarrier(ctx, cfg, cancel)
 	if err != nil {
 		return err
@@ -241,6 +254,111 @@ func (c *Client) bringUpLink(
 
 	c.sessMu.Lock()
 	c.session = sess
+	c.controlStrm = control
+	c.sessionID = sid
+	c.sessMu.Unlock()
+	c.signalSessionReady()
+	c.recordSession(sid)
+	c.startControlLoop(ctx, cfg, cancel, control)
+
+	go ln.WatchConnection(ctx)
+	return nil
+}
+
+// bringUpLinkMPQ brings up the tunnel with the mpq-brutal bonding QUIC session
+// layered over a single carrier (TransportProto == "mpq"). It dials one carrier,
+// wraps it in an mpqx.PacketConn (carrier OnData -> Deliver, WriteTo -> carrier
+// Send), runs core.Dial to obtain the reliable ordered mpq Session, and then
+// reuses the exact legacy smux/handshake/SOCKS machinery over that session:
+// smux.Client + openControlStream + startControlLoop are shared with the legacy
+// path, only the source of the io.ReadWriteCloser differs (mpq Session vs
+// muxconn-over-carrier). QUIC-TLS identity is derived from the tunnel PSK (see
+// mpqx.ClientTLS), so no extra key exchange is needed. Single carrier only;
+// multipath splitting and carrier-reconnect of the mpq session are later steps.
+func (c *Client) bringUpLinkMPQ(
+	ctx context.Context,
+	cfg Config,
+	cancel context.CancelFunc,
+) error {
+	psk, err := hexDecodeKey(cfg.KeyHex)
+	if err != nil {
+		return fmt.Errorf("mpq: %w", err)
+	}
+
+	pc := mpqx.New(nil)
+	ln, err := transport.New(ctx, cfg.Transport, transport.Config{
+		Carrier:             cfg.Carrier,
+		RoomURL:             cfg.RoomURL,
+		Engine:              cfg.Engine,
+		URL:                 cfg.URL,
+		Token:               cfg.Token,
+		AuthToken:           cfg.AuthToken,
+		ChannelID:           cfg.ChannelID,
+		DeviceID:            c.deviceID,
+		Name:                names.Generate(),
+		OnData:              pc.Deliver,
+		DNSServer:           cfg.DNSServer,
+		RequireTargetedPeer: true,
+		Options:             cfg.TransportOptions,
+		Traffic:             cfg.Traffic,
+	})
+	if err != nil {
+		return fmt.Errorf("mpq: failed to create link: %w", err)
+	}
+	c.ln = ln
+	pc.Bind(ln)
+
+	ln.SetEndedCallback(func(reason string) {
+		logger.Infof("Client link reported conference end: %s", reason)
+		cancel()
+	})
+	ln.SetShouldReconnect(func() bool { return ctx.Err() == nil })
+	// Carrier-level reconnect of a live mpq session is a later step: the QUIC
+	// session cannot simply be re-pointed at a fresh carrier here. For the
+	// single-client bring-up we log and let liveness/ctx drive teardown.
+	ln.SetReconnectCallback(func() {
+		logger.Warnf("mpq: carrier reconnect signalled; mpq session reconnect not yet implemented")
+	})
+
+	if err := ln.Connect(ctx); err != nil {
+		return fmt.Errorf("mpq: failed to connect link: %w", err)
+	}
+	if err := waitForPeer(ctx, ln); err != nil {
+		return err
+	}
+
+	tlsConf, err := mpqx.ClientTLS(psk)
+	if err != nil {
+		return fmt.Errorf("mpq: client TLS: %w", err)
+	}
+	sess, err := core.Dial(ctx, core.Config{
+		DialPath: func(context.Context, int, string) (net.PacketConn, net.Addr, error) {
+			return pc, mpqx.RemoteAddr(), nil
+		},
+		TLSConfig:     tlsConf,
+		ExpectedPaths: 1,
+		MaxPaths:      1,
+	})
+	if err != nil {
+		return fmt.Errorf("mpq: dial session: %w", err)
+	}
+	c.mpqSession = sess
+
+	smuxSess, err := smux.Client(sess, runtime.SmuxConfig(0))
+	if err != nil {
+		_ = sess.Close()
+		return fmt.Errorf("mpq: smux client: %w", err)
+	}
+	control, sid, err := openControlStream(ctx, smuxSess, c.deviceID, c.claims)
+	if err != nil {
+		_ = smuxSess.Close()
+		_ = sess.Close()
+		return fmt.Errorf("mpq handshake: %w", err)
+	}
+	logger.Infof("mpq session %s opened (device=%s)", sid, c.deviceID)
+
+	c.sessMu.Lock()
+	c.session = smuxSess
 	c.controlStrm = control
 	c.sessionID = sid
 	c.sessMu.Unlock()
@@ -856,11 +974,13 @@ func (c *Client) shutdown() {
 	sess := c.session
 	conn := c.conn
 	ctrlConn := c.controlConn
+	mpqSess := c.mpqSession
 	c.controlStrm = nil
 	c.controlStop = nil
 	c.session = nil
 	c.conn = nil
 	c.controlConn = nil
+	c.mpqSession = nil
 	c.sessMu.Unlock()
 
 	notifyControlClose(control)
@@ -869,6 +989,9 @@ func (c *Client) shutdown() {
 	}
 	if sess != nil {
 		_ = sess.Close()
+	}
+	if mpqSess != nil {
+		_ = mpqSess.Close()
 	}
 	if conn != nil {
 		_ = conn.Close()
@@ -894,6 +1017,22 @@ func notifyControlClose(stream *smux.Stream) {
 	}
 	_ = stream.SetWriteDeadline(time.Time{})
 	_ = stream.CloseWrite()
+}
+
+// hexDecodeKey decodes the 64-char hex tunnel key into its 32 raw bytes, used
+// as the pre-shared secret from which the mpq QUIC-TLS identity is derived.
+func hexDecodeKey(keyHex string) ([]byte, error) {
+	if keyHex == "" {
+		return nil, runtime.ErrKeyRequired
+	}
+	key, err := hex.DecodeString(keyHex)
+	if err != nil {
+		return nil, fmt.Errorf("decode key: %w", err)
+	}
+	if len(key) != 32 {
+		return nil, fmt.Errorf("%w, got %d", runtime.ErrKeySize, len(key))
+	}
+	return key, nil
 }
 
 func setupCipher(keyHex string) (*crypto.Cipher, error) {
