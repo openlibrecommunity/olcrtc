@@ -4,6 +4,7 @@ go 1.26.3
 
 require (
 	codeberg.org/rape4me/kc v0.0.0-20260527074346-4cb2a45790c2
+	github.com/SolverNA/mpq-brutal v0.0.0-00010101000000-000000000000
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/websocket v1.5.4-0.20250319132907-e064f32e3674
 	github.com/livekit/protocol v1.46.0
@@ -33,6 +34,7 @@ require (
 	buf.build/go/protoyaml v0.7.0 // indirect
 	cel.dev/expr v0.25.2 // indirect
 	github.com/antlr4-go/antlr/v4 v4.13.1 // indirect
+	github.com/apernet/quic-go v0.60.1-0.20260618182935-599b15a1fa26 // indirect
 	github.com/benbjohnson/clock v1.3.5 // indirect
 	github.com/bep/debounce v1.2.1 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
@@ -94,3 +96,5 @@ require (
 	google.golang.org/protobuf v1.36.11 // indirect
 	rsc.io/qr v0.2.0 // indirect
 )
+
+replace github.com/SolverNA/mpq-brutal => /home/pc/Desktop/mpq-brutal
