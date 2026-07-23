@@ -145,12 +145,23 @@ type Server struct {
 	// carrier itself instead.
 	carriersClosed bool
 
-	// mpqListener and mpqPC are set in bringUpLinkMPQ when TransportProto is
-	// "mpq": the carrier is wrapped in mpqPC (net.PacketConn) and fed to the
-	// mpq-brutal Listener, whose accepted bonding session backs the smux data
-	// session (serveMPQ). Both are nil in the legacy muxconn path.
+	// mpqListener, mpqPC and mpqPeerPC are set in bringUpLinkMPQ when
+	// TransportProto is "mpq": the carrier is wrapped in a net.PacketConn and fed
+	// to the mpq-brutal Listener, whose accepted bonding session(s) back the smux
+	// data session (serveMPQ). Exactly one of mpqPC / mpqPeerPC is non-nil:
+	//   - mpqPC (1:1) is used when the carrier cannot address individual peers
+	//     (single client, single path);
+	//   - mpqPeerPC (multi-address, peer-demuxing) is used when the carrier
+	//     supports peer routing, so several paths of one client (and several
+	//     clients) land on one carrier and are demuxed by peerID.
+	// All three are nil in the legacy muxconn path.
 	mpqListener *core.Listener
 	mpqPC       *mpqx.PacketConn
+	mpqPeerPC   *mpqx.ServerPacketConn
+	// mpqSessions tracks accepted mpq bonding sessions so shutdown can close
+	// them (the mpq Listener leaves already-accepted sessions running). Guarded
+	// by sessMu.
+	mpqSessions []*core.Session
 }
 
 // peerStat holds the per-session info needed to report the live peer count
@@ -455,15 +466,16 @@ func (s *Server) bringUpLink(
 }
 
 // bringUpLinkMPQ brings up the server tunnel with the mpq-brutal bonding QUIC
-// session layered over a single carrier (TransportProto == "mpq"). It builds one
-// carrier, wraps it in an mpqx.PacketConn (carrier OnData -> Deliver, WriteTo ->
-// carrier Send), and hands that PacketConn to core.Listen as ServerConn. The
-// accepted mpq Session (io.ReadWriteCloser) then backs a smux.Server, and the
-// existing handshake + tunnel-forward machinery runs over it unchanged
-// (serveMPQ reuses acceptHandshake and handleStream). QUIC-TLS identity is
-// derived from the tunnel PSK (see mpqx.ServerTLS), so no extra key exchange is
-// needed. Single carrier / single client only; multipath and carrier-reconnect
-// of the mpq session are later steps.
+// session layered over one carrier (TransportProto == "mpq"). It builds the
+// carrier and hands a net.PacketConn to core.Listen as ServerConn: a
+// peer-demuxing mpqx.ServerPacketConn (OnPeerData -> Deliver, WriteTo -> SendTo)
+// when the carrier can address peers, so several paths of one client and several
+// clients are demuxed by peerID into distinct QUIC connections; otherwise a 1:1
+// mpqx.PacketConn (single client, single path). serveMPQ then accepts bonding
+// sessions in a loop, one smux.Server per session, reusing the existing
+// handshake + tunnel-forward machinery. QUIC-TLS identity is derived from the
+// tunnel PSK (see mpqx.ServerTLS). Carrier-reconnect of a live mpq session is a
+// later step.
 func (s *Server) bringUpLinkMPQ(
 	ctx context.Context,
 	cfg Config,
@@ -474,40 +486,71 @@ func (s *Server) bringUpLinkMPQ(
 		return fmt.Errorf("mpq: %w", err)
 	}
 
+	// A peer-demuxing ServerPacketConn (fed by OnPeerData / driving SendTo) is
+	// used when the carrier can address individual peers, so several paths of one
+	// client — and several clients — share one carrier and are demuxed by peerID
+	// into distinct QUIC connections. A carrier without peer routing falls back
+	// to the 1:1 PacketConn (single client, single path). We can only know which
+	// after building the transport, so both sinks are prepared and only the
+	// matching one is wired as the carrier's callback below.
 	pc := mpqx.New(nil)
+	peerPC := mpqx.NewServer(nil)
 	ln, err := transport.New(ctx, cfg.Transport, transport.Config{
-		Carrier:   cfg.Carrier,
-		RoomURL:   cfg.RoomURL,
-		Engine:    cfg.Engine,
-		URL:       cfg.URL,
-		Token:     cfg.Token,
-		AuthToken: cfg.AuthToken,
-		ChannelID: cfg.ChannelID,
-		DeviceID:  "",
-		Name:      names.Generate(),
-		OnData:    pc.Deliver,
-		DNSServer: s.dnsServer,
-		ProxyAddr: s.socksProxyAddr,
-		ProxyPort: s.socksProxyPort,
-		Options:   cfg.TransportOptions,
-		Traffic:   cfg.Traffic,
+		Carrier:    cfg.Carrier,
+		RoomURL:    cfg.RoomURL,
+		Engine:     cfg.Engine,
+		URL:        cfg.URL,
+		Token:      cfg.Token,
+		AuthToken:  cfg.AuthToken,
+		ChannelID:  cfg.ChannelID,
+		DeviceID:   "",
+		Name:       names.Generate(),
+		OnData:     pc.Deliver,
+		OnPeerData: peerPC.Deliver,
+		DNSServer:  s.dnsServer,
+		ProxyAddr:  s.socksProxyAddr,
+		ProxyPort:  s.socksProxyPort,
+		Options:    cfg.TransportOptions,
+		Traffic:    cfg.Traffic,
 	})
 	if err != nil {
 		return fmt.Errorf("mpq: failed to create transport: %w", err)
 	}
 	s.ln = ln
-	pc.Bind(ln)
-	s.mpqPC = pc
 
 	tlsConf, err := mpqx.ServerTLS(psk)
 	if err != nil {
 		return fmt.Errorf("mpq: server TLS: %w", err)
 	}
+
+	// Choose the ServerConn based on whether the carrier can demux peers. The
+	// number of paths one client brings (len(cfg.Paths), min 1) sets
+	// ExpectedPaths so the mpq Listener finalises a session promptly once all
+	// paths are present; PathGatherTimeout remains the fallback for clients that
+	// bring fewer. MaxPaths caps paths per bonding session.
+	expectedPaths := len(cfg.Paths)
+	if expectedPaths < 1 {
+		expectedPaths = 1
+	}
+	var serverConn net.PacketConn
+	if pt, ok := ln.(transport.PeerTransport); ok && pt.SupportsPeerRouting() {
+		peerPC.Bind(pt)
+		s.mpqPeerPC = peerPC
+		serverConn = peerPC
+		logger.Infof("mpq: peer-demuxing ServerConn (expectedPaths=%d)", expectedPaths)
+	} else {
+		pc.Bind(ln)
+		s.mpqPC = pc
+		serverConn = pc
+		expectedPaths = 1
+		logger.Infof("mpq: 1:1 ServerConn (carrier has no peer routing)")
+	}
+
 	listener, err := core.Listen(core.Config{
-		ServerConn:    pc,
+		ServerConn:    serverConn,
 		TLSConfig:     tlsConf,
-		ExpectedPaths: 1,
-		MaxPaths:      1,
+		ExpectedPaths: expectedPaths,
+		MaxPaths:      expectedPaths,
 	})
 	if err != nil {
 		return fmt.Errorf("mpq: listen: %w", err)
@@ -538,35 +581,52 @@ func (s *Server) bringUpLinkMPQ(
 	return nil
 }
 
-// serveMPQ accepts the single mpq bonding session and drives the smux accept
-// loop over it. The first accepted smux stream is the control/handshake stream
-// (inline handshake, no isolated control plane), and subsequent streams are
-// tunnel streams handled by handleStream — exactly as serveSingle does for a
-// lone legacy carrier, but sourced from the mpq Session instead of a muxconn.
+// serveMPQ accepts mpq bonding sessions in a loop and drives one independent
+// smux accept loop per session. Each accepted *core.Session is one client whose
+// N carrier paths mpq has already grouped by sessionID; peer-demuxing on the
+// ServerConn means several clients each yield their own session here, so the
+// loop transparently serves both multi-path (one client, N paths) and
+// multi-client (many sessions). The 1:1 carrier path degenerates to exactly one
+// session. Sessions run concurrently and hold no shared singleton state.
 func (s *Server) serveMPQ(ctx context.Context) {
-	sess, err := s.mpqListener.Accept(ctx)
-	if err != nil {
-		if ctx.Err() == nil {
-			logger.Warnf("mpq: accept session: %v", err)
+	for {
+		sess, err := s.mpqListener.Accept(ctx)
+		if err != nil {
+			if ctx.Err() == nil {
+				logger.Warnf("mpq: accept session: %v", err)
+			}
+			return
 		}
-		return
+		s.sessMu.Lock()
+		s.mpqSessions = append(s.mpqSessions, sess)
+		s.sessMu.Unlock()
+		s.wg.Add(1)
+		go func() {
+			defer s.wg.Done()
+			s.serveMPQSession(ctx, sess)
+		}()
 	}
+}
+
+// serveMPQSession drives one mpq bonding session: a per-session smux server, an
+// inline handshake on the first stream, a per-session liveness control loop, and
+// a tunnel-stream accept loop. All state (sessionID) is local, so concurrent
+// sessions never clobber one another.
+func (s *Server) serveMPQSession(ctx context.Context, sess *core.Session) {
+	defer func() { _ = sess.Close() }()
+
 	smuxSess, err := smux.Server(sess, runtime.SmuxConfig(0))
 	if err != nil {
 		logger.Warnf("mpq: smux server init failed: %v", err)
-		_ = sess.Close()
 		return
 	}
-	s.sessMu.Lock()
-	s.session = smuxSess
-	s.sessMu.Unlock()
+	defer func() { _ = smuxSess.Close() }()
 
-	// Inline handshake on the first stream, then admit tunnel streams. On
-	// handshake failure acceptHandshake returns false and we stop; the session
-	// is torn down at shutdown.
-	if !s.acceptHandshake(ctx, smuxSess) {
+	sid, ok := s.acceptMPQHandshake(ctx, smuxSess)
+	if !ok {
 		return
 	}
+	defer s.trackPeerClose(sid, "closed")
 
 	for {
 		if contextDone(ctx) {
@@ -577,15 +637,81 @@ func (s *Server) serveMPQ(ctx context.Context) {
 			if contextDone(ctx) {
 				return
 			}
-			logger.Infof("mpq: AcceptStream(data) error - closing session: %v", err)
+			logger.Infof("mpq: AcceptStream(data) session=%s error - closing: %v", sid, err)
 			return
 		}
 		s.wg.Add(1)
 		go func() {
 			defer s.wg.Done()
-			s.handleStream(ctx, stream, s.currentSessionID())
+			s.handleStream(ctx, stream, sid)
 		}()
 	}
+}
+
+// acceptMPQHandshake runs the inline handshake on a session's first smux stream
+// and starts its per-session liveness loop. It mirrors acceptHandshake but keeps
+// sessionID/deviceID local (returned to the caller) instead of writing the
+// shared server fields, so multiple mpq clients handshake independently. Returns
+// the session id and true on success.
+func (s *Server) acceptMPQHandshake(ctx context.Context, sess *smux.Session) (string, bool) {
+	stream, err := sess.AcceptStream()
+	if err != nil {
+		if ctx.Err() == nil {
+			logger.Warnf("mpq: AcceptStream(control) error: %v", err)
+		}
+		return "", false
+	}
+	_ = stream.SetDeadline(time.Now().Add(handshake.DefaultTimeout))
+	hello, sid, err := handshake.Server(stream, s.authHook)
+	_ = stream.SetDeadline(time.Time{})
+	if err != nil {
+		_ = stream.Close()
+		logger.Warnf("mpq: handshake failed: %v", err)
+		return "", false
+	}
+	s.recordSession(sid)
+	s.onOpen(sid, hello.DeviceID, hello.Claims)
+	s.trackPeerOpen(sid, hello.DeviceID)
+	logger.Infof("mpq session %s opened (device=%s)", sid, hello.DeviceID)
+	s.startMPQControlLoop(ctx, sid, stream)
+	return sid, true
+}
+
+// startMPQControlLoop runs the liveness ping/pong loop over an mpq session's
+// control stream. Unlike the singleton startControlLoop it does not reinstall a
+// session on exit (mpq carrier-reconnect is a later step): when the control
+// stream ends the whole bonding session is being torn down by its accept loop,
+// so this just closes the stream and returns.
+func (s *Server) startMPQControlLoop(ctx context.Context, sid string, stream *smux.Stream) {
+	controlCtx, stop := context.WithCancel(ctx)
+	_ = stop // cancelled implicitly when ctx is cancelled; kept for symmetry
+
+	liveness := s.liveness
+	if runtime.IsControlPlane(s.ln) && liveness.Timeout <= control.DefaultTimeout {
+		liveness.Timeout = runtime.LivenessTimeout(s.ln)
+	}
+	onPong := liveness.OnPong
+	liveness.OnPong = func(h control.Health) {
+		s.recordPong(h)
+		logger.Debugf("mpq control alive session=%s rtt=%v seq=%d", sid, h.RTT, h.Seq)
+		if onPong != nil {
+			onPong(h)
+		}
+	}
+
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		defer stop()
+		defer func() { _ = stream.Close() }()
+		err := control.Run(controlCtx, stream, liveness)
+		if controlCtx.Err() != nil || ctx.Err() != nil {
+			return
+		}
+		if err != nil {
+			logger.Warnf("mpq control stream ended session=%s: %v", sid, err)
+		}
+	}()
 }
 
 // bringUpMultipath brings up one carrier per configured path and wires each
@@ -1815,8 +1941,21 @@ func (s *Server) shutdown() {
 	if s.mpqListener != nil {
 		_ = s.mpqListener.Close()
 	}
+	// Close accepted bonding sessions: the mpq Listener leaves them running past
+	// its own Close, so their smux accept loops would otherwise block until the
+	// carrier drops. Closing them unblocks serveMPQSession promptly.
+	s.sessMu.Lock()
+	mpqSessions := s.mpqSessions
+	s.mpqSessions = nil
+	s.sessMu.Unlock()
+	for _, sess := range mpqSessions {
+		_ = sess.Close()
+	}
 	if s.mpqPC != nil {
 		_ = s.mpqPC.Close()
+	}
+	if s.mpqPeerPC != nil {
+		_ = s.mpqPeerPC.Close()
 	}
 	if s.ln != nil {
 		_ = s.ln.Close()
