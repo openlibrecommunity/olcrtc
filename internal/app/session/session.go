@@ -82,10 +82,6 @@ var (
 	// ErrTransportProtoUnsupported indicates an unknown net.proto value.
 	ErrTransportProtoUnsupported = errors.New(
 		"unsupported net.proto (use legacy or mpq)")
-	// ErrTransportProtoMultipath indicates that net.proto=mpq was combined with
-	// multipath paths, which is not supported yet (single carrier only).
-	ErrTransportProtoMultipath = errors.New(
-		"net.proto=mpq does not support multipath paths yet (use a single carrier)")
 	// ErrKeyRequired indicates that encryption key is not provided.
 	ErrKeyRequired = errors.New("key required (set crypto.key)")
 	// ErrDNSServerRequired indicates that dns server is not provided.
@@ -419,15 +415,11 @@ func validateTransportRegistration(cfg Config) error {
 
 // validateTransportProto checks the tunnel protocol selector. Only the legacy
 // muxconn+smux stack (empty/"legacy") and the mpq-brutal bonding session ("mpq")
-// are supported. mpq is single-carrier only for now.
+// are supported. mpq accepts a single carrier or multiple paths (mpq bonds them
+// into one QUIC session; the server demuxes paths by peer over one carrier).
 func validateTransportProto(cfg Config) error {
 	switch cfg.TransportProto {
-	case "", "legacy":
-		return nil
-	case "mpq":
-		if len(cfg.Paths) > 1 {
-			return ErrTransportProtoMultipath
-		}
+	case "", "legacy", "mpq":
 		return nil
 	default:
 		return fmt.Errorf("%w: %s", ErrTransportProtoUnsupported, cfg.TransportProto)
