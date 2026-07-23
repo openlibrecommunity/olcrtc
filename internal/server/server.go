@@ -3,6 +3,7 @@ package server
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,6 +16,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/SolverNA/mpq-brutal/core"
 	"github.com/google/uuid"
 	"github.com/openlibrecommunity/olcrtc/internal/control"
 	"github.com/openlibrecommunity/olcrtc/internal/crypto"
@@ -25,6 +27,7 @@ import (
 	"github.com/openlibrecommunity/olcrtc/internal/names"
 	"github.com/openlibrecommunity/olcrtc/internal/runtime"
 	"github.com/openlibrecommunity/olcrtc/internal/transport"
+	"github.com/openlibrecommunity/olcrtc/internal/transport/mpqx"
 	"github.com/xtaci/smux"
 )
 
@@ -141,6 +144,13 @@ type Server struct {
 	// into an already-drained carriers slice; registerCarrier closes such a
 	// carrier itself instead.
 	carriersClosed bool
+
+	// mpqListener and mpqPC are set in bringUpLinkMPQ when TransportProto is
+	// "mpq": the carrier is wrapped in mpqPC (net.PacketConn) and fed to the
+	// mpq-brutal Listener, whose accepted bonding session backs the smux data
+	// session (serveMPQ). Both are nil in the legacy muxconn path.
+	mpqListener *core.Listener
+	mpqPC       *mpqx.PacketConn
 }
 
 // peerStat holds the per-session info needed to report the live peer count
@@ -174,6 +184,9 @@ type ConnectRequest struct {
 // Config holds runtime configuration for [Run].
 type Config struct {
 	Transport        string
+	// TransportProto selects the tunnel protocol over the carrier: "" / "legacy"
+	// uses muxconn+smux; "mpq" runs an mpq-brutal bonding QUIC session.
+	TransportProto   string
 	Carrier          string
 	RoomURL          string
 	ChannelID        string
@@ -301,6 +314,22 @@ func setupCipher(keyHex string) (*crypto.Cipher, error) {
 	return cipher, nil
 }
 
+// hexDecodeKey decodes the 64-char hex tunnel key into its 32 raw bytes, used
+// as the pre-shared secret from which the mpq QUIC-TLS identity is derived.
+func hexDecodeKey(keyHex string) ([]byte, error) {
+	if keyHex == "" {
+		return nil, runtime.ErrKeyRequired
+	}
+	key, err := hex.DecodeString(keyHex)
+	if err != nil {
+		return nil, fmt.Errorf("decode key: %w", err)
+	}
+	if len(key) != 32 {
+		return nil, fmt.Errorf("%w, got %d", runtime.ErrKeySize, len(key))
+	}
+	return key, nil
+}
+
 func (s *Server) setupResolver() {
 	s.resolver = &net.Resolver{
 		PreferGo: true,
@@ -341,6 +370,9 @@ func (s *Server) bringUpLink(
 	cancel context.CancelFunc,
 ) error {
 	s.baseCtx = ctx
+	if cfg.TransportProto == "mpq" {
+		return s.bringUpLinkMPQ(ctx, cfg, cancel)
+	}
 	if len(cfg.Paths) > 1 {
 		return s.bringUpMultipath(ctx, cfg, cancel)
 	}
@@ -420,6 +452,140 @@ func (s *Server) bringUpLink(
 		ln.WatchConnection(ctx)
 	}()
 	return nil
+}
+
+// bringUpLinkMPQ brings up the server tunnel with the mpq-brutal bonding QUIC
+// session layered over a single carrier (TransportProto == "mpq"). It builds one
+// carrier, wraps it in an mpqx.PacketConn (carrier OnData -> Deliver, WriteTo ->
+// carrier Send), and hands that PacketConn to core.Listen as ServerConn. The
+// accepted mpq Session (io.ReadWriteCloser) then backs a smux.Server, and the
+// existing handshake + tunnel-forward machinery runs over it unchanged
+// (serveMPQ reuses acceptHandshake and handleStream). QUIC-TLS identity is
+// derived from the tunnel PSK (see mpqx.ServerTLS), so no extra key exchange is
+// needed. Single carrier / single client only; multipath and carrier-reconnect
+// of the mpq session are later steps.
+func (s *Server) bringUpLinkMPQ(
+	ctx context.Context,
+	cfg Config,
+	cancel context.CancelFunc,
+) error {
+	psk, err := hexDecodeKey(cfg.KeyHex)
+	if err != nil {
+		return fmt.Errorf("mpq: %w", err)
+	}
+
+	pc := mpqx.New(nil)
+	ln, err := transport.New(ctx, cfg.Transport, transport.Config{
+		Carrier:   cfg.Carrier,
+		RoomURL:   cfg.RoomURL,
+		Engine:    cfg.Engine,
+		URL:       cfg.URL,
+		Token:     cfg.Token,
+		AuthToken: cfg.AuthToken,
+		ChannelID: cfg.ChannelID,
+		DeviceID:  "",
+		Name:      names.Generate(),
+		OnData:    pc.Deliver,
+		DNSServer: s.dnsServer,
+		ProxyAddr: s.socksProxyAddr,
+		ProxyPort: s.socksProxyPort,
+		Options:   cfg.TransportOptions,
+		Traffic:   cfg.Traffic,
+	})
+	if err != nil {
+		return fmt.Errorf("mpq: failed to create transport: %w", err)
+	}
+	s.ln = ln
+	pc.Bind(ln)
+	s.mpqPC = pc
+
+	tlsConf, err := mpqx.ServerTLS(psk)
+	if err != nil {
+		return fmt.Errorf("mpq: server TLS: %w", err)
+	}
+	listener, err := core.Listen(core.Config{
+		ServerConn:    pc,
+		TLSConfig:     tlsConf,
+		ExpectedPaths: 1,
+		MaxPaths:      1,
+	})
+	if err != nil {
+		return fmt.Errorf("mpq: listen: %w", err)
+	}
+	s.mpqListener = listener
+
+	ln.SetEndedCallback(func(reason string) {
+		logger.Infof("Server link reported conference end: %s", reason)
+		cancel()
+	})
+	ln.SetShouldReconnect(func() bool { return ctx.Err() == nil })
+	ln.SetReconnectCallback(func() {
+		logger.Warnf("mpq: carrier reconnect signalled; mpq session reconnect not yet implemented")
+	})
+
+	logger.Infof("Connecting transport=%s carrier=%s (mpq) ...", cfg.Transport, cfg.Carrier)
+	if err := ln.Connect(ctx); err != nil {
+		return fmt.Errorf("mpq: failed to connect link: %w", err)
+	}
+	logger.Infof("Link connected (mpq)")
+	s.logPeersLine()
+
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		ln.WatchConnection(ctx)
+	}()
+	return nil
+}
+
+// serveMPQ accepts the single mpq bonding session and drives the smux accept
+// loop over it. The first accepted smux stream is the control/handshake stream
+// (inline handshake, no isolated control plane), and subsequent streams are
+// tunnel streams handled by handleStream — exactly as serveSingle does for a
+// lone legacy carrier, but sourced from the mpq Session instead of a muxconn.
+func (s *Server) serveMPQ(ctx context.Context) {
+	sess, err := s.mpqListener.Accept(ctx)
+	if err != nil {
+		if ctx.Err() == nil {
+			logger.Warnf("mpq: accept session: %v", err)
+		}
+		return
+	}
+	smuxSess, err := smux.Server(sess, runtime.SmuxConfig(0))
+	if err != nil {
+		logger.Warnf("mpq: smux server init failed: %v", err)
+		_ = sess.Close()
+		return
+	}
+	s.sessMu.Lock()
+	s.session = smuxSess
+	s.sessMu.Unlock()
+
+	// Inline handshake on the first stream, then admit tunnel streams. On
+	// handshake failure acceptHandshake returns false and we stop; the session
+	// is torn down at shutdown.
+	if !s.acceptHandshake(ctx, smuxSess) {
+		return
+	}
+
+	for {
+		if contextDone(ctx) {
+			return
+		}
+		stream, err := smuxSess.AcceptStream()
+		if err != nil {
+			if contextDone(ctx) {
+				return
+			}
+			logger.Infof("mpq: AcceptStream(data) error - closing session: %v", err)
+			return
+		}
+		s.wg.Add(1)
+		go func() {
+			defer s.wg.Done()
+			s.handleStream(ctx, stream, s.currentSessionID())
+		}()
+	}
 }
 
 // bringUpMultipath brings up one carrier per configured path and wires each
@@ -1193,6 +1359,10 @@ func (s *Server) getPeerSession(peerID string) *peerSession {
 // smux session is the control stream - the handshake runs there. Subsequent
 // streams are tunnel streams and proxy traffic.
 func (s *Server) serve(ctx context.Context) {
+	if s.mpqListener != nil {
+		s.serveMPQ(ctx)
+		return
+	}
 	s.sessMu.RLock()
 	peerRouted := s.peerLn != nil || s.multipathPeer
 	s.sessMu.RUnlock()
@@ -1642,6 +1812,12 @@ func (s *Server) shutdown() {
 		s.doneOnce.Do(func() { close(s.done) })
 	}
 	s.closeSession()
+	if s.mpqListener != nil {
+		_ = s.mpqListener.Close()
+	}
+	if s.mpqPC != nil {
+		_ = s.mpqPC.Close()
+	}
 	if s.ln != nil {
 		_ = s.ln.Close()
 	}
