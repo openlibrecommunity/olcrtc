@@ -20,23 +20,34 @@ const (
 var errFakeConnect = errors.New("boom")
 
 type fakeRoom struct {
-	mu           sync.Mutex
-	state        lksdk.ConnectionState
-	published    [][]byte
-	tracks       int
-	unpublished  int
-	disconnected int
+	mu             sync.Mutex
+	state          lksdk.ConnectionState
+	published      [][]byte
+	publishedRelia []bool
+	tracks         int
+	unpublished    int
+	disconnected   int
 }
 
 func newFakeRoom() *fakeRoom {
 	return &fakeRoom{state: lksdk.ConnectionStateConnected}
 }
 
-func (r *fakeRoom) publishData(data []byte) error {
+func (r *fakeRoom) publishData(data []byte, reliable bool) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.published = append(r.published, append([]byte(nil), data...))
+	r.publishedRelia = append(r.publishedRelia, reliable)
 	return nil
+}
+
+func (r *fakeRoom) lastReliable() (bool, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if len(r.publishedRelia) == 0 {
+		return false, false
+	}
+	return r.publishedRelia[len(r.publishedRelia)-1], true
 }
 
 func (r *fakeRoom) publishTrack(webrtc.TrackLocal) error {
@@ -318,4 +329,59 @@ func equalStrings(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+// TestSendSelectsDataChannelKind verifies that cfg.Unreliable picks the LOSSY
+// (reliable=false) LiveKit data channel, and that the default stays RELIABLE
+// (reliable=true) so legacy paths are unchanged. No real SFU is involved: the
+// fakeRoom records the reliability flag PublishDataPacket would carry.
+func TestSendSelectsDataChannelKind(t *testing.T) {
+	cases := []struct {
+		name         string
+		unreliable   bool
+		wantReliable bool
+	}{
+		{name: "default reliable", unreliable: false, wantReliable: true},
+		{name: "unreliable lossy", unreliable: true, wantReliable: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			sess, err := New(ctx, engine.Config{
+				URL:        testOldURL,
+				Token:      testOldToken,
+				Unreliable: tc.unreliable,
+			})
+			if err != nil {
+				t.Fatalf("New() error = %v", err)
+			}
+			s, ok := sess.(*Session)
+			if !ok {
+				t.Fatalf("New() type = %T, want *Session", sess)
+			}
+			connector := newFakeConnector()
+			s.connectRoom = connector.connect
+
+			if err := s.Connect(ctx); err != nil {
+				t.Fatalf("Connect() error = %v", err)
+			}
+			defer func() { _ = s.Close() }()
+
+			if err := s.Send([]byte("payload")); err != nil {
+				t.Fatalf("Send() error = %v", err)
+			}
+
+			room := connector.room(0)
+			waitFor(t, func() bool {
+				_, ok := room.lastReliable()
+				return ok
+			})
+			got, _ := room.lastReliable()
+			if got != tc.wantReliable {
+				t.Fatalf("publishData reliable = %v, want %v", got, tc.wantReliable)
+			}
+		})
+	}
 }

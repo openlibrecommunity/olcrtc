@@ -46,7 +46,7 @@ var (
 )
 
 type roomHandle interface {
-	publishData(data []byte) error
+	publishData(data []byte, reliable bool) error
 	publishTrack(track webrtc.TrackLocal) error
 	unpublishLocalTracks()
 	disconnect()
@@ -57,11 +57,19 @@ type sdkRoom struct {
 	room *lksdk.Room
 }
 
-func (r *sdkRoom) publishData(data []byte) error {
+// publishData sends a byte payload over the LiveKit room's data plane.
+//
+// LiveKit natively distinguishes two data-channel kinds: RELIABLE (ordered,
+// retransmitted) and LOSSY (unordered, no retransmit). When reliable is false
+// the packet goes over the LOSSY channel, so QUIC layered on top (mpq) is the
+// sole reliability layer and no redundant SCTP retransmit/ordering is stacked
+// underneath. Legacy callers pass reliable=true and keep the historical
+// reliable+ordered carrier byte-for-byte.
+func (r *sdkRoom) publishData(data []byte, reliable bool) error {
 	if err := r.room.LocalParticipant.PublishDataPacket(
 		lksdk.UserData(data),
 		lksdk.WithDataPublishTopic(dataPublishTopic),
-		lksdk.WithDataPublishReliable(true),
+		lksdk.WithDataPublishReliable(reliable),
 	); err != nil {
 		return fmt.Errorf("publish data packet: %w", err)
 	}
@@ -147,6 +155,10 @@ type Session struct {
 	videoTracks     []webrtc.TrackLocal
 	onVideoTrack    func(*webrtc.TrackRemote, *webrtc.RTPReceiver)
 	wg              sync.WaitGroup
+	// unreliable selects the LOSSY (unordered, no-retransmit) LiveKit data
+	// channel instead of RELIABLE, so QUIC layered on top (mpq) is the sole
+	// reliability layer. Defaults to false: legacy paths stay reliable+ordered.
+	unreliable bool
 }
 
 // New creates a new LiveKit engine session.
@@ -170,6 +182,7 @@ func New(ctx context.Context, cfg engine.Config) (engine.Session, error) {
 		sendQueue:   make(chan []byte, defaultSendQueueSize),
 		done:        make(chan struct{}),
 		cancel:      cancel,
+		unreliable:  cfg.Unreliable,
 	}, nil
 }
 
@@ -266,7 +279,7 @@ func (s *Session) processSendQueue() {
 			if room == nil {
 				return
 			}
-			if err := room.publishData(data); err != nil {
+			if err := room.publishData(data, !s.unreliable); err != nil {
 				log.Printf("livekit publish data error: %v", err)
 			}
 		}
