@@ -512,6 +512,10 @@ func (s *Server) bringUpLinkMPQ(
 		ProxyPort:  s.socksProxyPort,
 		Options:    cfg.TransportOptions,
 		Traffic:    cfg.Traffic,
+		// mpq: QUIC is the sole reliability layer, so the carrier under it must be
+		// datagram-like (unreliable, unordered) to avoid a redundant SCTP
+		// retransmit/HOL layer QUIC cannot see.
+		Unreliable: true,
 	})
 	if err != nil {
 		return fmt.Errorf("mpq: failed to create transport: %w", err)
@@ -551,6 +555,11 @@ func (s *Server) bringUpLinkMPQ(
 		TLSConfig:     tlsConf,
 		ExpectedPaths: expectedPaths,
 		MaxPaths:      expectedPaths,
+		// Carrier is not real UDP: disable PMTU discovery and pin the packet size
+		// to the carrier message budget so one carrier message == one QUIC packet
+		// (no SCTP fragmentation under the unreliable carrier).
+		DisablePathMTUDiscovery: true,
+		InitialPacketSize:       mpqx.MaxQUICPacketSize,
 	})
 	if err != nil {
 		return fmt.Errorf("mpq: listen: %w", err)

@@ -312,6 +312,12 @@ func (c *Client) bringUpLinkMPQ(
 		TLSConfig:     tlsConf,
 		ExpectedPaths: n,
 		MaxPaths:      n,
+		// The carrier is not real UDP, so PMTU discovery is meaningless; pin the
+		// QUIC packet size to the carrier message budget so a single carrier
+		// message carries exactly one QUIC packet (no SCTP-level fragmentation
+		// that could reorder/partially-drop under the unreliable carrier).
+		DisablePathMTUDiscovery: true,
+		InitialPacketSize:       mpqx.MaxQUICPacketSize,
 	})
 	if err != nil {
 		return fmt.Errorf("mpq: dial session: %w", err)
@@ -402,6 +408,10 @@ func (c *Client) bringUpCarriersMPQ(
 			RequireTargetedPeer: true,
 			Options:             cfg.TransportOptions,
 			Traffic:             cfg.Traffic,
+			// mpq: QUIC is the sole reliability layer, so the carrier under it must
+			// be datagram-like (unreliable, unordered) — a reliable+ordered carrier
+			// would add a redundant SCTP retransmit/HOL layer QUIC cannot see.
+			Unreliable: true,
 		})
 		if err != nil {
 			c.closeCarriers(carriers)
