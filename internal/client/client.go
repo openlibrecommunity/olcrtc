@@ -318,22 +318,44 @@ func (c *Client) bringUpLinkMPQ(
 		// that could reorder/partially-drop under the unreliable carrier).
 		DisablePathMTUDiscovery: true,
 		InitialPacketSize:       mpqx.MaxQUICPacketSize,
+		// Fast dead-path detection: a carrier/room that silently dies is evicted
+		// from the mpq scheduler within a few seconds (QUIC idle timeout) instead
+		// of mpq-brutal's ~45s UDP default, so the tunnel fails over to the healthy
+		// path(s) promptly. Keep-alive PINGs keep an idle-but-live path up.
+		PathMaxIdleTimeout:  mpqx.PathMaxIdleTimeout,
+		PathKeepAlivePeriod: mpqx.PathKeepAlivePeriod,
 	})
 	if err != nil {
 		return fmt.Errorf("mpq: dial session: %w", err)
 	}
 	c.mpqSession = sess
+	// pathIDs[i] is the mpq pathID of carrier i, or -1 if that path never
+	// attached. Carrier 0 is core.Dial's single initial path, which mpq-brutal
+	// always assigns pathID 0 (see core.Dial). It maps carrier index -> pathID so
+	// a carrier's liveness callback can address exactly its own mpq path.
+	pathIDs := make([]int, n)
+	pathIDs[0] = 0
 	// Bring up the remaining paths on the live session (path 0 was dialled
 	// above). Soft degradation: a path that fails to attach is logged and
 	// skipped; mpq keeps bonding over whatever paths did come up.
 	for i := 1; i < n; i++ {
-		if err := sess.AddPath(ctx, ""); err != nil {
-			logger.Warnf("mpq: AddPath %d failed, continuing on %d path(s): %v", i, i, err)
+		pid, addErr := sess.AddPath(ctx, "")
+		if addErr != nil {
+			logger.Warnf("mpq: AddPath %d failed, continuing on %d path(s): %v", i, i, addErr)
+			pathIDs[i] = -1
+			continue
 		}
+		pathIDs[i] = int(pid)
 	}
 	if got := len(sess.Paths()); got > 1 {
 		logger.Infof("mpq: bonding session up with %d paths", got)
 	}
+	// Now that the carrier->pathID mapping is known, wire each carrier's liveness
+	// so a dead carrier is proactively evicted from the mpq scheduler.
+	c.sessMu.Lock()
+	carriers := c.mpqCarriers
+	c.sessMu.Unlock()
+	c.wireMPQPathLiveness(sess, carriers, pathIDs, cancel)
 
 	smuxSess, err := smux.Client(sess, runtime.SmuxConfig(0))
 	if err != nil {
@@ -453,6 +475,59 @@ func (c *Client) bringUpCarriersMPQ(
 	c.mpqCarriers = carriers
 	c.sessMu.Unlock()
 	return pathConns, carriers[0], nil
+}
+
+// wireMPQPathLiveness installs per-carrier liveness callbacks now that the mpq
+// session and the carrier->pathID mapping are known. It replaces the placeholder
+// callbacks set during bring-up (bringUpCarriersMPQ) with ones that act on the
+// live session:
+//
+//   - On a single carrier's conference-end it proactively fails that path
+//     (Session.FailPath), so the mpq scheduler stops sending to the dead carrier
+//     immediately rather than waiting out the QUIC idle timeout. FailPath uses
+//     the same markDead path as a natural idle-timeout death (no mid-transfer
+//     conn close / set removal), so it evicts instantly without disturbing
+//     in-flight flow control. When every path has ended the whole client is torn
+//     down (cancel), matching the previous behaviour.
+//   - On a carrier reconnect it logs: re-adding a recovered carrier to the live
+//     mpq session needs a fresh PacketConn rebound to the carrier's OnData, which
+//     the transport layer does not expose at runtime. Fast idle-timeout detection
+//     still removes the path and the tunnel keeps running on the survivors.
+//
+// pathIDs[i] is the mpq pathID of carrier i, or -1 if that path never attached.
+func (c *Client) wireMPQPathLiveness(
+	sess *core.Session,
+	carriers []transport.Transport,
+	pathIDs []int,
+	cancel context.CancelFunc,
+) {
+	var endedPaths atomic.Int32
+	total := int32(len(carriers)) //nolint:gosec // path counts are small, bounded by config
+	for i, ln := range carriers {
+		i, ln := i, ln
+		pid := pathIDs[i]
+		ln.SetEndedCallback(func(reason string) {
+			logger.Infof("mpq: path %d reported conference end: %s", i, reason)
+			// Proactively fail just this path so the scheduler fails over to the
+			// survivors without waiting for the QUIC idle timeout. FailPath refuses
+			// to fail the last live path (that case is handled by the all-ended
+			// teardown below).
+			if pid >= 0 {
+				if err := sess.FailPath(byte(pid)); err != nil { //nolint:gosec // pid in 0..255
+					logger.Debugf("mpq: FailPath(pathID=%d) on path %d end: %v", pid, i, err)
+				} else {
+					logger.Infof("mpq: proactively failed dead path %d (pathID=%d)", i, pid)
+				}
+			}
+			if endedPaths.Add(1) >= total {
+				logger.Infof("mpq: all %d path(s) ended, tearing down", total)
+				cancel()
+			}
+		})
+		ln.SetReconnectCallback(func() {
+			logger.Warnf("mpq: path %d carrier reconnect signalled; re-add to live mpq session not yet supported", i)
+		})
+	}
 }
 
 // closeCarriers closes a set of carriers, ignoring errors. Used to unwind a

@@ -159,7 +159,7 @@ func TestServerPacketConnMultiPathDemux(t *testing.T) {
 	defer client.Close()
 
 	// Second path on the fly (pathIndex 1).
-	if err := client.AddPath(ctx, ""); err != nil {
+	if _, err := client.AddPath(ctx, ""); err != nil {
 		t.Fatalf("AddPath: %v", err)
 	}
 
