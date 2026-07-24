@@ -44,6 +44,23 @@ import (
 // minimum-MTU-safe value quic-go uses by default.
 const MaxQUICPacketSize = 1200
 
+// PathMaxIdleTimeout and PathKeepAlivePeriod tune how fast mpq detects a dead
+// path (a carrier/room that has silently gone away) when running over an
+// unreliable carrier. QUIC declares a path dead once no packet arrives for
+// MaxIdleTimeout; over UDP mpq-brutal defaults to ~45s, which on WebRTC would
+// mean up to ~45s of degraded service after a room dies. Here we shrink the
+// idle timeout to a few seconds and send keep-alive PINGs well inside it: while
+// the carrier is alive the PINGs keep an idle path from dying, but once the
+// carrier is truly dead the PINGs go unacked, no packets arrive, and the idle
+// timer fires within PathMaxIdleTimeout — so a dead path is evicted from the mpq
+// scheduler in a handful of seconds instead of ~45s. Both endpoints must agree
+// on a small idle timeout (QUIC negotiates the min), so client and server pass
+// these same values.
+const (
+	PathMaxIdleTimeout  = 6 * time.Second
+	PathKeepAlivePeriod = 2 * time.Second
+)
+
 // Sender is the outbound half of a carrier: a single call ships one message.
 // [transport.Transport] satisfies this interface via its Send method.
 type Sender interface {

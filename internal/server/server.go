@@ -560,6 +560,11 @@ func (s *Server) bringUpLinkMPQ(
 		// (no SCTP fragmentation under the unreliable carrier).
 		DisablePathMTUDiscovery: true,
 		InitialPacketSize:       mpqx.MaxQUICPacketSize,
+		// Fast dead-path detection, matching the client: QUIC negotiates the min
+		// idle timeout of both ends, so the server must also shrink it for a dead
+		// carrier path to be dropped within a few seconds instead of ~45s.
+		PathMaxIdleTimeout:  mpqx.PathMaxIdleTimeout,
+		PathKeepAlivePeriod: mpqx.PathKeepAlivePeriod,
 	})
 	if err != nil {
 		return fmt.Errorf("mpq: listen: %w", err)
