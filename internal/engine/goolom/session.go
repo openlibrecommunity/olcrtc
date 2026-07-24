@@ -91,6 +91,9 @@ type Session struct {
 	roomURL          string // referer for telemetry - opaque to the engine
 	telemetryReferer string
 	refresh          func(ctx context.Context) (engine.Credentials, error)
+	// unreliable opens the data channel in datagram mode (Ordered=false,
+	// MaxRetransmits=0) so QUIC layered on top is the sole reliability layer.
+	unreliable bool
 
 	ws    *websocket.Conn
 	wsMu  sync.Mutex
@@ -175,6 +178,7 @@ func New(_ context.Context, cfg engine.Config) (engine.Session, error) {
 		roomURL:          roomURL,
 		telemetryReferer: telemetryReferer,
 		refresh:          cfg.Refresh,
+		unreliable:       cfg.Unreliable,
 		onData:           cfg.OnData,
 		reconnectCh:      make(chan struct{}, 1),
 		closeCh:          make(chan struct{}),

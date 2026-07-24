@@ -48,6 +48,9 @@ type Config struct {
 	// provider so it can act as that account instead of running its guest
 	// flow (e.g. a WB Stream account token). Empty uses the guest flow.
 	AuthToken string
+	// Unreliable requests a datagram-like (unreliable, unordered) byte carrier
+	// from the engine. Set by the mpq stack; see engine.Config.Unreliable.
+	Unreliable bool
 }
 
 // Factory creates an engine session for a given carrier.
@@ -105,6 +108,7 @@ func registerDirect(name string) {
 			ProxyAddr:           cfg.ProxyAddr,
 			ProxyPort:           cfg.ProxyPort,
 			RequireTargetedPeer: cfg.RequireTargetedPeer,
+			Unreliable:          cfg.Unreliable,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("engine new: %w", err)
@@ -140,6 +144,7 @@ func registerEngineAuth(name string, provider auth.Provider) {
 			ProxyAddr:           cfg.ProxyAddr,
 			ProxyPort:           cfg.ProxyPort,
 			RequireTargetedPeer: cfg.RequireTargetedPeer,
+			Unreliable:          cfg.Unreliable,
 			Refresh: func(ctx context.Context) (engine.Credentials, error) {
 				fresh, err := provider.Issue(ctx, authCfg)
 				if err != nil {

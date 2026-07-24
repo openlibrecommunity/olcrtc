@@ -21,6 +21,25 @@ import (
 // hands back the real STUN/TURN set in rtcConfiguration.
 const defaultSTUNURL = "stun:stun.rtc.yandex.net:3478"
 
+// dataChannelInit returns the DataChannelInit for the "olcrtc" byte channel.
+// In datagram mode it opens the channel unreliable (MaxRetransmits=0) and
+// unordered (Ordered=false), so the SCTP carrier does neither retransmission
+// nor reordering — QUIC layered on top is the single reliability layer, which
+// avoids the double-reliability HOL/latency penalty of a reliable carrier under
+// QUIC. A nil return keeps pion's default (reliable, ordered) for the legacy
+// stack.
+func dataChannelInit(unreliable bool) *webrtc.DataChannelInit {
+	if !unreliable {
+		return nil
+	}
+	ordered := false
+	var maxRetransmits uint16 // 0: no retransmissions
+	return &webrtc.DataChannelInit{
+		Ordered:        &ordered,
+		MaxRetransmits: &maxRetransmits,
+	}
+}
+
 // Connect starts the WebRTC connection process.
 func (s *Session) Connect(ctx context.Context) error {
 	s.closed.Store(false)
@@ -39,7 +58,7 @@ func (s *Session) Connect(ctx context.Context) error {
 	var dcReady chan struct{}
 	if s.onData != nil {
 		var err error
-		s.dc, err = s.pcPub.CreateDataChannel("olcrtc", nil)
+		s.dc, err = s.pcPub.CreateDataChannel("olcrtc", dataChannelInit(s.unreliable))
 		if err != nil {
 			return fmt.Errorf("create dc: %w", err)
 		}

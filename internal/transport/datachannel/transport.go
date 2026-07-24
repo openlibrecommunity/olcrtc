@@ -19,6 +19,9 @@ var ErrByteStreamUnsupported = errors.New("engine does not support byte stream")
 
 type streamTransport struct {
 	session engine.Session
+	// unreliable records that the carrier was opened in datagram mode
+	// (unreliable, unordered) so Features reports the real delivery semantics.
+	unreliable bool
 }
 
 // New creates a datachannel transport backed by a carrier engine.
@@ -36,6 +39,7 @@ func New(ctx context.Context, cfg transport.Config) (transport.Transport, error)
 		Token:               cfg.Token,
 		AuthToken:           cfg.AuthToken,
 		RequireTargetedPeer: cfg.RequireTargetedPeer,
+		Unreliable:          cfg.Unreliable,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("open engine session: %w", err)
@@ -46,7 +50,7 @@ func New(ctx context.Context, cfg transport.Config) (transport.Transport, error)
 		return nil, ErrByteStreamUnsupported
 	}
 
-	return &streamTransport{session: sess}, nil
+	return &streamTransport{session: sess, unreliable: cfg.Unreliable}, nil
 }
 
 // Connect starts the transport connection.
@@ -143,11 +147,13 @@ func (p *streamTransport) WaitForPeer(ctx context.Context) error {
 	return nil
 }
 
-// Features describes the current datachannel transport semantics.
+// Features describes the current datachannel transport semantics. When opened
+// in datagram mode (Unreliable) the carrier gives neither reliability nor
+// ordering — QUIC on top is the reliability layer — so report that honestly.
 func (p *streamTransport) Features() transport.Features {
 	return transport.Features{
-		Reliable:        true,
-		Ordered:         true,
+		Reliable:        !p.unreliable,
+		Ordered:         !p.unreliable,
 		MessageOriented: true,
 		MaxPayloadSize:  defaultMaxPayloadSize,
 	}

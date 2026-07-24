@@ -154,6 +154,15 @@ type Config struct {
 	// Traffic controls payload-size and pacing shaping applied around the
 	// underlying transport's Send.
 	Traffic TrafficConfig
+
+	// Unreliable requests a datagram-like carrier: unreliable and unordered
+	// delivery (e.g. a datachannel with Ordered=false, MaxRetransmits=0). It is
+	// meant for the mpq/QUIC stack, where QUIC is the sole reliability layer and
+	// a reliable+ordered carrier underneath would add a redundant second layer
+	// (SCTP/KCP retransmit + HOL blocking that QUIC cannot see). The legacy
+	// muxconn+smux stack leaves this false and keeps a reliable ordered carrier.
+	// Transports that cannot honour it (video carriers) ignore the flag.
+	Unreliable bool
 }
 
 // Factory creates a transport instance.

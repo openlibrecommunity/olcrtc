@@ -62,6 +62,14 @@ type Config struct {
 	// session's local epoch.
 	RequireTargetedPeer bool
 	Refresh             func(ctx context.Context) (Credentials, error)
+
+	// Unreliable asks the engine to expose a datagram-like byte carrier:
+	// unreliable, unordered delivery (a datachannel opened with Ordered=false and
+	// MaxRetransmits=0). Used by the mpq/QUIC stack so QUIC is the only
+	// reliability layer; a reliable+ordered datachannel underneath would add a
+	// redundant SCTP retransmit/ordering layer QUIC cannot see. Engines that
+	// cannot honour it should ignore the flag (delivery stays reliable+ordered).
+	Unreliable bool
 }
 
 // Session is the engine-level runtime handle. It is shaped to match what
