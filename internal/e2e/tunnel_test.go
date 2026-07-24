@@ -11,6 +11,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	mathrand "math/rand"
 	"net"
 	"os"
 	"strconv"
@@ -124,6 +125,35 @@ const (
 type memoryRoom struct {
 	mu      sync.Mutex
 	streams map[*memoryStream]struct{}
+	// chaos, when non-nil, makes the carrier lossy and reordering — it emulates
+	// an unreliable/unordered datagram carrier (partial-reliability SCTP) so a
+	// tunnel over it must rely on its own upper reliability layer (mpq/QUIC).
+	chaos *carrierChaos
+}
+
+// carrierChaos drops and reorders carrier messages to emulate an unreliable,
+// unordered datagram carrier. It is seeded deterministically so a run is
+// reproducible; QUIC on top must recover regardless of the exact pattern.
+type carrierChaos struct {
+	mu          sync.Mutex
+	rng         *mathrand.Rand
+	dropProb    float64       // fraction of messages silently dropped
+	reorderProb float64       // fraction of messages delivered after a small delay
+	maxDelay    time.Duration // upper bound on the reorder delay
+}
+
+// classify decides the fate of one carrier message: dropped, and if kept, an
+// optional delay that reorders it relative to messages sent just after it.
+func (c *carrierChaos) classify() (drop bool, delay time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.rng.Float64() < c.dropProb {
+		return true, 0
+	}
+	if c.rng.Float64() < c.reorderProb {
+		return false, time.Duration(c.rng.Int63n(int64(c.maxDelay) + 1))
+	}
+	return false, 0
 }
 
 func (r *memoryRoom) connectedCount() int {
@@ -326,7 +356,27 @@ func (s *memoryStream) Send(data []byte) error {
 	}
 	s.room.mu.Unlock()
 
+	chaos := s.room.chaos
 	for _, peer := range peers {
+		if chaos == nil {
+			peer.deliver(payload)
+			continue
+		}
+		drop, delay := chaos.classify()
+		if drop {
+			continue // message lost, exactly like a saturated datagram socket
+		}
+		if delay > 0 {
+			// Deliver later so this message reorders relative to those sent right
+			// after it; QUIC on top must reassemble in order regardless.
+			peer := peer
+			payload := payload
+			go func() {
+				time.Sleep(delay)
+				peer.deliver(payload)
+			}()
+			continue
+		}
 		peer.deliver(payload)
 	}
 	return nil
@@ -635,6 +685,34 @@ func registerMemoryCarrier(t *testing.T) (string, *memoryRoom) {
 
 	name := "e2e-memory-" + t.Name()
 	room := &memoryRoom{streams: make(map[*memoryStream]struct{})}
+	enginebuiltin.Register(name, func(_ context.Context, cfg enginebuiltin.Config) (engine.Session, error) {
+		stream := newMemoryStream(room, cfg.OnData)
+		room.mu.Lock()
+		room.streams[stream] = struct{}{}
+		room.mu.Unlock()
+		return stream, nil
+	})
+	return name, room
+}
+
+// registerLossyMemoryCarrier registers a memory carrier whose room drops and
+// reorders carrier messages, emulating an unreliable/unordered datagram carrier.
+// It proves an mpq tunnel (QUIC = sole reliability layer) recovers when the
+// carrier underneath does NO retransmission or ordering of its own.
+func registerLossyMemoryCarrier(t *testing.T, dropProb, reorderProb float64, maxDelay time.Duration) (string, *memoryRoom) {
+	t.Helper()
+	session.RegisterDefaults()
+
+	name := "e2e-lossy-" + t.Name()
+	room := &memoryRoom{
+		streams: make(map[*memoryStream]struct{}),
+		chaos: &carrierChaos{
+			rng:         mathrand.New(mathrand.NewSource(1)), //nolint:gosec // deterministic test chaos, not crypto
+			dropProb:    dropProb,
+			reorderProb: reorderProb,
+			maxDelay:    maxDelay,
+		},
+	}
 	enginebuiltin.Register(name, func(_ context.Context, cfg enginebuiltin.Config) (engine.Session, error) {
 		stream := newMemoryStream(room, cfg.OnData)
 		room.mu.Lock()
