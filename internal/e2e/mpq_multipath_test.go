@@ -163,6 +163,22 @@ func (s *mpqPeerStream) kill() {
 	s.mu.Unlock()
 }
 
+// endConference models a room/carrier that has died AND announced it via the
+// carrier's conference-end callback (SetEndedCallback), the way a real
+// vp8channel/datachannel carrier signals its room going away. Both directions
+// go dead (like kill) and the ended callback fires, which drives the client to
+// proactively fail this path in the mpq session (Session.FailPath) instead of
+// waiting out the QUIC idle timeout.
+func (s *mpqPeerStream) endConference(reason string) {
+	s.mu.Lock()
+	s.dead = true
+	ended := s.ended
+	s.mu.Unlock()
+	if ended != nil {
+		ended(reason)
+	}
+}
+
 func (s *mpqPeerStream) SetReconnectCallback(func(*webrtc.DataChannel)) {}
 func (s *mpqPeerStream) SetShouldReconnect(func() bool)                  {}
 func (s *mpqPeerStream) SetEndedCallback(cb func(string)) {
@@ -337,14 +353,14 @@ func TestMPQMultipathSOCKSTunnel(t *testing.T) {
 	echoRoundTrip(t, conn, 256*1024, 30*time.Second)
 }
 
-// TestMPQMultipathSurvivesPathDrop kills one of the two paths mid-tunnel and
-// verifies data still flows over the surviving path (mpq's reliable bonding
-// retransmits the lost chunks on the healthy path). Best-effort: uses a generous
-// budget because loss recovery on the dead path adds RTO latency.
+// TestMPQMultipathSurvivesPathDrop silently kills one of the two paths mid-tunnel
+// (both directions drop, no carrier callback) and verifies data still flows over
+// the surviving path. With no liveness signal from the carrier, the only thing
+// that retires the dead path is the QUIC idle timeout — now shrunk to a few
+// seconds (mpqx.PathMaxIdleTimeout) instead of mpq-brutal's ~45s UDP default. So
+// this used to take ~45-55s and now completes in a handful of seconds; the tight
+// budget below is the direct assertion of fast dead-path detection.
 func TestMPQMultipathSurvivesPathDrop(t *testing.T) {
-	if testing.Short() {
-		t.Skip("slow: waits out the dead path's QUIC idle timeout (~45s)")
-	}
 	echoAddr := startEchoServer(t)
 	rt, hub := startMPQMultipathTunnel(t)
 	defer rt.stop(t)
@@ -369,8 +385,59 @@ func TestMPQMultipathSurvivesPathDrop(t *testing.T) {
 	victim.kill()
 	t.Logf("killed path peerID=%s", victim.peerID)
 
-	// Data must still round-trip via the surviving path. Generous budget: until
-	// the dead path hits its QUIC idle timeout (~45s) the scheduler keeps trying
-	// it and relies on RTO retransmission onto the healthy path.
-	echoRoundTrip(t, conn, 64*1024, 90*time.Second)
+	// Data must still round-trip via the surviving path. The dead path is retired
+	// at the (now small) QUIC idle timeout, well under the old ~45s; a 25s budget
+	// proves detection is fast while leaving slack for CI jitter and loss recovery.
+	start := time.Now()
+	echoRoundTrip(t, conn, 64*1024, 25*time.Second)
+	t.Logf("survived path drop, round-trip completed in %s", time.Since(start))
+}
+
+// TestMPQMultipathProactivePathRemoval ends one path's conference (fires the
+// carrier's SetEndedCallback, the way a real room-death is signalled) and
+// verifies the client proactively fails that path in the mpq session and keeps
+// serving data over the survivor. Firing the ended callback exercises the
+// carrier-liveness wiring (wireMPQPathLiveness -> Session.FailPath), which evicts
+// the dead path immediately instead of waiting out the QUIC idle timeout.
+//
+// The post-eviction round-trips are kept small on purpose: each fits in a single
+// mpq chunk, so recovery of anything that raced onto the dead path rides fast RTO
+// retransmission onto the survivor (~tens of ms) rather than a bulk transfer that
+// would also depend on the server side detecting its own dead path. This isolates
+// what we want to assert here — the client's proactive-eviction wiring keeps the
+// tunnel serving — from the separate bulk loss-recovery timing exercised by
+// TestMPQMultipathSurvivesPathDrop.
+func TestMPQMultipathProactivePathRemoval(t *testing.T) {
+	echoAddr := startEchoServer(t)
+	rt, hub := startMPQMultipathTunnel(t)
+	defer rt.stop(t)
+
+	conn := connectViaSOCKS(t, rt.socksAddr, echoAddr)
+	defer func() { _ = conn.Close() }()
+
+	// Warm up on both paths.
+	echoRoundTrip(t, conn, 4096, 10*time.Second)
+
+	// End one path's conference: dead in both directions AND announced via the
+	// ended callback, which drives proactive FailPath on the client.
+	hub.mu.Lock()
+	var victim *mpqPeerStream
+	for _, c := range hub.clients {
+		victim = c
+		break
+	}
+	hub.mu.Unlock()
+	if victim == nil {
+		t.Fatal("no client path to end")
+	}
+	victim.endConference("room closed")
+	t.Logf("ended conference on path peerID=%s", victim.peerID)
+
+	// The surviving path must keep the tunnel up. Proactive eviction takes the
+	// dead path out of the scheduler immediately; a couple of small round-trips
+	// confirm data keeps flowing over the survivor promptly.
+	start := time.Now()
+	echoRoundTrip(t, conn, 4096, 15*time.Second)
+	echoRoundTrip(t, conn, 4096, 15*time.Second)
+	t.Logf("served over survivor after proactive eviction in %s", time.Since(start))
 }
