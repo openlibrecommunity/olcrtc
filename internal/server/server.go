@@ -704,6 +704,7 @@ func (s *Server) serveMPQ(ctx context.Context) {
 // a tunnel-stream accept loop. All state (sessionID) is local, so concurrent
 // sessions never clobber one another.
 func (s *Server) serveMPQSession(ctx context.Context, sess *core.Session) {
+	defer s.dropMPQSession(sess)
 	defer func() { _ = sess.Close() }()
 
 	smuxSess, err := smux.Server(sess, runtime.SmuxConfig(0))
@@ -737,6 +738,21 @@ func (s *Server) serveMPQSession(ctx context.Context, sess *core.Session) {
 			s.handleStream(ctx, stream, sid)
 		}()
 	}
+}
+
+// dropMPQSession removes an ended session from s.mpqSessions by pointer
+// identity. Without it the slice would only be drained by shutdown, so a
+// long-running server would accumulate one stale entry per disconnected client.
+// shutdown closes whatever is still listed.
+func (s *Server) dropMPQSession(sess *core.Session) {
+	s.sessMu.Lock()
+	for i, x := range s.mpqSessions {
+		if x == sess {
+			s.mpqSessions = append(s.mpqSessions[:i], s.mpqSessions[i+1:]...)
+			break
+		}
+	}
+	s.sessMu.Unlock()
 }
 
 // acceptMPQHandshake runs the inline handshake on a session's first smux stream
