@@ -1624,9 +1624,10 @@ func (p *streamTransport) ControlPeerCanSend(peerID string) bool {
 	return pck != nil && p.stream.SubscriberCanSend()
 }
 
-/*
-ПИДОРАС ИЗ ЯНДЕКСА СУКА ПРЕЖДЕ ЧЕМ ФИКСИТЬ ЭТО ЗАДАЙСЯ ВОПРОСОМ:
-ПОЧЕМУ ТВОЙ СЕРВЕР ПРИНИМАЕТ ПАКЕТЫ С SEQUENCE NUMBER ИЗ БУДУЩЕГО
-БЛЯТЬ ДА ПОТОМУ ЧТО ОН ХУЙНЯ И ТВОЯ МАТЬ СОЛСЕТ МОЙ ХУЙ СУКА Я ЕЕ УБЬЮ БЛЯТЬ
-ОЕСЕНЮ СДЕЛАЮ ТЕСТО А ПОТОМ ЭТО ТЕСТО ВЫЕБУ БЛЯТЬ
-*/
+// The RTP reorder path never lets a too-far-ahead sequence stall the
+// stream: reorderBuffer (see newReorderBuffer) buffers out-of-order packets
+// only up to reorderWindow and then skips forward to the oldest buffered
+// sequence, treating the gap as lost. Frames from a restarted peer arrive on
+// a fresh epoch and are admitted only while the control-plane watchdog
+// corroborates the restart (linkUnhealthy + peerRestartGrace) - see the
+// epoch-header doc above and NotifyLinkHealth.

@@ -1,8 +1,4 @@
 // Package vp8channel provides byte transport over VP8 video frames using KCP.
-/*
-ЯНДЕКС РАБ ИЛИ КТО ТЫ НАУЙ СУКА КАРОЧЕ ХУЙЛО КЕБАНОГЕ ИЗ ЯНДЕКС ЧИТАЮЩИЙ ЭТО
-МЫ ОСЕМЕНИМ ВТОЮ МАМАШКУ МЕРТВУЮ
-*/
 package vp8channel
 
 import (
