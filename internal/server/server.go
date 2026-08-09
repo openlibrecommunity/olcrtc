@@ -938,7 +938,12 @@ func (s *Server) buildMultipathCarrier(
 	// per-peer control callback so each client's handshake/liveness rides
 	// its own control KCP.
 	if pt, ok := tr.(transport.PeerTransport); ok && pt.SupportsPeerRouting() {
+		// Guarded by the demux's own mutex because routePeerBondData reads it
+		// unlocked-by-registry (it can fire from a retry path's carrier while a
+		// concurrent build is still deciding whether this carrier peer-routes).
+		demux.mu.Lock()
 		demux.tr = pt
+		demux.mu.Unlock()
 		// multipathPeer is read by serve() (possibly from another goroutine when
 		// a peer path only comes up via retry), so write it under sessMu.
 		s.sessMu.Lock()

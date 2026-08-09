@@ -58,8 +58,10 @@ type peerBondPath struct {
 // its PATH_HELLO, which resolves that peer to a bond+pathIdx; every later frame
 // from the same peer is forwarded to that bond's path sink.
 type peerCarrierDemux struct {
-	s  *Server
-	tr transport.PeerTransport // set after transport.New once peer-routing is confirmed
+	s *Server
+	// tr is set after transport.New once peer-routing is confirmed (see
+	// buildMultipathCarrier); reads and the write are guarded by mu.
+	tr transport.PeerTransport
 
 	mu     sync.Mutex
 	routes map[string]*peerBondPath // peerID -> resolved route (nil until PATH_HELLO)
@@ -80,7 +82,10 @@ func newPeerCarrierDemux(s *Server) *peerCarrierDemux {
 // up on the first path, and flushes any control frames that arrived ahead of the
 // hello. Every subsequent frame is fed to the bond's per-path sink.
 func (s *Server) routePeerBondData(d *peerCarrierDemux, peerID string, data []byte) {
-	if d.tr == nil {
+	d.mu.Lock()
+	t := d.tr
+	d.mu.Unlock()
+	if t == nil {
 		// The transport delivered peer data without reporting SupportsPeerRouting
 		// (so we never recorded the PeerTransport for reverse addressing). Nothing
 		// we can safely wire it to; drop rather than nil-deref.
@@ -103,7 +108,7 @@ func (s *Server) routePeerBondData(d *peerCarrierDemux, peerID string, data []by
 	}
 
 	be, created := s.getOrCreateBond(id)
-	s.addBondPeerPath(be, d.tr, peerID, idx)
+	s.addBondPeerPath(be, t, peerID, idx)
 	// Bring the bond's session up (once, on its first path) BEFORE publishing
 	// the route, so the shared control receive sink (installed by
 	// startPeerBondSession) exists before any control frame is routed via
