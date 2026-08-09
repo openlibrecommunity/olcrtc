@@ -13,6 +13,7 @@ import (
 
 	"github.com/openlibrecommunity/olcrtc/internal/control"
 	cryptopkg "github.com/openlibrecommunity/olcrtc/internal/crypto"
+	"github.com/openlibrecommunity/olcrtc/internal/framing"
 	"github.com/openlibrecommunity/olcrtc/internal/handshake"
 	"github.com/openlibrecommunity/olcrtc/internal/multipath"
 	"github.com/openlibrecommunity/olcrtc/internal/muxconn"
@@ -108,7 +109,71 @@ func (m *memLink) Features() transport.Features {
 }
 func (m *memLink) Reconnect(string) {}
 
-var _ transport.Transport = (*memLink)(nil)
+// memCtrlLink wraps a memLink with an isolated control plane (like
+// vp8channel): control frames ride a separate channel from data, so a bond
+// over it takes the control-plane handshake path (acceptBondHandshake +
+// sessionReady).
+type memCtrlLink struct {
+	*memLink
+	ctlCh   chan []byte
+	ctlPeer *memCtrlLink
+	ctlOnce sync.Once
+	ctlMu   sync.Mutex
+	ctlOn   func([]byte)
+}
+
+func newMemCtrlLinkPair() (*memCtrlLink, *memCtrlLink) {
+	a := &memCtrlLink{ctlCh: make(chan []byte, 512)}
+	b := &memCtrlLink{ctlCh: make(chan []byte, 512)}
+	a.memLink, b.memLink = newMemLinkPair()
+	a.memLink.peer = b.memLink
+	b.memLink.peer = a.memLink
+	a.ctlPeer = b
+	b.ctlPeer = a
+	return a, b
+}
+
+func (m *memCtrlLink) start() {
+	m.memLink.start()
+	m.ctlOnce.Do(func() { go m.pumpCtl() })
+}
+
+func (m *memCtrlLink) pumpCtl() {
+	for {
+		select {
+		case d := <-m.ctlCh:
+			m.ctlMu.Lock()
+			cb := m.ctlOn
+			m.ctlMu.Unlock()
+			if cb != nil {
+				cb(d)
+			}
+		case <-m.closed:
+			return
+		}
+	}
+}
+
+func (m *memCtrlLink) ControlSend(data []byte) error {
+	cp := append([]byte(nil), data...)
+	select {
+	case m.ctlPeer.ctlCh <- cp:
+		return nil
+	case <-m.ctlPeer.closed:
+		return io.ErrClosedPipe
+	}
+}
+func (m *memCtrlLink) SetControlOnData(cb func([]byte)) {
+	m.ctlMu.Lock()
+	m.ctlOn = cb
+	m.ctlMu.Unlock()
+}
+func (m *memCtrlLink) ControlCanSend() bool { return m.CanSend() }
+
+var (
+	_ transport.Transport    = (*memLink)(nil)
+	_ transport.ControlPlane = (*memCtrlLink)(nil)
+)
 
 // ---------------------------------------------------------------------------
 // Frame builders and shared server/client helpers.
@@ -206,6 +271,25 @@ func waitBondRemoved(t *testing.T, s *Server, id [16]byte) bool {
 		time.Sleep(5 * time.Millisecond)
 	}
 	return false
+}
+
+// waitBondSession waits until the bond's per-bond session (with a control
+// session, i.e. the sessionReady path) is fully brought up.
+func waitBondSession(t *testing.T, s *Server, id [16]byte) *bondEntry {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		s.bondMu.Lock()
+		be := s.bonds[id]
+		up := be != nil && be.sess != nil && be.sess.controlSess != nil
+		s.bondMu.Unlock()
+		if up {
+			return be
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("bond %x control session never started", id)
+	return nil
 }
 
 // testBondClient is a client-side bond session: it opens the handshake stream
@@ -439,4 +523,72 @@ func TestBondSession_MultiClientNoOverwrite(t *testing.T) {
 	clientA.roundTrip(t, host, port)
 	clientB.roundTrip(t, host, port)
 	clientA.roundTrip(t, host, port)
+}
+
+// ai-generated: regression test for issue B. A failed bond control-plane
+// handshake must close sessionReady, waking the serveBond goroutine blocked in
+// waitBondHandshake - otherwise the waiting goroutine never exits until server
+// shutdown. The test sends a well-formed but rejected CLIENT_HELLO (bad
+// protocol version) and then requires the server's wg to drain within a
+// timeout.
+func TestBondHandshakeFailure_ClosesSessionReady(t *testing.T) {
+	cipher := testCipher(t)
+	s := newBondTestServer(t, cipher)
+
+	srv, cli := newMemCtrlLinkPair()
+	var router atomic.Pointer[func([]byte)]
+	srv.setOnData(func(d []byte) { s.routeBondFrame(srv, &router, d, dropBondFrame) })
+	srv.start()
+	cli.start()
+
+	id := multipath.NewBondID()
+	bond := multipath.NewBond(id, multipath.RoleClient)
+	bond.AddPath(cli, 0)
+	if err := bond.Connect(context.Background()); err != nil {
+		t.Fatalf("client bond connect: %v", err)
+	}
+	t.Cleanup(func() { _ = bond.Close() })
+
+	_ = waitBondSession(t, s, id)
+
+	// Drive a FAILED handshake on the client's control session: open the
+	// control stream and send a well-formed but rejected CLIENT_HELLO.
+	carrier := multipath.AsCarrier(bond)
+	ctrlConn := muxconn.NewControl(carrier, cipher)
+	if ctrlConn == nil {
+		t.Fatal("client control conn expected")
+	}
+	ctrlSess, err := smux.Client(ctrlConn, controlSmuxConfig(linkMaxPayload(carrier)))
+	if err != nil {
+		t.Fatalf("control smux client: %v", err)
+	}
+	stream, err := ctrlSess.OpenStream()
+	if err != nil {
+		t.Fatalf("open control stream: %v", err)
+	}
+	_ = stream.SetWriteDeadline(time.Now().Add(5 * time.Second))
+	if err := framing.WriteJSON(stream, handshake.Hello{Version: 99, Type: handshake.TypeHello, DeviceID: "dev"}, handshake.MaxMessageSize); err != nil {
+		t.Fatalf("write bad hello: %v", err)
+	}
+	_ = stream.SetWriteDeadline(time.Time{})
+	_ = stream.Close()
+	_ = ctrlSess.Close()
+	_ = ctrlConn.Close()
+
+	if !waitBondRemoved(t, s, id) {
+		t.Fatal("failed handshake should remove the bond")
+	}
+
+	// The acceptBondHandshake and serveBond goroutines must both exit; with the
+	// leak, serveBond spins in waitBondHandshake and wg.Wait never returns.
+	done := make(chan struct{})
+	go func() {
+		s.wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("bond handshake goroutines leaked: wg.Wait not reached")
+	}
 }

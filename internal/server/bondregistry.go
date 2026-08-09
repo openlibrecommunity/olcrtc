@@ -359,11 +359,30 @@ func (s *Server) bondEnded(be *bondEntry, peer bool) {
 	}
 }
 
-// acceptBondHandshake runs the handshake on a peer bond's control session and
+// acceptBondHandshake runs the handshake on a bond's control session and
 // then starts its liveness loop. Mirrors acceptPeerHandshake but writes into the
 // bondEntry's session and tears the bond (not the server) down on failure.
+//
+// ai-generated: sessionReady close-on-exit (issue B). Added the defer +
+// sync.Once that closes ps.sessionReady exactly once on EVERexit path, so a
+// failed bond handshake wakes up serveBond's waitBondHandshake instead of
+// leaving it spinning until server shutdown.
+//
+// ps.sessionReady is closed on EVERY exit (success or failure, via defer) so a
+// serveBond goroutine blocked in waitBondHandshake always wakes up - without
+// that, a failed handshake leaves it spinning until server shutdown. sessionID
+// is populated before the success-return defer closes the channel, so a
+// waiter that unblocks on ready reads a valid session id.
 func (s *Server) acceptBondHandshake(be *bondEntry) {
 	ps := be.sess
+	var readyOnce sync.Once
+	defer func() {
+		readyOnce.Do(func() {
+			if ps.sessionReady != nil {
+				close(ps.sessionReady)
+			}
+		})
+	}()
 	const maxStaleRetries = 3
 	for retry := 0; retry <= maxStaleRetries; retry++ {
 		stream, err := ps.controlSess.AcceptStream()
@@ -392,9 +411,6 @@ func (s *Server) acceptBondHandshake(be *bondEntry) {
 		ps.deviceID = hello.DeviceID
 		ps.sessionID = sid
 		s.sessMu.Unlock()
-		if ps.sessionReady != nil {
-			close(ps.sessionReady)
-		}
 		s.recordSession(sid)
 		s.onOpen(sid, hello.DeviceID, hello.Claims)
 		s.trackPeerOpen(sid, hello.DeviceID)
@@ -551,9 +567,6 @@ func (s *Server) acceptBondHandshakeInline(be *bondEntry) bool {
 		ps.deviceID = hello.DeviceID
 		ps.sessionID = sid
 		s.sessMu.Unlock()
-		if ps.sessionReady != nil {
-			close(ps.sessionReady)
-		}
 		s.recordSession(sid)
 		s.onOpen(sid, hello.DeviceID, hello.Claims)
 		s.trackPeerOpen(sid, hello.DeviceID)
