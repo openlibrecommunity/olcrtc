@@ -57,6 +57,7 @@ olcrtc /etc/olcrtc/client.yaml
 | `room.channel` | необязательный ID канала для peer-routing сценариев |
 | `crypto.key` / `crypto.key_file` | общий ключ: 64 hex-символа, напрямую или из файла |
 | `net.transport` | `datachannel`, `vp8channel`, `seichannel`, `videochannel` |
+| `net.proto` | протокол туннеля поверх несущей: `legacy` (по умолчанию, пусто) или `mpq` |
 | `net.dns` | DNS resolver в формате `host:port` |
 | `socks.host` / `socks.port` | локальный SOCKS5 listener в `mode: cnc` |
 | `socks.user` / `socks.pass` | необязательная auth для входящих SOCKS5-подключений |
@@ -65,6 +66,7 @@ olcrtc /etc/olcrtc/client.yaml
 | `engine.name` / `engine.url` / `engine.token` | прямой engine-режим, только при `auth.provider: none` |
 | `video.*` | настройки `videochannel` |
 | `vp8.*` | настройки `vp8channel` |
+| `vp8.brutal_kbps` | pacing для bulk data-KCP транспорта `vp8channel` в kbit/s; `0` = выключено (по умолчанию) |
 | `sei.*` | настройки `seichannel` |
 | `liveness.interval` | интервал ping по control stream, по умолчанию `10s` |
 | `liveness.timeout` | таймаут pong, по умолчанию `5s` |
@@ -76,6 +78,7 @@ olcrtc /etc/olcrtc/client.yaml
 | `profiles[]` | список failover-профилей для `srv`/`cnc` |
 | `failover.retry_delay` | пауза перед следующим профилем, например `2s` |
 | `failover.max_cycles` | сколько полных проходов по профилям сделать; `0` = бесконечно |
+| `paths.list[]` | необязательные пути несущей, по которым туннель расщепляется (см. Multipath) |
 | `data` | путь к директории с runtime-данными (`names`, `surnames`) |
 | `debug` | подробное логирование |
 | `ffmpeg` | путь к бинарнику ffmpeg для `videochannel` |
@@ -199,6 +202,50 @@ failover:
 ```
 
 Порядок профилей и параметры комнаты должны быть совместимы на сервере и клиенте. Активные smux streams между профилями не мигрируют; новые подключения смогут восстановиться на следующем профиле.
+
+## Multipath (mpq)
+
+`net.proto` выбирает протокол туннеля поверх несущей:
+
+| `net.proto` | Протокол туннеля |
+|---|---|
+| `legacy` (по умолчанию, пусто) | `muxconn` + `smux` поверх одной несущей - исторический стек |
+| `mpq` | bonding QUIC-сессия (mpq-brutal), расщеплённая по нескольким несущим |
+
+`mpq` требует datagram-несущую: QUIC - единственный уровень надёжности, поэтому несущая под ним должна быть unreliable/unordered - надёжная и упорядоченная несущая добавила бы лишний слой ретрансмиссии/HOL, который QUIC не видит. Datagram-режим включается автоматически для выбранного транспорта.
+
+### Пути
+
+`paths.list` расщепляет туннель по нескольким несущим и агрегирует их в один логический канал. Каждый элемент переопределяет только то, что указано; пустые поля наследуют верхнеуровневые `room`/`channel`/`transport`.
+
+```yaml
+net:
+  proto: mpq
+  transport: datachannel
+paths:
+  list:
+    - transport: datachannel
+      room: "https://meet.example.org/olcrtc-room-a"
+    - transport: datachannel
+      room: "https://meet.example.org/olcrtc-room-b"
+      channel: "cnc-a"
+```
+
+Поддерживаются две топологии:
+
+- co-located: все пути живут в одной комнате. Требуется peer-routing несущая (`datachannel`, `vp8channel`), потому что сервер должен адресовать клиента каждого пути по его peer ID; вещательная несущая заставила бы пути видеть кадры друг друга.
+- separate calls: каждый путь - отдельная комната. Клиент и сервер должны указывать один и тот же набор комнат, чтобы пути встретились на сервере. Для не-peer комнаты действует 1 клиент на комнату.
+
+Graceful degradation: путь, который не удалось создать или подключить, пропускается, и туннель работает по выжившим; фатален только полный отказ всех путей. На сервере сессия, принятая с меньшим числом путей, чем ожидалось, логируется как предупреждение (деградировавший бонд клиента).
+
+### Пейсинг vp8channel
+
+`vp8.brutal_kbps` включает congestion control в стиле Hysteria "brutal" (пейсинг отправки с компенсацией потерь) на bulk data-KCP транспорта `vp8channel`. `0` (по умолчанию, поле отсутствует) выключает его и сохраняет прежнее поведение полного окна.
+
+```yaml
+vp8:
+  brutal_kbps: 6000
+```
 
 ## mode: gen
 

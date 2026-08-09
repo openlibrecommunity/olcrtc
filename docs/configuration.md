@@ -57,6 +57,7 @@ Ready-made examples:
 | `room.channel` | optional channel ID for peer-routing scenarios |
 | `crypto.key` / `crypto.key_file` | shared key: 64 hex chars, directly or from a file |
 | `net.transport` | `datachannel`, `vp8channel`, `seichannel`, `videochannel` |
+| `net.proto` | tunnel protocol over the carrier: `legacy` (default, empty) or `mpq` |
 | `net.dns` | DNS resolver in `host:port` form |
 | `socks.host` / `socks.port` | local SOCKS5 listener in `mode: cnc` |
 | `socks.user` / `socks.pass` | optional auth for incoming SOCKS5 connections |
@@ -65,6 +66,7 @@ Ready-made examples:
 | `engine.name` / `engine.url` / `engine.token` | direct engine mode, only when `auth.provider: none` |
 | `video.*` | `videochannel` settings |
 | `vp8.*` | `vp8channel` settings |
+| `vp8.brutal_kbps` | pacing for the `vp8channel` bulk data-KCP in kbit/s; `0` = off (default) |
 | `sei.*` | `seichannel` settings |
 | `liveness.interval` | ping interval over the control stream, default `10s` |
 | `liveness.timeout` | pong timeout, default `5s` |
@@ -76,6 +78,7 @@ Ready-made examples:
 | `profiles[]` | list of failover profiles for `srv`/`cnc` |
 | `failover.retry_delay` | pause before the next profile, e.g. `2s` |
 | `failover.max_cycles` | how many full passes over the profiles to do; `0` = infinite |
+| `paths.list[]` | optional carrier paths to split the tunnel across (see Multipath) |
 | `data` | path to the directory with runtime data (`names`, `surnames`) |
 | `debug` | verbose logging |
 | `ffmpeg` | path to the ffmpeg binary for `videochannel` |
@@ -199,6 +202,50 @@ failover:
 ```
 
 The order of profiles and the room parameters must be compatible on the server and the client. Active smux streams do not migrate between profiles; new connections can recover on the next profile.
+
+## Multipath (mpq)
+
+`net.proto` selects the tunnel protocol layered over the carrier:
+
+| `net.proto` | Tunnel protocol |
+|---|---|
+| `legacy` (default, empty) | `muxconn` + `smux` over a single carrier - the historical stack |
+| `mpq` | a bonding QUIC session (mpq-brutal) split across several carriers |
+
+`mpq` needs a datagram-like carrier: QUIC is the only reliability layer, so the carrier underneath must be unreliable/unordered - a reliable+ordered carrier would add a redundant retransmit/HOL layer QUIC cannot see. Datagram mode is opened automatically for the chosen carrier.
+
+### Paths
+
+`paths.list` splits the tunnel across several carriers and aggregates them into one logical link. Each entry overrides only what it specifies; empty fields inherit the top-level `room`/`channel`/`transport`.
+
+```yaml
+net:
+  proto: mpq
+  transport: datachannel
+paths:
+  list:
+    - transport: datachannel
+      room: "https://meet.example.org/olcrtc-room-a"
+    - transport: datachannel
+      room: "https://meet.example.org/olcrtc-room-b"
+      channel: "cnc-a"
+```
+
+Two topologies are supported:
+
+- co-located: every path lives in the same room. Requires a peer-routing carrier (`datachannel`, `vp8channel`), because the server must address each path's client by its peer ID; a broadcast-only carrier would let the paths see each other's frames.
+- separate calls: every path is a distinct room. The client and the server must list the same room set so the paths meet on the server. A non-peer room is 1 client per room.
+
+Graceful degradation: a path that fails to create or connect is skipped and the tunnel runs on the survivors; only a total wipe-out is fatal. On the server a session admitted with fewer paths than expected is logged as a warning (a degraded client bond).
+
+### vp8channel pacing
+
+`vp8.brutal_kbps` enables Hysteria-style "brutal" congestion control (a paced send rate with loss compensation) on the bulk data-KCP of `vp8channel`. `0` (default, field absent) disables it and keeps the legacy full-window behaviour.
+
+```yaml
+vp8:
+  brutal_kbps: 6000
+```
 
 ## mode: gen
 
