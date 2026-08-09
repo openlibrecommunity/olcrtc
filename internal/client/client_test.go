@@ -742,3 +742,66 @@ func TestStatusRecordsReconnectAndUnhealthy(t *testing.T) {
 		t.Fatalf("health updates = %d, want 4", updates)
 	}
 }
+
+// ai-generated: new test (mpq control-plane death must not deadlock and must
+// cancel the run so the outer loop re-raises).
+//
+// TestMPQControlLoopLossCancelsRun drives an mpq-mode control loop whose peer
+// never answers pings: control.Run times out with ErrUnhealthy, and the mpq
+// branch of the loop exit must tear the whole run context down (the outer
+// run/retry loop then re-raises bringUpLinkMPQ from scratch) instead of
+// falling into the legacy handleReconnect rewire, which cannot re-point an mpq
+// session and would leave the tunnel permanently dead. It also proves the
+// teardown path does not deadlock with the control stream open (run with
+// -race).
+func TestMPQControlLoopLossCancelsRun(t *testing.T) {
+	a, b := net.Pipe()
+	defer func() { _ = a.Close(); _ = b.Close() }()
+
+	serverSess, err := smux.Server(a, smuxConfig(0))
+	if err != nil {
+		t.Fatalf("smux.Server() error = %v", err)
+	}
+	defer func() { _ = serverSess.Close() }()
+	clientSess, err := smux.Client(b, smuxConfig(0))
+	if err != nil {
+		t.Fatalf("smux.Client() error = %v", err)
+	}
+	defer func() { _ = clientSess.Close() }()
+
+	// Server side: accept the control stream and drain it WITHOUT ever
+	// replying, so client pings go out unacked and liveness fails.
+	peerStreamCh := make(chan *smux.Stream, 1)
+	go func() {
+		stream, err := serverSess.AcceptStream()
+		if err == nil {
+			peerStreamCh <- stream
+		}
+	}()
+	stream, err := clientSess.OpenStream()
+	if err != nil {
+		t.Fatalf("OpenStream() error = %v", err)
+	}
+	peerStream := <-peerStreamCh
+	defer func() { _ = peerStream.Close() }()
+	go func() { _, _ = io.Copy(io.Discard, peerStream) }()
+
+	runCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	c := &Client{health: runtime.NewHealthTracker(nil)}
+	c.startControlLoop(runCtx, Config{
+		TransportProto: "mpq",
+		Liveness: control.Config{
+			Interval: 10 * time.Millisecond,
+			Timeout:  100 * time.Millisecond,
+			Failures: 2,
+		},
+	}, cancel, stream)
+
+	select {
+	case <-runCtx.Done():
+		// The mpq control loss tore the run down - the outer loop re-raises.
+	case <-time.After(5 * time.Second):
+		t.Fatal("mpq control loop loss did not cancel the run")
+	}
+}

@@ -1161,10 +1161,34 @@ func (c *Client) startControlLoop(
 		if err != nil {
 			logger.Warnf("client control stream ended: %v", err)
 		}
+		// ai-generated: mpq branch (no partial rewire for mpq sessions, see
+		// mpqSessionLost below).
+		if cfg.TransportProto == "mpq" {
+			c.mpqSessionLost(cancel)
+			return
+		}
 		// handleReconnect now retries indefinitely on liveness so it only
 		// returns false on ctx cancellation; don't tear down the client.
 		c.handleReconnect(ctx, cfg, cancel, "liveness")
 	}()
+}
+
+// ai-generated: new method (mpq control-plane death must re-raise the tunnel).
+//
+// mpqSessionLost is the mpq-mode reaction to control-plane death. A legacy
+// muxconn tunnel can be re-wired in place by handleReconnect over the same
+// carrier, but an mpq tunnel cannot: the smux control stream rides inside the
+// mpq bonding session, so re-opening it requires a brand-new QUIC session, and
+// a brand-new session requires a full bring-up (fresh carriers, fresh
+// handshake). There is no partial rewire, so the right move is a clean whole-
+// session teardown that lets the outer run/retry loop re-raise bringUpLinkMPQ
+// from scratch - the SOCKS listener goes down with the session and comes back
+// with the next bring-up. Reconnect is still surfaced to health observers so
+// the tear-and-re-raise is not mistaken for a clean user shutdown.
+func (c *Client) mpqSessionLost(cancel context.CancelFunc) {
+	c.recordReconnect()
+	logger.Warnf("mpq: control plane lost - no partial rewire for mpq, tearing down for a full session re-raise")
+	cancel()
 }
 
 // ai-generated: new function, peer-restart-corroboration PR.
