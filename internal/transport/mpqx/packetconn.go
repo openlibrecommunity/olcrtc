@@ -5,8 +5,13 @@
 // mpq-brutal (and the underlying apernet/quic-go) speaks over any
 // net.PacketConn: one QUIC packet maps to one carrier message. The client side
 // plugs a [PacketConn] in through core.Config.DialPath; the server side plugs
-// one in through core.Config.ServerConn. This package provides that glue for a
-// single 1:1 carrier link.
+// one in through core.Config.ServerConn. For a single 1:1 carrier link the
+// server uses [ServerPacketConn] (peer-demuxing) or [PacketConn]; when the
+// server hosts N rooms it plugs a [RoomConn] instead, so a client's paths
+// spread across rooms still bond into one session.
+//
+// ai-generated: package doc gained the RoomConn sentence in the phase 1
+// multi-room mpq work.
 //
 // # Wiring
 //
