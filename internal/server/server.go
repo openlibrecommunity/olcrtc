@@ -162,6 +162,12 @@ type Server struct {
 	// them (the mpq Listener leaves already-accepted sessions running). An ended
 	// session removes itself on exit (serveMPQSession). Guarded by sessMu.
 	mpqSessions []*core.Session
+	// mpqExpectedPaths is the number of paths the mpq Listener waits for before
+	// finalising a bonding session (set from cfg.Paths in bringUpLinkMPQ, before
+	// serveMPQ accepts any session). serveMPQSession compares a session's actual
+	// path count against it so a client admitted with fewer paths - a degraded
+	// bond after client-side soft degradation - is surfaced as a warning.
+	mpqExpectedPaths int
 }
 
 // peerStat holds the per-session info needed to report the live peer count
@@ -518,12 +524,13 @@ func (s *Server) bringUpLinkMPQ(
 
 	// ExpectedPaths = len(specs) so the mpq Listener finalises a session promptly
 	// once the client's paths have all arrived across rooms; PathGatherTimeout
-	// remains the fallback for clients that bring fewer. MaxPaths caps paths per
-	// bonding session.
+	// (default 300ms in mpq-brutal) remains the fallback for clients that bring
+	// fewer. MaxPaths caps paths per bonding session.
 	expectedPaths := len(specs)
 	if expectedPaths < 1 {
 		expectedPaths = 1
 	}
+	s.mpqExpectedPaths = expectedPaths
 
 	// endedPaths mirrors the client's teardown semantics: only when EVERY room
 	// has reported conference end is the run cancelled, so a single dead room is
@@ -717,6 +724,17 @@ func (s *Server) serveMPQSession(ctx context.Context, sess *core.Session) {
 	sid, ok := s.acceptMPQHandshake(ctx, smuxSess)
 	if !ok {
 		return
+	}
+	// ai-generated: path-count mismatch visibility (client soft degradation can
+	// make the session admit fewer paths than the server expects).
+	//
+	// By the time the handshake ran, the client's AddPath loop has finished, so
+	// sess.Paths() already holds the final path count of this client's bond.
+	// Log a warning (never fatal) when it is below what the listener waited
+	// for: the client raised a degraded bond.
+	if got := len(sess.Paths()); got < s.mpqExpectedPaths {
+		logger.Warnf("mpq: session %s admitted with %d of %d expected paths - client bond degraded",
+			sid, got, s.mpqExpectedPaths)
 	}
 	defer s.trackPeerClose(sid, "closed")
 
