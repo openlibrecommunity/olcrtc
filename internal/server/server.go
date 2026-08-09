@@ -145,22 +145,22 @@ type Server struct {
 	// carrier itself instead.
 	carriersClosed bool
 
-	// mpqListener, mpqPC and mpqPeerPC are set in bringUpLinkMPQ when
-	// TransportProto is "mpq": the carrier is wrapped in a net.PacketConn and fed
-	// to the mpq-brutal Listener, whose accepted bonding session(s) back the smux
-	// data session (serveMPQ). Exactly one of mpqPC / mpqPeerPC is non-nil:
-	//   - mpqPC (1:1) is used when the carrier cannot address individual peers
-	//     (single client, single path);
-	//   - mpqPeerPC (multi-address, peer-demuxing) is used when the carrier
-	//     supports peer routing, so several paths of one client (and several
-	//     clients) land on one carrier and are demuxed by peerID.
-	// All three are nil in the legacy muxconn path.
+	// mpqListener, mpqRoomConn and mpqCarriers are set in bringUpLinkMPQ when
+	// TransportProto is "mpq": each configured room gets its own carrier, all fed
+	// into one shared mpqx.RoomConn, and the conn is handed to the mpq-brutal
+	// Listener, whose accepted bonding session(s) back the smux data session
+	// (serveMPQ). The RoomConn mints a unique synthetic address per (room, peer),
+	// so a client's N paths across N rooms bond into one session and several
+	// clients sharing a peer-routing room stay distinct. All three are nil in the
+	// legacy muxconn path.
 	mpqListener *core.Listener
-	mpqPC       *mpqx.PacketConn
-	mpqPeerPC   *mpqx.ServerPacketConn
+	mpqRoomConn *mpqx.RoomConn
+	// mpqCarriers holds every carrier brought up for the mpq path so shutdown can
+	// close them all (mpqCarriers[0] is also s.ln). Guarded by sessMu.
+	mpqCarriers []transport.Transport
 	// mpqSessions tracks accepted mpq bonding sessions so shutdown can close
-	// them (the mpq Listener leaves already-accepted sessions running). Guarded
-	// by sessMu.
+	// them (the mpq Listener leaves already-accepted sessions running). An ended
+	// session removes itself on exit (serveMPQSession). Guarded by sessMu.
 	mpqSessions []*core.Session
 }
 
@@ -194,7 +194,7 @@ type ConnectRequest struct {
 
 // Config holds runtime configuration for [Run].
 type Config struct {
-	Transport        string
+	Transport string
 	// TransportProto selects the tunnel protocol over the carrier: "" / "legacy"
 	// uses muxconn+smux; "mpq" runs an mpq-brutal bonding QUIC session.
 	TransportProto   string
@@ -465,17 +465,24 @@ func (s *Server) bringUpLink(
 	return nil
 }
 
+// ai-generated: rewritten for phase 1 multi-room mpq (N carriers = N rooms).
 // bringUpLinkMPQ brings up the server tunnel with the mpq-brutal bonding QUIC
-// session layered over one carrier (TransportProto == "mpq"). It builds the
-// carrier and hands a net.PacketConn to core.Listen as ServerConn: a
-// peer-demuxing mpqx.ServerPacketConn (OnPeerData -> Deliver, WriteTo -> SendTo)
-// when the carrier can address peers, so several paths of one client and several
-// clients are demuxed by peerID into distinct QUIC connections; otherwise a 1:1
-// mpqx.PacketConn (single client, single path). serveMPQ then accepts bonding
-// sessions in a loop, one smux.Server per session, reusing the existing
-// handshake + tunnel-forward machinery. QUIC-TLS identity is derived from the
-// tunnel PSK (see mpqx.ServerTLS). Carrier-reconnect of a live mpq session is a
-// later step.
+// session layered over one carrier per configured room (TransportProto ==
+// "mpq"). It mirrors the client's path-spec handling: cfg.Paths lists one spec
+// per room (a single-carrier config synthesises one) and each spec gets its own
+// carrier, all feeding one shared mpqx.RoomConn handed to core.Listen as the
+// ServerConn. The RoomConn mints a unique synthetic net.Addr per (room, peer),
+// so:
+//   - a client's N paths spread across N rooms bond into one session (mpq groups
+//     by sessionID) - the "separate calls" mode;
+//   - several clients sharing a peer-routing room stay distinct (demux by
+//     peerID), each with its own session;
+//   - a 1:1 carrier degenerates to one address per room.
+//
+// serveMPQ then accepts bonding sessions in a loop, one smux.Server per session,
+// reusing the existing handshake + tunnel-forward machinery. QUIC-TLS identity
+// is derived from the tunnel PSK (see mpqx.ServerTLS). Carrier-reconnect of a
+// live mpq session is a later step.
 func (s *Server) bringUpLinkMPQ(
 	ctx context.Context,
 	cfg Config,
@@ -486,72 +493,101 @@ func (s *Server) bringUpLinkMPQ(
 		return fmt.Errorf("mpq: %w", err)
 	}
 
-	// A peer-demuxing ServerPacketConn (fed by OnPeerData / driving SendTo) is
-	// used when the carrier can address individual peers, so several paths of one
-	// client — and several clients — share one carrier and are demuxed by peerID
-	// into distinct QUIC connections. A carrier without peer routing falls back
-	// to the 1:1 PacketConn (single client, single path). We can only know which
-	// after building the transport, so both sinks are prepared and only the
-	// matching one is wired as the carrier's callback below.
-	pc := mpqx.New(nil)
-	peerPC := mpqx.NewServer(nil)
-	ln, err := transport.New(ctx, cfg.Transport, transport.Config{
-		Carrier:    cfg.Carrier,
-		RoomURL:    cfg.RoomURL,
-		Engine:     cfg.Engine,
-		URL:        cfg.URL,
-		Token:      cfg.Token,
-		AuthToken:  cfg.AuthToken,
-		ChannelID:  cfg.ChannelID,
-		DeviceID:   "",
-		Name:       names.Generate(),
-		OnData:     pc.Deliver,
-		OnPeerData: peerPC.Deliver,
-		DNSServer:  s.dnsServer,
-		ProxyAddr:  s.socksProxyAddr,
-		ProxyPort:  s.socksProxyPort,
-		Options:    cfg.TransportOptions,
-		Traffic:    cfg.Traffic,
-		// mpq: QUIC is the sole reliability layer, so the carrier under it must be
-		// datagram-like (unreliable, unordered) to avoid a redundant SCTP
-		// retransmit/HOL layer QUIC cannot see.
-		Unreliable: true,
-	})
-	if err != nil {
-		return fmt.Errorf("mpq: failed to create transport: %w", err)
+	// Normalise to a list of path specs exactly like the client: multipath uses
+	// cfg.Paths verbatim, a single-carrier config synthesises one spec from the
+	// top-level fields.
+	specs := cfg.Paths
+	if len(specs) == 0 {
+		specs = []transport.PathSpec{{
+			Transport: cfg.Transport,
+			RoomURL:   cfg.RoomURL,
+			ChannelID: cfg.ChannelID,
+		}}
 	}
-	s.ln = ln
+
+	// One RoomConn serves every room: inbound frames land here tagged with their
+	// (room, peer) and quic-go demuxes each pair into a distinct QUIC connection,
+	// so paths across rooms bond into one session per client while clients
+	// sharing a peer-routing room stay distinct.
+	roomConn := mpqx.NewRoom()
 
 	tlsConf, err := mpqx.ServerTLS(psk)
 	if err != nil {
 		return fmt.Errorf("mpq: server TLS: %w", err)
 	}
 
-	// Choose the ServerConn based on whether the carrier can demux peers. The
-	// number of paths one client brings (len(cfg.Paths), min 1) sets
-	// ExpectedPaths so the mpq Listener finalises a session promptly once all
-	// paths are present; PathGatherTimeout remains the fallback for clients that
-	// bring fewer. MaxPaths caps paths per bonding session.
-	expectedPaths := len(cfg.Paths)
+	// ExpectedPaths = len(specs) so the mpq Listener finalises a session promptly
+	// once the client's paths have all arrived across rooms; PathGatherTimeout
+	// remains the fallback for clients that bring fewer. MaxPaths caps paths per
+	// bonding session.
+	expectedPaths := len(specs)
 	if expectedPaths < 1 {
 		expectedPaths = 1
 	}
-	var serverConn net.PacketConn
-	if pt, ok := ln.(transport.PeerTransport); ok && pt.SupportsPeerRouting() {
-		peerPC.Bind(pt)
-		s.mpqPeerPC = peerPC
-		serverConn = peerPC
-		logger.Infof("mpq: peer-demuxing ServerConn (expectedPaths=%d)", expectedPaths)
-	} else {
-		pc.Bind(ln)
-		s.mpqPC = pc
-		serverConn = pc
-		expectedPaths = 1
-		logger.Infof("mpq: 1:1 ServerConn (carrier has no peer routing)")
+
+	// endedPaths mirrors the client's teardown semantics: only when EVERY room
+	// has reported conference end is the run cancelled, so a single dead room is
+	// absorbed by the bond over the surviving rooms.
+	var endedPaths atomic.Int32
+	total := int32(len(specs)) //nolint:gosec // path counts are small, bounded by config
+
+	carriers := make([]transport.Transport, 0, len(specs))
+	for i, ps := range specs {
+		roomID := mpqRoomID(ps)
+		tr, err := transport.New(ctx, ps.Transport, transport.Config{
+			Carrier:    cfg.Carrier,
+			RoomURL:    ps.RoomURL,
+			Engine:     cfg.Engine,
+			URL:        cfg.URL,
+			Token:      cfg.Token,
+			AuthToken:  cfg.AuthToken,
+			ChannelID:  ps.ChannelID,
+			DeviceID:   "",
+			Name:       names.Generate(),
+			OnData:     func(p []byte) { roomConn.Deliver(roomID, "", p) },
+			OnPeerData: func(peerID string, p []byte) { roomConn.Deliver(roomID, peerID, p) },
+			DNSServer:  s.dnsServer,
+			ProxyAddr:  s.socksProxyAddr,
+			ProxyPort:  s.socksProxyPort,
+			Options:    cfg.TransportOptions,
+			Traffic:    cfg.Traffic,
+			// mpq: QUIC is the sole reliability layer, so the carrier under it must be
+			// datagram-like (unreliable, unordered) to avoid a redundant SCTP
+			// retransmit/HOL layer QUIC cannot see.
+			Unreliable: true,
+		})
+		if err != nil {
+			s.closeMPQCarriers(carriers)
+			return fmt.Errorf("mpq: failed to create transport (room %s): %w", ps.RoomURL, err)
+		}
+		// Route this room's outbound frames back to its carrier: SendTo(peerID) for
+		// a peer-routing carrier, plain Send for a 1:1 one.
+		if pt, ok := tr.(transport.PeerTransport); ok && pt.SupportsPeerRouting() {
+			roomConn.AddRoom(roomID, mpqPeerRoomSender{pt: pt})
+			logger.Infof("mpq: room %s on peer-demuxing carrier", ps.RoomURL)
+		} else {
+			roomConn.AddRoom(roomID, mpqOneRoomSender{tr: tr})
+			logger.Infof("mpq: room %s on 1:1 carrier", ps.RoomURL)
+		}
+		tr.SetEndedCallback(func(reason string) {
+			logger.Infof("mpq: path %d/%d reported conference end: %s", i+1, total, reason)
+			if endedPaths.Add(1) >= total {
+				logger.Infof("mpq: all %d path(s) ended, tearing down", total)
+				cancel()
+			}
+		})
+		tr.SetShouldReconnect(func() bool { return ctx.Err() == nil })
+		// Carrier-level reconnect of a live mpq session is a later step: the QUIC
+		// session cannot simply be re-pointed at a fresh carrier here. Log and let
+		// mpq's own path liveness / ctx drive teardown.
+		tr.SetReconnectCallback(func() {
+			logger.Warnf("mpq: carrier reconnect signalled; mpq session reconnect not yet implemented")
+		})
+		carriers = append(carriers, tr)
 	}
 
 	listener, err := core.Listen(core.Config{
-		ServerConn:    serverConn,
+		ServerConn:    roomConn,
 		TLSConfig:     tlsConf,
 		ExpectedPaths: expectedPaths,
 		MaxPaths:      expectedPaths,
@@ -567,32 +603,73 @@ func (s *Server) bringUpLinkMPQ(
 		PathKeepAlivePeriod: mpqx.PathKeepAlivePeriod,
 	})
 	if err != nil {
+		s.closeMPQCarriers(carriers)
 		return fmt.Errorf("mpq: listen: %w", err)
 	}
 	s.mpqListener = listener
 
-	ln.SetEndedCallback(func(reason string) {
-		logger.Infof("Server link reported conference end: %s", reason)
-		cancel()
-	})
-	ln.SetShouldReconnect(func() bool { return ctx.Err() == nil })
-	ln.SetReconnectCallback(func() {
-		logger.Warnf("mpq: carrier reconnect signalled; mpq session reconnect not yet implemented")
-	})
-
-	logger.Infof("Connecting transport=%s carrier=%s (mpq) ...", cfg.Transport, cfg.Carrier)
-	if err := ln.Connect(ctx); err != nil {
-		return fmt.Errorf("mpq: failed to connect link: %w", err)
+	for i, tr := range carriers {
+		logger.Infof("Connecting transport=%s carrier=%s room=%s (mpq) ...",
+			specs[i].Transport, cfg.Carrier, specs[i].RoomURL)
+		if err := tr.Connect(ctx); err != nil {
+			_ = tr.Close()
+			s.closeMPQCarriers(carriers)
+			return fmt.Errorf("mpq: failed to connect link (room %s): %w", specs[i].RoomURL, err)
+		}
+		logger.Infof("Link connected (mpq): room %s", specs[i].RoomURL)
 	}
-	logger.Infof("Link connected (mpq)")
+	logger.Infof("mpq: %d carrier(s) connected (expectedPaths=%d)", len(carriers), expectedPaths)
+
+	// The primary carrier (first spec) is the liveness reference used elsewhere
+	// (shutdown, WatchConnection); all carriers are closed via s.mpqCarriers.
+	s.ln = carriers[0]
+	s.sessMu.Lock()
+	s.mpqCarriers = carriers
+	s.mpqRoomConn = roomConn
+	s.sessMu.Unlock()
 	s.logPeersLine()
 
-	s.wg.Add(1)
-	go func() {
-		defer s.wg.Done()
-		ln.WatchConnection(ctx)
-	}()
+	for _, tr := range carriers {
+		s.wg.Add(1)
+		go func(tr transport.Transport) {
+			defer s.wg.Done()
+			tr.WatchConnection(ctx)
+		}(tr)
+	}
 	return nil
+}
+
+// mpqRoomID returns the server-side room identity of a path spec: the room URL
+// with the channel appended. The length prefix keeps two specs whose (url,
+// channel) concatenation would be ambiguous distinct; the RoomConn address then
+// layers its own length prefix over the result, so the whole (room, peer) chain
+// stays unambiguous.
+func mpqRoomID(ps transport.PathSpec) string {
+	return strconv.Itoa(len(ps.RoomURL)) + ":" + ps.RoomURL + ps.ChannelID
+}
+
+// mpqPeerRoomSender is a [mpqx.RoomSender] over a peer-routing carrier: outbound
+// frames are addressed to the remote peer by ID.
+type mpqPeerRoomSender struct{ pt transport.PeerTransport }
+
+func (s mpqPeerRoomSender) Send(peerID string, p []byte) error {
+	return s.pt.SendTo(peerID, p)
+}
+
+// mpqOneRoomSender is a [mpqx.RoomSender] over a 1:1 (non-peer) carrier: every
+// outbound frame goes to the single remote, peerID is empty.
+type mpqOneRoomSender struct{ tr transport.Transport }
+
+func (s mpqOneRoomSender) Send(_ string, p []byte) error {
+	return s.tr.Send(p)
+}
+
+// closeMPQCarriers closes a set of mpq carriers, ignoring errors. Used to unwind
+// a partially brought-up set after a mid-bring-up failure.
+func (s *Server) closeMPQCarriers(carriers []transport.Transport) {
+	for _, tr := range carriers {
+		_ = tr.Close()
+	}
 }
 
 // serveMPQ accepts mpq bonding sessions in a loop and drives one independent
@@ -1961,17 +2038,20 @@ func (s *Server) shutdown() {
 	s.sessMu.Lock()
 	mpqSessions := s.mpqSessions
 	s.mpqSessions = nil
+	mpqCarriers := s.mpqCarriers
+	s.mpqCarriers = nil
 	s.sessMu.Unlock()
 	for _, sess := range mpqSessions {
 		_ = sess.Close()
 	}
-	if s.mpqPC != nil {
-		_ = s.mpqPC.Close()
+	if s.mpqRoomConn != nil {
+		_ = s.mpqRoomConn.Close()
 	}
-	if s.mpqPeerPC != nil {
-		_ = s.mpqPeerPC.Close()
-	}
-	if s.ln != nil {
+	if len(mpqCarriers) > 0 {
+		// Close every mpq carrier. mpqCarriers[0] is also s.ln, so this subsumes
+		// the s.ln close below.
+		s.closeMPQCarriers(mpqCarriers)
+	} else if s.ln != nil {
 		_ = s.ln.Close()
 	}
 }
