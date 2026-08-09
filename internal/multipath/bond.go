@@ -66,16 +66,46 @@ var ErrBondClosed = errors.New("multipath: bond closed")
 
 // ackInterval is how often Bond re-announces its current cumulative ack, as
 // a backstop against the specific ACK frame having been lost because the
-// path carrying it died before delivery.
+// path carrying it died before delivery. The reaper and the receiver's hole
+// eviction ride the same ticker.
 const ackInterval = 100 * time.Millisecond
+
+// resendDeadline bounds how long an unacked DATA frame may sit in flight
+// before the reaper re-queues it onto another live path. A healthy path acks
+// within a few ack callbacks, so anything this old is presumed stuck on a
+// silently dead carrier - a blackholed path whose liveness has not yet fired
+// its ended callback. The peer dedups by sequence number, so a duplicate
+// re-send is harmless. Overridable per-bond via WithResendDeadline.
+const resendDeadline = 500 * time.Millisecond
+
+// maxReorderWindow bounds the sequence distance the receiver's reorder
+// buffer will tolerate: a DATA frame more than this many sequences ahead of
+// expectedSeq is dropped instead of buffered, so a gap cannot grow the
+// buffer without bound. Reordering beyond one window is presumed
+// unrecoverable - the missing middle would stall the stream for scarce
+// benefit.
+const maxReorderWindow = 128
+
+// holeTimeout is how long the receiver waits on a sequence hole (the frame
+// at expectedSeq missing) with a buffered tail before declaring the hole
+// frame permanently lost: it drops the hole and delivers the buffered tail
+// in order, so a stuck gap cannot stall the stream forever. Deliberately
+// much larger than resendDeadline so a legitimate re-send normally fills the
+// hole first; a bare hole with nothing buffered behind it is left to the
+// sender's reaper and session liveness. Overridable via WithHoleTimeout.
+const holeTimeout = 5 * time.Second
 
 // pendingFrame is a DATA frame the sender has shipped but has not yet seen
 // cumulatively acked. Kept so it can be rerouted if the path it went out on
-// dies before the peer acks it.
+// dies before the peer acks it, or reaped when it exceeds resendDeadline
+// without an ack.
 type pendingFrame struct {
 	seq       uint64
 	frame     []byte
 	pathIndex uint16
+	// sentAt is when the frame was last handed to a path; the reaper uses it
+	// to detect frames stranded on a silently dead path.
+	sentAt time.Time
 }
 
 // Bond aggregates N transport.Transport paths into a single logical
@@ -119,10 +149,21 @@ type Bond struct {
 	pending    map[uint64]*pendingFrame
 	peerCumAck uint64
 
+	// resendDeadline/holeTimeout are per-bond overrides of the package
+	// recovery constants (see resendDeadline, holeTimeout). Zero means "use
+	// the package default" but NewBond always fills them before options run.
+	resendDeadline time.Duration
+	holeTimeout    time.Duration
+
 	recvMu      sync.Mutex
 	expectedSeq uint64
 	reorderBuf  map[uint64][]byte
 	lastAckSent uint64
+	// holeSince is when the frame at expectedSeq was first awaited without
+	// receiving it. It is set when a gap opens (a frame is buffered) and
+	// re-armed whenever a contiguous run advances expectedSeq; the receiver
+	// evicts an aged hole with a buffered tail (see evictAgedHole).
+	holeSince time.Time
 
 	closeOnce sync.Once
 	closeCh   chan struct{}
@@ -139,6 +180,19 @@ func WithScheduler(s Scheduler) Option {
 // WithPathManager overrides the default ManualPathManager.
 func WithPathManager(m PathManager) Option {
 	return func(b *Bond) { b.manager = m }
+}
+
+// WithResendDeadline overrides how long an unacked frame may sit in flight
+// before the reaper re-queues it onto another live path (see resendDeadline).
+func WithResendDeadline(d time.Duration) Option {
+	return func(b *Bond) { b.resendDeadline = d }
+}
+
+// WithHoleTimeout overrides how long the receiver waits on a sequence hole
+// with a buffered tail before dropping the hole and delivering the tail (see
+// holeTimeout).
+func WithHoleTimeout(d time.Duration) Option {
+	return func(b *Bond) { b.holeTimeout = d }
 }
 
 // NewBondID generates a random bond identifier for PATH_HELLO framing.
@@ -161,15 +215,17 @@ func NewBondID() [16]byte {
 // connected by whatever accepted it).
 func NewBond(id [16]byte, role Role, opts ...Option) *Bond {
 	b := &Bond{
-		id:          id,
-		role:        role,
-		scheduler:   NewRoundRobinScheduler(),
-		manager:     NewManualPathManager(0),
-		paths:       make(map[uint16]*path),
-		pending:     make(map[uint64]*pendingFrame),
-		expectedSeq: 1,
-		reorderBuf:  make(map[uint64][]byte),
-		closeCh:     make(chan struct{}),
+		id:             id,
+		role:           role,
+		scheduler:      NewRoundRobinScheduler(),
+		manager:        NewManualPathManager(0),
+		paths:          make(map[uint16]*path),
+		pending:        make(map[uint64]*pendingFrame),
+		expectedSeq:    1,
+		reorderBuf:     make(map[uint64][]byte),
+		resendDeadline: resendDeadline,
+		holeTimeout:    holeTimeout,
+		closeCh:        make(chan struct{}),
 	}
 	for _, opt := range opts {
 		opt(b)
@@ -421,9 +477,39 @@ func (b *Bond) pickAlivePath() (*path, error) {
 	return snapshot[idx], nil
 }
 
+// pickAlivePathExcept returns a live path, preferring one other than avoid.
+// Requeue uses it so a stale frame is not re-sent onto the very path that
+// lost it when that path still (falsely) reports alive after a silent death;
+// it falls back to any live path when avoid is the only option.
+func (b *Bond) pickAlivePathExcept(avoid uint16) (*path, error) {
+	b.mu.RLock()
+	snapshot := b.orderedPathsLocked()
+	n := len(snapshot)
+	b.mu.RUnlock()
+	if n == 0 {
+		return nil, ErrNoAlivePath
+	}
+	for i := 0; i < n; i++ {
+		idx := b.scheduler.Pick(snapshot)
+		if idx < 0 || idx >= n {
+			break
+		}
+		if snapshot[idx].index != avoid {
+			return snapshot[idx], nil
+		}
+	}
+	idx := b.scheduler.Pick(snapshot)
+	if idx < 0 || idx >= n {
+		return nil, ErrNoAlivePath
+	}
+	return snapshot[idx], nil
+}
+
 // Send stripes data as a single DATA frame across whichever path the
 // scheduler picks, and remembers it in the resend buffer until it is
-// cumulatively acked so it can be rerouted if that path dies.
+// cumulatively acked so it can be rerouted if that path dies or reaped if it
+// goes silent. The sequence number and the pending-buffer insert are one
+// atomic step (sendMu) so a concurrent ResetPeer cannot split them.
 func (b *Bond) Send(data []byte) error {
 	b.mu.RLock()
 	closed := b.closed
@@ -432,16 +518,15 @@ func (b *Bond) Send(data []byte) error {
 		return ErrBondClosed
 	}
 
-	seq := b.sendSeq.Add(1)
-	frame := encodeData(seq, data)
-
 	p, err := b.pickAlivePath()
 	if err != nil {
 		return err
 	}
 
-	pf := &pendingFrame{seq: seq, frame: frame, pathIndex: p.index}
 	b.sendMu.Lock()
+	seq := b.sendSeq.Add(1)
+	frame := encodeData(seq, data)
+	pf := &pendingFrame{seq: seq, frame: frame, pathIndex: p.index, sentAt: time.Now()}
 	b.pending[seq] = pf
 	b.sendMu.Unlock()
 
@@ -473,7 +558,10 @@ func (b *Bond) requeuePendingForPath(deadIdx uint16) {
 
 // requeueOne resends pf on a fresh alive path, trying every currently known
 // path at most once so a run of simultaneously-dying paths can't recurse or
-// spin forever.
+// spin forever. The frame's own current path is avoided when possible: a
+// silently dead path still reports alive, and re-sending onto it would only
+// recreate the stall. If no alive path exists at all the frame stays pending
+// until one returns, at which point the reaper picks it up.
 func (b *Bond) requeueOne(pf *pendingFrame) {
 	b.sendMu.Lock()
 	_, stillPending := b.pending[pf.seq]
@@ -490,7 +578,7 @@ func (b *Bond) requeueOne(pf *pendingFrame) {
 	}
 
 	for i := 0; i < attempts; i++ {
-		p, err := b.pickAlivePath()
+		p, err := b.pickAlivePathExcept(pf.pathIndex)
 		if err != nil {
 			logger.Warnf("multipath: no alive path to resend seq=%d", pf.seq)
 			return
@@ -504,11 +592,17 @@ func (b *Bond) requeueOne(pf *pendingFrame) {
 		pf.pathIndex = p.index
 		b.sendMu.Unlock()
 
-		if err := p.send(pf.frame); err == nil {
-			return
+		if err := p.send(pf.frame); err != nil {
+			p.markDead()
+			b.checkAliveTransition()
+			continue
 		}
-		p.markDead()
-		b.checkAliveTransition()
+		// Re-arm the delivery deadline so a reaped frame is not re-sent on
+		// every subsequent tick while the peer is merely slow to ack.
+		b.sendMu.Lock()
+		pf.sentAt = time.Now()
+		b.sendMu.Unlock()
+		return
 	}
 	logger.Warnf("multipath: failed to resend seq=%d after %d attempts", pf.seq, attempts)
 }
@@ -551,7 +645,9 @@ func (b *Bond) handleFrame(pathIndex uint16, raw []byte) {
 
 // handleDataFrame reorders and dedups incoming DATA frames, delivering
 // everything now contiguous with expectedSeq up to Bond's OnData callback in
-// order, then acking the new cumulative sequence.
+// order, then acking the new cumulative sequence. Reordering is tolerated
+// only within maxReorderWindow sequences; anything farther ahead is dropped
+// so a permanent gap cannot grow the buffer without bound.
 func (b *Bond) handleDataFrame(seq uint64, payload []byte) {
 	b.recvMu.Lock()
 	if seq < b.expectedSeq {
@@ -561,10 +657,15 @@ func (b *Bond) handleDataFrame(seq uint64, payload []byte) {
 		return
 	}
 	if seq != b.expectedSeq {
-		if _, exists := b.reorderBuf[seq]; !exists {
-			cp := make([]byte, len(payload))
-			copy(cp, payload)
-			b.reorderBuf[seq] = cp
+		if seq-b.expectedSeq <= maxReorderWindow {
+			if _, exists := b.reorderBuf[seq]; !exists {
+				cp := make([]byte, len(payload))
+				copy(cp, payload)
+				b.reorderBuf[seq] = cp
+			}
+			if b.holeSince.IsZero() {
+				b.holeSince = time.Now()
+			}
 		}
 		b.recvMu.Unlock()
 		return
@@ -582,6 +683,14 @@ func (b *Bond) handleDataFrame(seq uint64, payload []byte) {
 		b.expectedSeq++
 	}
 	ackTo := b.expectedSeq - 1
+	// A fresh hole opens after the delivered run if anything is still
+	// buffered; nothing buffered means nothing is awaited, leave the clock
+	// idle so an idle-but-alive stream is never wrongly evicted.
+	if len(b.reorderBuf) > 0 {
+		b.holeSince = time.Now()
+	} else {
+		b.holeSince = time.Time{}
+	}
 
 	// Call the callback while still holding recvMu, not after releasing it.
 	// Internal bookkeeping (expectedSeq/reorderBuf) is already race-free
@@ -648,7 +757,9 @@ func (b *Bond) sendAckFrame(cumSeq uint64) {
 
 // ackLoop periodically re-announces the current cumulative ack as a
 // backstop against the specific ACK frame having been lost when its
-// carrying path died in flight.
+// carrying path died in flight. The same tick hosts the sender's stale-frame
+// reaper and the receiver's hole eviction, so all three recovery paths stop
+// cleanly together on Close.
 func (b *Bond) ackLoop() {
 	ticker := time.NewTicker(ackInterval)
 	defer ticker.Stop()
@@ -657,6 +768,8 @@ func (b *Bond) ackLoop() {
 		case <-b.closeCh:
 			return
 		case <-ticker.C:
+			b.reapStale()
+			b.evictAgedHole()
 			b.recvMu.Lock()
 			ackTo := b.expectedSeq - 1
 			b.recvMu.Unlock()
@@ -665,6 +778,77 @@ func (b *Bond) ackLoop() {
 			}
 		}
 	}
+}
+
+// reapStale re-queues every pending frame whose delivery deadline has
+// elapsed onto a live path. This is the backstop for a silently dead path -
+// the blackholed carrier that dropped our frames but whose liveness has not
+// yet fired its ended callback. Without it those frames would sit unacked
+// and un-requeued until session liveness tore the bond down, leaving the
+// receiver stuck on a hole indefinitely. Frames are reaped only when at
+// least one path is alive; with no live path they stay pending until a path
+// returns, and the next tick picks them up.
+func (b *Bond) reapStale() {
+	if !b.CanSend() {
+		return
+	}
+	b.sendMu.Lock()
+	now := time.Now()
+	var stale []*pendingFrame
+	for _, pf := range b.pending {
+		if now.Sub(pf.sentAt) > b.resendDeadline {
+			stale = append(stale, pf)
+		}
+	}
+	b.sendMu.Unlock()
+	sort.Slice(stale, func(i, j int) bool { return stale[i].seq < stale[j].seq })
+	for _, pf := range stale {
+		b.requeueOne(pf)
+	}
+}
+
+// evictAgedHole gives up on an unrecoverable sequence hole and delivers the
+// buffered tail. The frame at expectedSeq has been missing for longer than
+// holeTimeout while later frames are buffered behind it: the sender's reaper
+// (resendDeadline, far shorter) would have re-delivered it by now if the
+// loss were recoverable, so it is presumed permanently lost. We drop the
+// hole, emit the longest contiguous buffered run in order, and ack it - a
+// permanent hole must not stall the stream forever. Any straggler re-sent by
+// the sender afterwards arrives with seq < expectedSeq and is dropped as
+// stale.
+func (b *Bond) evictAgedHole() {
+	b.recvMu.Lock()
+	if b.holeSince.IsZero() || len(b.reorderBuf) == 0 || time.Since(b.holeSince) <= b.holeTimeout {
+		b.recvMu.Unlock()
+		return
+	}
+	toDeliver := make([][]byte, 0, len(b.reorderBuf))
+	b.expectedSeq++ // skip the presumed-lost hole frame
+	for {
+		buf, ok := b.reorderBuf[b.expectedSeq]
+		if !ok {
+			break
+		}
+		delete(b.reorderBuf, b.expectedSeq)
+		toDeliver = append(toDeliver, buf)
+		b.expectedSeq++
+	}
+	ackTo := b.expectedSeq - 1
+	if len(b.reorderBuf) > 0 {
+		b.holeSince = time.Now()
+	} else {
+		b.holeSince = time.Time{}
+	}
+	b.onDataMu.RLock()
+	cb := b.onData
+	b.onDataMu.RUnlock()
+	if cb != nil {
+		for _, d := range toDeliver {
+			cb(d)
+		}
+	}
+	b.recvMu.Unlock()
+	b.sendAck(ackTo)
 }
 
 // handlePathEnded marks pathIndex dead, reroutes its in-flight frames, and
@@ -804,6 +988,31 @@ func (b *Bond) Reconnect(reason string) {
 	for _, p := range paths {
 		p.tr.Reconnect(reason)
 	}
+}
+
+// ResetPeer drops the bond's logical stream state and restarts both
+// sequence spaces from scratch without disturbing the physical carriers. It
+// implements the same ad-hoc interface{ ResetPeer() } a lone carrier exposes
+// (vp8channel), so the session layer's resetLinkPeer already drives it on
+// reconnect: a freshly rebuilt smux session must not replay stale pending
+// frames nor resume the old receive window, or sender and receiver would be
+// desynced on buffers that belonged to the dead session. After the reset the
+// next Send gets seq 1 and the receive side expects seq 1 again, matching
+// the peer bond that reset in step. The ack loop keeps running and simply
+// has nothing to announce (expectedSeq is 1 again).
+func (b *Bond) ResetPeer() {
+	b.sendMu.Lock()
+	clear(b.pending)
+	b.sendSeq.Store(0)
+	b.peerCumAck = 0
+	b.sendMu.Unlock()
+
+	b.recvMu.Lock()
+	clear(b.reorderBuf)
+	b.expectedSeq = 1
+	b.lastAckSent = 0
+	b.holeSince = time.Time{}
+	b.recvMu.Unlock()
 }
 
 // Close closes every path and stops the ack loop. Idempotent.

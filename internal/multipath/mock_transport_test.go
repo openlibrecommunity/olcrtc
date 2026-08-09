@@ -188,6 +188,21 @@ func (m *mockTransport) kill(reason string) {
 	}
 }
 
+// blackhole simulates a carrier dying SILENTLY: it stops delivering frames
+// (in-flight ones are lost) and reports not-sendable, but never fires the
+// ended callback - the "blackholed carrier whose liveness has not yet fired"
+// case that Bond's time-based reaper exists to recover from. Unlike kill, it
+// announces nothing.
+//
+// ai-generated: blackhole mode for the silent-death recovery test.
+func (m *mockTransport) blackhole() {
+	if !m.killed.compareAndSwap(false, true) {
+		return
+	}
+	m.connected.set(false)
+	m.stop()
+}
+
 func (m *mockTransport) stop() {
 	m.stopOnce.Do(func() { close(m.stopCh) })
 }

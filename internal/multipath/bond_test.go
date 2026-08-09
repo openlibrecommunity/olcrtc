@@ -14,10 +14,17 @@ import (
 // bond.PathOnData(index) before the path is handed to Bond.AddPath.
 func setupBondPair(t *testing.T, n int) (client, server *Bond, clientPaths, serverPaths []*mockTransport) {
 	t.Helper()
+	return setupBondPairOpts(t, n, nil, nil)
+}
+
+// setupBondPairOpts is setupBondPair with per-side Bond options, so tests
+// can shrink the recovery deadlines and timeouts to keep them fast.
+func setupBondPairOpts(t *testing.T, n int, clientOpts, serverOpts []Option) (client, server *Bond, clientPaths, serverPaths []*mockTransport) {
+	t.Helper()
 
 	id := NewBondID()
-	client = NewBond(id, RoleClient)
-	server = NewBond(id, RoleServer)
+	client = NewBond(id, RoleClient, clientOpts...)
+	server = NewBond(id, RoleServer, serverOpts...)
 
 	clientPaths = make([]*mockTransport, n)
 	serverPaths = make([]*mockTransport, n)
