@@ -106,7 +106,7 @@ type HealthFunc func(control.Status)
 
 // Config holds runtime configuration for [Run] and [RunWithReady].
 type Config struct {
-	Transport        string
+	Transport string
 	// TransportProto selects the tunnel protocol over the carrier: "" / "legacy"
 	// uses muxconn+smux; "mpq" runs an mpq-brutal bonding QUIC session.
 	TransportProto   string
@@ -394,12 +394,24 @@ func (c *Client) bringUpLinkMPQ(
 	return nil
 }
 
+// ai-generated: rewritten for soft degradation (a broken path must not sink
+// the whole mpq bring-up).
+//
 // bringUpCarriersMPQ brings up one raw carrier per configured path (or a single
 // carrier when no multipath is configured), wraps each in its own 1:1
 // mpqx.PacketConn, connects it and waits for its server peer. It returns the
-// per-path PacketConns (index i == mpq pathIndex i) and the primary carrier
-// (path 0, used for the WatchConnection/lifecycle hooks). All brought-up
-// carriers are recorded on the client so shutdown can close them.
+// per-path PacketConns and the primary carrier (the first survivor, used for
+// the WatchConnection/lifecycle hooks). All brought-up carriers are recorded
+// on the client so shutdown can close them.
+//
+// Soft degradation mirrors the legacy dialBond: a path that fails to create,
+// connect or wait for its peer is skipped (its carrier closed) and the
+// survivors keep compacted indices - survivor k sits at index k, and index k is
+// also the carrier's mpq path index (core.Dial's DialPath and each subsequent
+// AddPath pull pathConns[pathIndex], and mpq assigns sequential pathIDs to a
+// successful attachment sequence), so carrier k always maps to mpq path k. Only
+// a total wipe-out - no path up at all - is fatal, with the wrapped first
+// error surfaced.
 func (c *Client) bringUpCarriersMPQ(
 	ctx context.Context,
 	cfg Config,
@@ -417,10 +429,18 @@ func (c *Client) bringUpCarriersMPQ(
 	}
 
 	// endedPaths counts carriers that have reported conference end; only when
-	// every path has ended is the whole client torn down. A single path dropping
-	// is absorbed by mpq's bonding over the surviving paths.
+	// every SURVIVING path has ended is the whole client torn down. A single
+	// path dropping is absorbed by mpq's bonding over the survivors. The count
+	// is only known once the loop is done, so total is an atomic written right
+	// after and read by the ended callbacks; the >0 guard skips callbacks that
+	// somehow fire before the count lands (callbacks only run after Connect,
+	// i.e. after the store).
 	var endedPaths atomic.Int32
-	total := int32(len(specs)) //nolint:gosec // path counts are small, bounded by config
+	var total atomic.Int32
+
+	// firstErr keeps the first per-path failure so a total wipe-out can surface
+	// the real cause instead of a synthetic one.
+	var firstErr error
 
 	pathConns := make([]*mpqx.PacketConn, 0, len(specs))
 	carriers := make([]transport.Transport, 0, len(specs))
@@ -442,45 +462,64 @@ func (c *Client) bringUpCarriersMPQ(
 			Options:             cfg.TransportOptions,
 			Traffic:             cfg.Traffic,
 			// mpq: QUIC is the sole reliability layer, so the carrier under it must
-			// be datagram-like (unreliable, unordered) — a reliable+ordered carrier
+			// be datagram-like (unreliable, unordered) - a reliable+ordered carrier
 			// would add a redundant SCTP retransmit/HOL layer QUIC cannot see.
 			Unreliable: true,
 		})
 		if err != nil {
-			c.closeCarriers(carriers)
-			return nil, nil, fmt.Errorf("mpq: failed to create link (path %d): %w", i, err)
+			if firstErr == nil {
+				firstErr = fmt.Errorf("mpq: failed to create link (path %d): %w", i, err)
+			}
+			logger.Warnf("mpq: path %d skipped: create failed: %v", i, err)
+			continue
 		}
 		pc.Bind(ln)
 
 		ln.SetEndedCallback(func(reason string) {
 			logger.Infof("mpq: path reported conference end: %s", reason)
-			if endedPaths.Add(1) >= total {
-				logger.Infof("mpq: all %d path(s) ended, tearing down", total)
+			if total.Load() > 0 && endedPaths.Add(1) >= total.Load() {
+				logger.Infof("mpq: all %d path(s) ended, tearing down", total.Load())
 				cancel()
 			}
 		})
 		ln.SetShouldReconnect(func() bool { return ctx.Err() == nil })
-		// Carrier-level reconnect of a live mpq session is a later step: the QUIC
-		// session cannot simply be re-pointed at a fresh carrier here. Log and let
-		// mpq's own path liveness / ctx drive teardown.
+		// Carrier-level reconnect of an established mpq session is a later step:
+		// the QUIC session cannot simply be re-pointed at a fresh carrier here.
+		// Log and let mpq's own path liveness / ctx drive teardown.
 		ln.SetReconnectCallback(func() {
 			logger.Warnf("mpq: carrier reconnect signalled; mpq session reconnect not yet implemented")
 		})
 
 		if err := ln.Connect(ctx); err != nil {
 			_ = ln.Close()
-			c.closeCarriers(carriers)
-			return nil, nil, fmt.Errorf("mpq: failed to connect link (path %d): %w", i, err)
+			if firstErr == nil {
+				firstErr = fmt.Errorf("mpq: failed to connect link (path %d): %w", i, err)
+			}
+			logger.Warnf("mpq: path %d skipped: connect failed: %v", i, err)
+			continue
 		}
 		if err := waitForPeer(ctx, ln); err != nil {
 			_ = ln.Close()
-			c.closeCarriers(carriers)
-			return nil, nil, fmt.Errorf("mpq: path %d wait for peer: %w", i, err)
+			if firstErr == nil {
+				firstErr = fmt.Errorf("mpq: path %d wait for peer: %w", i, err)
+			}
+			logger.Warnf("mpq: path %d skipped: wait for peer failed: %v", i, err)
+			continue
 		}
 
 		pathConns = append(pathConns, pc)
 		carriers = append(carriers, ln)
 	}
+
+	if len(carriers) == 0 {
+		if firstErr == nil {
+			firstErr = errors.New("no path error recorded")
+		}
+		return nil, nil, fmt.Errorf("mpq: no path could be brought up out of %d configured: %w",
+			len(specs), firstErr)
+	}
+
+	total.Store(int32(len(carriers))) //nolint:gosec // path counts are small, bounded by config
 
 	c.sessMu.Lock()
 	c.mpqCarriers = carriers
