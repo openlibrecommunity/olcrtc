@@ -23,34 +23,62 @@ import (
 // --- Peer-routing in-memory carrier for mpq multipath ---
 //
 // This models a real peer-routing carrier (vp8channel/datachannel over an SFU):
-// several client carriers and one server carrier share a room; the server
-// distinguishes each client by a stable peerID. It is the substrate the mpq
-// server demuxes over (mpqx.ServerPacketConn). It is deliberately separate from
-// the broadcast memoryStream used by the legacy tests: multipath REQUIRES
-// per-peer routing (a broadcast carrier would cross-feed the paths' QUIC conns).
+// client carriers and server carriers share a room; the server distinguishes
+// each client by a stable peerID. It is the substrate the mpq server demuxes
+// over (mpqx.RoomConn, one carrier per configured room). It is deliberately
+// separate from the broadcast memoryStream used by the legacy tests: multipath
+// REQUIRES per-peer routing (a broadcast carrier would cross-feed the paths'
+// QUIC conns).
 //
-// A carrier registered with OnPeerData set is the server end; one registered
-// with only OnData set is a client end and is assigned a unique peerID. A client
-// Send arrives at the server as OnPeerData(peerID, data); the server's
-// SendTo(peerID, data) is delivered back to that one client's OnData.
+// A carrier registered with OnPeerData set is a server end; one registered with
+// only OnData set is a client end and is assigned a unique peerID. A client Send
+// arrives at the server as OnPeerData(peerID, data); the server's SendTo(peerID,
+// data) is delivered back to that one client's OnData. Every stream belongs to
+// the room its transport was opened in, so different rooms are isolated message
+// domains.
 
+// ai-generated: hub re-keyed per room, phase 1 multi-room mpq. mpqPeerHub hosts
+// one message domain per room: a server and its clients sharing a room exchange
+// frames ONLY within that room, so a "separate calls" client whose N paths live
+// in N different rooms gets N isolated domains on the server side, and a
+// single-room multi-path client shares one domain. Each room holds one server
+// end (peerID "") and any number of client ends.
 type mpqPeerHub struct {
-	mu       sync.Mutex
+	mu     sync.Mutex
+	rooms  map[string]*mpqPeerRoom
+	nextID atomic.Int64
+}
+
+// ai-generated: new type, phase 1 multi-room mpq. mpqPeerRoom is one isolated
+// room: the server end plus every client end in it.
+type mpqPeerRoom struct {
 	server   *mpqPeerStream
 	clients  map[string]*mpqPeerStream
-	nextID   atomic.Int64
 	serverUp chan struct{} // closed once the server end is connected
 }
 
 func newMPQPeerHub() *mpqPeerHub {
-	return &mpqPeerHub{
-		clients:  make(map[string]*mpqPeerStream),
-		serverUp: make(chan struct{}),
-	}
+	return &mpqPeerHub{rooms: make(map[string]*mpqPeerRoom)}
 }
 
+// ai-generated: new method, phase 1 multi-room mpq. roomLocked returns the room
+// entry for name, creating it on first use. Callers must hold h.mu.
+func (h *mpqPeerHub) roomLocked(name string) *mpqPeerRoom {
+	r := h.rooms[name]
+	if r == nil {
+		r = &mpqPeerRoom{clients: make(map[string]*mpqPeerStream), serverUp: make(chan struct{})}
+		h.rooms[name] = r
+	}
+	return r
+}
+
+// ai-generated: new type, phase 1 multi-room mpq. mpqPeerStream is one carrier
+// end in a room: room + recvBytes fields were added (recvBytes counts bytes
+// this stream received from the server via SendTo, so tests can assert a
+// specific client path actually moved traffic).
 type mpqPeerStream struct {
 	hub        *mpqPeerHub
+	room       string // room URL this stream belongs to (the message domain)
 	peerID     string // "" on the server end
 	isServer   bool
 	onData     func([]byte)
@@ -63,6 +91,9 @@ type mpqPeerStream struct {
 	// simulating a killed path without tearing the carrier down.
 	dead  bool
 	ended func(string)
+	// recvBytes counts bytes this stream received from the server (SendTo), so
+	// tests can assert a specific client path actually moved traffic.
+	recvBytes atomic.Int64
 }
 
 func (s *mpqPeerStream) Connect(context.Context) error {
@@ -71,8 +102,9 @@ func (s *mpqPeerStream) Connect(context.Context) error {
 	s.mu.Unlock()
 	if s.isServer {
 		s.hub.mu.Lock()
-		s.hub.server = s
-		serverUp := s.hub.serverUp
+		room := s.hub.roomLocked(s.room)
+		room.server = s
+		serverUp := room.serverUp
 		s.hub.mu.Unlock()
 		select {
 		case <-serverUp:
@@ -96,7 +128,8 @@ func (s *mpqPeerStream) Send(data []byte) error {
 		return nil
 	}
 	s.hub.mu.Lock()
-	srv := s.hub.server
+	room := s.hub.roomLocked(s.room)
+	srv := room.server
 	s.hub.mu.Unlock()
 	if srv == nil {
 		return nil
@@ -115,7 +148,8 @@ func (s *mpqPeerStream) Send(data []byte) error {
 // what makes the server transport report SupportsPeerRouting()==true.
 func (s *mpqPeerStream) SendTo(peerID string, data []byte) error {
 	s.hub.mu.Lock()
-	c := s.hub.clients[peerID]
+	room := s.hub.roomLocked(s.room)
+	c := room.clients[peerID]
 	s.hub.mu.Unlock()
 	if c == nil {
 		return nil
@@ -127,18 +161,20 @@ func (s *mpqPeerStream) SendTo(peerID string, data []byte) error {
 	if dead || cb == nil {
 		return nil
 	}
+	c.recvBytes.Add(int64(len(data)))
 	cb(append([]byte(nil), data...))
 	return nil
 }
 
-// WaitForPeer (engine.PeerReadySession): a client waits until the server end is
-// up. The server end returns immediately.
+// WaitForPeer (engine.PeerReadySession): a client waits until the server end of
+// ITS room is up. The server end returns immediately.
 func (s *mpqPeerStream) WaitForPeer(ctx context.Context) error {
 	if s.isServer {
 		return nil
 	}
 	s.hub.mu.Lock()
-	serverUp := s.hub.serverUp
+	room := s.hub.roomLocked(s.room)
+	serverUp := room.serverUp
 	s.hub.mu.Unlock()
 	select {
 	case <-serverUp:
@@ -180,7 +216,7 @@ func (s *mpqPeerStream) endConference(reason string) {
 }
 
 func (s *mpqPeerStream) SetReconnectCallback(func(*webrtc.DataChannel)) {}
-func (s *mpqPeerStream) SetShouldReconnect(func() bool)                  {}
+func (s *mpqPeerStream) SetShouldReconnect(func() bool)                 {}
 func (s *mpqPeerStream) SetEndedCallback(cb func(string)) {
 	s.mu.Lock()
 	s.ended = cb
@@ -200,9 +236,11 @@ func (s *mpqPeerStream) Capabilities() engine.Capabilities {
 	return engine.Capabilities{ByteStream: true}
 }
 
-// registerMPQPeerCarrier registers a peer-routing carrier engine and returns its
-// name plus the hub, so the test can reach individual client paths (e.g. to kill
-// one).
+// registerMPQPeerCarrier registers a peer-routing carrier engine keyed by room
+// URL and returns its name plus the hub, so a test can reach individual client
+// paths (e.g. to kill one). A stream belongs to the room its transport was
+// opened in (enginebuiltin.Config.RoomURL), keeping rooms isolated message
+// domains.
 func registerMPQPeerCarrier(t *testing.T) (string, *mpqPeerHub) {
 	t.Helper()
 	session.RegisterDefaults()
@@ -211,6 +249,7 @@ func registerMPQPeerCarrier(t *testing.T) (string, *mpqPeerHub) {
 	enginebuiltin.Register(name, func(_ context.Context, cfg enginebuiltin.Config) (engine.Session, error) {
 		s := &mpqPeerStream{
 			hub:        hub,
+			room:       cfg.RoomURL,
 			onData:     cfg.OnData,
 			onPeerData: cfg.OnPeerData,
 		}
@@ -219,7 +258,7 @@ func registerMPQPeerCarrier(t *testing.T) (string, *mpqPeerHub) {
 		} else {
 			s.peerID = fmt.Sprintf("mpq-client-%d", hub.nextID.Add(1))
 			hub.mu.Lock()
-			hub.clients[s.peerID] = s
+			hub.roomLocked(s.room).clients[s.peerID] = s
 			hub.mu.Unlock()
 		}
 		return s, nil
@@ -264,8 +303,11 @@ func startMPQMultipathTunnel(t *testing.T) (*tunnelRuntime, *mpqPeerHub) {
 
 	// Wait for the server carrier to connect before starting the client (the
 	// client's QUIC handshake must land on a live listener).
+	hub.mu.Lock()
+	serverUp := hub.roomLocked(testRoom).serverUp
+	hub.mu.Unlock()
 	select {
-	case <-hub.serverUp:
+	case <-serverUp:
 	case err := <-serverErr:
 		t.Fatalf("mpq server exited before connecting: %v", err)
 	case <-time.After(5 * time.Second):
@@ -339,7 +381,7 @@ func TestMPQMultipathSOCKSTunnel(t *testing.T) {
 
 	// Sanity: the client really opened two distinct carrier paths.
 	hub.mu.Lock()
-	nClients := len(hub.clients)
+	nClients := len(hub.roomLocked(testRoom).clients)
 	hub.mu.Unlock()
 	if nClients != 2 {
 		t.Fatalf("expected 2 client carrier paths, got %d", nClients)
@@ -374,7 +416,7 @@ func TestMPQMultipathSurvivesPathDrop(t *testing.T) {
 	// Kill one path (silently drop both directions). The other must carry on.
 	hub.mu.Lock()
 	var victim *mpqPeerStream
-	for _, c := range hub.clients {
+	for _, c := range hub.roomLocked(testRoom).clients {
 		victim = c
 		break
 	}
@@ -422,7 +464,7 @@ func TestMPQMultipathProactivePathRemoval(t *testing.T) {
 	// ended callback, which drives proactive FailPath on the client.
 	hub.mu.Lock()
 	var victim *mpqPeerStream
-	for _, c := range hub.clients {
+	for _, c := range hub.roomLocked(testRoom).clients {
 		victim = c
 		break
 	}
@@ -440,4 +482,138 @@ func TestMPQMultipathProactivePathRemoval(t *testing.T) {
 	echoRoundTrip(t, conn, 4096, 15*time.Second)
 	echoRoundTrip(t, conn, 4096, 15*time.Second)
 	t.Logf("served over survivor after proactive eviction in %s", time.Since(start))
+}
+
+// --- Multi-room mpq: separate calls, one bond per client across rooms ---
+//
+// ai-generated: the twoRoomPaths/startMPQMultiRoomTunnel/roomClientTraffic
+// helpers and TestMPQMultiRoomSeparateCalls below, phase 1 multi-room mpq.
+
+// twoRoomPaths builds two path specs pointing at two DIFFERENT rooms, so a
+// client bonds two paths that live in separate message domains (the "separate
+// calls" mode) and the server hosts one carrier per room.
+func twoRoomPaths() []transport.PathSpec {
+	return []transport.PathSpec{
+		{Transport: transportData, RoomURL: testRoom + "-a"},
+		{Transport: transportData, RoomURL: testRoom + "-b"},
+	}
+}
+
+// startMPQMultiRoomTunnel brings up an mpq server + a 2-path mpq client where
+// each path lives in its OWN room, and returns the runtime plus the hub. The
+// server is configured with the same two rooms, so it raises one carrier per
+// room and bonds them through one RoomConn.
+func startMPQMultiRoomTunnel(t *testing.T) (*tunnelRuntime, *mpqPeerHub) {
+	t.Helper()
+
+	carrierName, hub := registerMPQPeerCarrier(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	socksAddr := freeLocalAddr(ctx, t)
+
+	paths := twoRoomPaths()
+	serverErr := make(chan error, 1)
+	go func() {
+		serverErr <- server.Run(ctx, server.Config{
+			Transport:      transportData,
+			TransportProto: "mpq",
+			Carrier:        carrierName,
+			KeyHex:         testKeyHex,
+			DNSServer:      localDNSServer,
+			Paths:          paths,
+		})
+	}()
+
+	// Wait for the server carrier of EVERY room before starting the client (its
+	// QUIC handshake must land on a live listener in each room).
+	for _, ps := range paths {
+		hub.mu.Lock()
+		serverUp := hub.roomLocked(ps.RoomURL).serverUp
+		hub.mu.Unlock()
+		select {
+		case <-serverUp:
+		case err := <-serverErr:
+			t.Fatalf("mpq server exited before connecting room %s: %v", ps.RoomURL, err)
+		case <-time.After(5 * time.Second):
+			t.Fatalf("mpq server carrier for room %s did not connect", ps.RoomURL)
+		}
+	}
+
+	ready := make(chan struct{})
+	clientErr := make(chan error, 1)
+	go func() {
+		clientErr <- client.RunWithReady(ctx, client.Config{
+			Transport:      transportData,
+			TransportProto: "mpq",
+			Carrier:        carrierName,
+			DeviceID:       testClientDeviceID,
+			LocalAddr:      socksAddr,
+			KeyHex:         testKeyHex,
+			DNSServer:      localDNSServer,
+			Paths:          paths,
+		}, func() { close(ready) })
+	}()
+	waitForReadyWithin(t, ready, 15*time.Second)
+
+	return &tunnelRuntime{
+		socksAddr: socksAddr,
+		cancel:    cancel,
+		serverErr: serverErr,
+		clientErr: clientErr,
+		stopWait:  10 * time.Second,
+	}, hub
+}
+
+// roomClientTraffic returns the number of server->client bytes delivered to the
+// single client carrier of the given room.
+func roomClientTraffic(hub *mpqPeerHub, room string) int64 {
+	hub.mu.Lock()
+	defer hub.mu.Unlock()
+	for _, c := range hub.roomLocked(room).clients {
+		return c.recvBytes.Load()
+	}
+	return 0
+}
+
+// TestMPQMultiRoomSeparateCalls proves the "separate calls" mode: a client's
+// two paths live in two DIFFERENT rooms and the server hosts one carrier per
+// room, so mpq bonds the two rooms into one session. Real SOCKS traffic must
+// flow end-to-end AND traverse both rooms: a path whose room never moved bytes
+// would mean the bond silently collapsed onto a single room.
+func TestMPQMultiRoomSeparateCalls(t *testing.T) {
+	echoAddr := startEchoServer(t)
+	rt, hub := startMPQMultiRoomTunnel(t)
+	defer rt.stop(t)
+
+	// The client really opened one carrier per room (and the server one per
+	// room) - the rooms are isolated domains, not one shared hub.
+	hub.mu.Lock()
+	nA := len(hub.roomLocked(testRoom + "-a").clients)
+	nB := len(hub.roomLocked(testRoom + "-b").clients)
+	huba := hub.roomLocked(testRoom+"-a").server != nil
+	hubb := hub.roomLocked(testRoom+"-b").server != nil
+	hub.mu.Unlock()
+	if nA != 1 || nB != 1 {
+		t.Fatalf("want one client carrier per room, got room-a=%d room-b=%d", nA, nB)
+	}
+	if !huba || !hubb {
+		t.Fatalf("server carrier missing: room-a=%v room-b=%v", huba, hubb)
+	}
+
+	conn := connectViaSOCKS(t, rt.socksAddr, echoAddr)
+	defer func() { _ = conn.Close() }()
+
+	// A warm-up plus a bulk transfer: enough traffic for mpq's scheduler to
+	// spread packets across both paths.
+	echoRoundTrip(t, conn, 4096, 10*time.Second)
+	echoRoundTrip(t, conn, 256*1024, 30*time.Second)
+
+	// Both rooms' client carriers must have received bytes from the server,
+	// proving outbound traffic was routed over both paths in the bond.
+	if gotA := roomClientTraffic(hub, testRoom+"-a"); gotA == 0 {
+		t.Fatal("room-a path carried no bytes (bond collapsed onto one room?)")
+	}
+	if gotB := roomClientTraffic(hub, testRoom+"-b"); gotB == 0 {
+		t.Fatal("room-b path carried no bytes (bond collapsed onto one room?)")
+	}
 }
