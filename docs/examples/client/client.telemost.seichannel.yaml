@@ -1,40 +1,40 @@
-# Клиентский конфиг: telemost + seichannel
-# Запуск: olcrtc docs/examples/client/client.telemost.seichannel.yaml
+# Client config: telemost + seichannel
+# Run: olcrtc docs/examples/client/client.telemost.seichannel.yaml
 
-mode: cnc
+mode: cnc # role: srv (server) or cnc (client)
 
 auth:
-  provider: telemost
+  provider: telemost # call service provider used for signaling
 
-# Для telemost: Room ID, который вернул сервис.
-# Должен совпадать с сервером.
+# For telemost: Room ID returned by the service.
+# Must match the server.
 room:
-  id: "REPLACE_WITH_TELEMOST_ROOM_ID"
+  id: "REPLACE_WITH_TELEMOST_ROOM_ID" # room id
 
 crypto:
-  # Можно использовать key_file: "./olcrtc.key", чтобы не хранить секрет прямо здесь.
-  key: "REPLACE_ME_WITH_64_HEX_CHARS" # должен совпадать с сервером
+  # You can use key_file: "./olcrtc.key" to avoid storing the secret here.
+  key: "REPLACE_ME_WITH_64_HEX_CHARS" # must match the server
 
 net:
-  transport: seichannel
-  dns: "8.8.8.8:53"
+  transport: seichannel # transport to use, e.g. datachannel
+  dns: "8.8.8.8:53" # dns used to resolve names
 
 liveness:
-  interval: 10s
-  timeout: 5s
-  failures: 3
+  interval: 10s # how often to send liveness checks
+  timeout: 5s # wait time for a liveness reply
+  failures: 3 # consecutive failures before the link is considered dead
 
-socks:
-  host: "127.0.0.1"
-  port: 8808
-  user: "" # необязательная входящая auth
-  pass: ""
+socks: # local socks proxy exposed to apps
+  host: "127.0.0.1" # address to listen on
+  port: 8808 # port to listen on
+  user: "" # optional inbound auth
+  pass: "" # optional inbound auth
 
 sei:
-  fps: 30
-  batch_size: 64
-  fragment_size: 900
-  ack_timeout_ms: 2000
+  fps: 30 # frames per second
+  batch_size: 64 # messages packed per batch
+  fragment_size: 900 # max payload bytes per fragment
+  ack_timeout_ms: 2000 # ack wait before retransmit (ms)
 
-data: data
-debug: false
+data: data # where to store / read data
+debug: false # log actions in more detail

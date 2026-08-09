@@ -16,6 +16,8 @@ This document describes a **convention for developers of client applications** t
 
 The current `olcrtc` does not parse such a URI automatically. If a client application wants to use this notation, it must parse the string itself and pass the resulting fields into the `olcrtc` YAML config.
 
+The main client that consumes this URI format is [owenewans/owenclave](https://github.com/owenewans/owenclave) ([src.owenewans.org/owenrtc](https://src.owenewans.org/owenrtc)) - an Android proxy client (fork of exclave) supporting all common protocols (vless, hysteria2, mieru, trojan, vmess, tuic, shadowsocks, socks ...) plus `olcrtc` and subscriptions.
+
 ---
 
 ## Format
@@ -221,16 +223,10 @@ data: data
 ### jitsi + datachannel
 
 ```text
-olcrtc://jitsi?datachannel@https://meet.small-dm.ru/myroom#d823fa01cb3e0609b67322f7cf984c4ee2e4ce2e294936fc24ef38c9e59f4799$RU / olc free sub
+olcrtc://jitsi?datachannel@https://meet.example.org/myroom#d823fa01cb3e0609b67322f7cf984c4ee2e4ce2e294936fc24ef38c9e59f4799$RU / olc free sub
 ```
 
-Or with `meet.handyweb.org`:
-
-```text
-olcrtc://jitsi?datachannel@https://meet.handyweb.org/myroom#d823fa01cb3e0609b67322f7cf984c4ee2e4ce2e294936fc24ef38c9e59f4799$RU / olc free sub
-```
-
-`<RoomID>` for jitsi is the full room URL in the form `https://host/room` (or `host/room`). Any self-hosted Jitsi Meet instance without authentication is supported; for public servers (`meet.small-dm.ru`, `meet1.arbitr.ru`, `meet.handyweb.org`, `meet.jit.si`) the same format applies. **Be sure to check which server is reachable in your network.**
+`<RoomID>` for jitsi is the full room URL in the form `https://host/room` (or `host/room`). Any self-hosted Jitsi Meet instance without authentication is supported; for public instances see [`docs/examples/jitsi.instances.yaml`](./examples/jitsi.instances.yaml) (or `meet.jit.si`). **Be sure to check which server is reachable in your network.**
 
 ### YAML equivalent
 
@@ -239,8 +235,8 @@ mode: cnc
 auth:
   provider: jitsi
 room:
-  # Use meet.small-dm.ru, meet1.arbitr.ru or meet.handyweb.org - whichever works in your network
-  id: "https://meet.small-dm.ru/myroom"
+  # Instances: see docs/examples/jitsi.instances.yaml
+  id: "https://meet.example.org/myroom"
 crypto:
   key: "d823fa01cb3e0609b67322f7cf984c4ee2e4ce2e294936fc24ef38c9e59f4799"
 net:

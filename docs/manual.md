@@ -160,7 +160,7 @@ On the server machine (VPS, etc.). Pick the right auth provider + transport comb
 
 ### jitsi + datachannel (recommended)
 
-The simplest way: use any self-hosted or public Jitsi Meet instance. No registration needed, the room name is made up on the fly. Available public servers: `meet.small-dm.ru`, `meet1.arbitr.ru` and `meet.handyweb.org` - **be sure to check in a browser which one works in your network** and use the one that opens. Any other one will also do (`meet.jit.si`, your own self-hosted, etc.).
+The simplest way: use any self-hosted or public Jitsi Meet instance. No registration needed, the room name is made up on the fly. Available instances are listed in [`docs/examples/jitsi.instances.yaml`](./examples/jitsi.instances.yaml) - **be sure to check in a browser which one works in your network** and use the one that opens. Any other one will also do (`meet.jit.si`, your own self-hosted, etc.).
 
 Create a YAML config:
 
@@ -170,8 +170,8 @@ mode: srv
 auth:
   provider: jitsi
 room:
-  # Use meet.small-dm.ru, meet1.arbitr.ru or meet.handyweb.org - whichever works in your network
-  id: "https://meet.small-dm.ru/myroom"
+  # Instances: see docs/examples/jitsi.instances.yaml
+  id: "https://meet.example.org/myroom"
 crypto:
   key: "d823fa01cb3e0609b67322f7cf984c4ee2e4ce2e294936fc24ef38c9e59f4799"
 net:
@@ -237,6 +237,8 @@ Add `debug: true` to the YAML config - you will see every connection:
 
 On your machine. `auth.provider`, `net.transport`, `room.id` and `crypto.key` must match the server.
 
+> Prefer a ready-made Android client instead of a YAML config? Use [owenewans/owenclave](https://github.com/owenewans/owenclave) ([src.owenewans.org/owenrtc](https://src.owenewans.org/owenrtc)) - it reads the `olcrtc://` URI and subscriptions directly. The steps below run the native `cnc` binary (SOCKS5 only).
+
 ### jitsi + datachannel (recommended)
 
 ```yaml
@@ -245,8 +247,8 @@ mode: cnc
 auth:
   provider: jitsi
 room:
-  # Use meet.small-dm.ru, meet1.arbitr.ru or meet.handyweb.org - whichever works in your network
-  id: "https://meet.small-dm.ru/myroom"
+  # Instances: see docs/examples/jitsi.instances.yaml
+  id: "https://meet.example.org/myroom"
 crypto:
   key: "<hex-key-same-as-on-the-server>"
 net:
@@ -497,7 +499,7 @@ mode: srv
 auth:
   provider: jitsi
 room:
-  id: "https://meet1.arbitr.ru/room1"
+  id: "https://meet.example.org/room1"
 crypto:
   key: "aaaa...1111"
 net:
@@ -538,7 +540,7 @@ mode: cnc
 auth:
   provider: jitsi
 room:
-  id: "https://meet1.arbitr.ru/room1"
+  id: "https://meet.example.org/room1"
 crypto:
   key: "aaaa...1111"
 net:

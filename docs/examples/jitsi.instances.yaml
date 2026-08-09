@@ -1,0 +1,19 @@
+# Jitsi instances for the jitsi auth provider.
+# Pick a reachable host and put it into room.id as https://HOST/ROOM.
+# Hosts come and go - verify in a browser before use.
+instances:
+  - meet.egovm.ru
+  - conference.ct.placetime.team
+  - jitsy.amateusfox.online
+  - meet.mamba.group
+  - meet.ecopsy.com
+  - meet.mirox.chat
+  - webinar.knomary.dev
+  - meet.playform.ru
+  - webinar.devknomarylms.ru
+  - zgn-y-vc01.zignotch.com
+  - conf.expressmoney.com
+  - m.catonmoon.com
+  - conf.hyperia.space
+  - jitsi.etudevs.ru
+  - meet.riddlerx.org

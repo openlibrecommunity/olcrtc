@@ -30,8 +30,8 @@ const (
 	MinSmuxWirePayload = SmuxWireOverhead + 1
 
 	smuxMaxFrameSize     = 32 * 1024
-	smuxMaxReceiveBuffer = 8 * 1024 * 1024
-	smuxMaxStreamBuffer  = 512 * 1024
+	smuxMaxReceiveBuffer = 32 * 1024 * 1024
+	smuxMaxStreamBuffer  = 4 * 1024 * 1024
 )
 
 // ErrKeyRequired is returned when no encryption key is provided.

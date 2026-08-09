@@ -16,6 +16,7 @@ require (
 	github.com/pion/rtp v1.10.2
 	github.com/pion/transport/v4 v4.0.1
 	github.com/pion/webrtc/v4 v4.2.13
+	github.com/wlynxg/anet v0.0.5
 	github.com/xtaci/kcp-go/v5 v5.6.72
 	github.com/xtaci/smux v1.5.57
 	github.com/zarazaex69/gr v0.1.5
@@ -75,7 +76,6 @@ require (
 	github.com/redis/go-redis/v9 v9.19.0 // indirect
 	github.com/tjfoc/gmsm v1.4.1 // indirect
 	github.com/twitchtv/twirp v8.1.3+incompatible // indirect
-	github.com/wlynxg/anet v0.0.5 // indirect
 	github.com/zeebo/xxh3 v1.1.0 // indirect
 	go.opentelemetry.io/otel v1.43.0 // indirect
 	go.uber.org/atomic v1.11.0 // indirect

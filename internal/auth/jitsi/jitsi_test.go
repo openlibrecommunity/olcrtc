@@ -21,7 +21,7 @@ func TestParseRoomURL(t *testing.T) {
 		room    string
 		wantErr bool
 	}{
-		{name: "https url", raw: "https://meet.handyweb.org/" + testRoom, host: "meet.handyweb.org", room: testRoom},
+		{name: "https url", raw: "https://meet.systemli.org/" + testRoom, host: "meet.systemli.org", room: testRoom},
 		{name: "http url", raw: "http://" + testHost + "/" + testRoom, host: testHost, room: testRoom},
 		{name: "scheme-less", raw: "meet.example.com/" + testRoom, host: "meet.example.com", room: testRoom},
 		{name: "trailing slash", raw: "https://" + testHost + "/" + testRoom + "/", host: testHost, room: testRoom},
@@ -54,14 +54,14 @@ func TestParseRoomURL(t *testing.T) {
 
 func TestProviderIssue(t *testing.T) {
 	creds, err := Provider{}.Issue(context.Background(), auth.Config{
-		RoomURL: "https://meet.handyweb.org/olcrtc",
+		RoomURL: "https://meet.systemli.org/olcrtc",
 		Name:    "olcrtc-test",
 	})
 	if err != nil {
 		t.Fatalf("Issue: %v", err)
 	}
-	if creds.URL != "meet.handyweb.org" {
-		t.Fatalf("URL = %q, want %q", creds.URL, "meet.handyweb.org")
+	if creds.URL != "meet.systemli.org" {
+		t.Fatalf("URL = %q, want %q", creds.URL, "meet.systemli.org")
 	}
 	if got := creds.Extra[CredentialKeyRoom]; got != "olcrtc" {
 		t.Fatalf("room = %q, want %q", got, "olcrtc")

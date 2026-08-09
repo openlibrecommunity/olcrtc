@@ -21,30 +21,30 @@ olcrtc /etc/olcrtc/client.yaml
 
 Готовые примеры:
 
-- [`server.jitsi.datachannel.yaml`](./examples/server.jitsi.datachannel.yaml) - jitsi + datachannel srv
-- [`client.jitsi.datachannel.yaml`](./examples/client.jitsi.datachannel.yaml) - jitsi + datachannel cnc
-- [`server.jitsi.videochannel.yaml`](./examples/server.jitsi.videochannel.yaml) - jitsi + videochannel srv
-- [`client.jitsi.videochannel.yaml`](./examples/client.jitsi.videochannel.yaml) - jitsi + videochannel cnc
-- [`server.jitsi.seichannel.yaml`](./examples/server.jitsi.seichannel.yaml) - jitsi + seichannel srv
-- [`client.jitsi.seichannel.yaml`](./examples/client.jitsi.seichannel.yaml) - jitsi + seichannel cnc
-- [`server.jitsi.vp8channel.yaml`](./examples/server.jitsi.vp8channel.yaml) - jitsi + vp8channel srv
-- [`client.jitsi.vp8channel.yaml`](./examples/client.jitsi.vp8channel.yaml) - jitsi + vp8channel cnc
-- [`server.telemost.datachannel.yaml`](./examples/server.telemost.datachannel.yaml) - telemost + datachannel srv
-- [`client.telemost.datachannel.yaml`](./examples/client.telemost.datachannel.yaml) - telemost + datachannel cnc
-- [`server.telemost.videochannel.yaml`](./examples/server.telemost.videochannel.yaml) - telemost + videochannel srv
-- [`client.telemost.videochannel.yaml`](./examples/client.telemost.videochannel.yaml) - telemost + videochannel cnc
-- [`server.telemost.seichannel.yaml`](./examples/server.telemost.seichannel.yaml) - telemost + seichannel srv
-- [`client.telemost.seichannel.yaml`](./examples/client.telemost.seichannel.yaml) - telemost + seichannel
-- [`server.telemost.vp8channel.yaml`](./examples/server.telemost.vp8channel.yaml) - telemost + vp8channel srv
-- [`client.telemost.vp8channel.yaml`](./examples/client.telemost.vp8channel.yaml) - telemost + vp8channel cnc
-- [`server.wbstream.datachannel.yaml`](./examples/server.wbstream.datachannel.yaml) - wbstream + datachannel srv
-- [`client.wbstream.datachannel.yaml`](./examples/client.wbstream.datachannel.yaml) - wbstream + datachannel cnc
-- [`server.wbstream.videochannel.yaml`](./examples/server.wbstream.videochannel.yaml) - wbstream + videochannel srv
-- [`client.wbstream.videochannel.yaml`](./examples/client.wbstream.videochannel.yaml) - wbstream + videochannel cnc
-- [`server.wbstream.seichannel.yaml`](./examples/server.wbstream.seichannel.yaml) - wbstream + seichannel srv
-- [`client.wbstream.seichannel.yaml`](./examples/client.wbstream.seichannel.yaml) - wbstream + seichannel cnc
-- [`server.wbstream.vp8channel.yaml`](./examples/server.wbstream.vp8channel.yaml) - wbstream + vp8channel srv
-- [`client.wbstream.vp8channel.yaml`](./examples/client.wbstream.vp8channel.yaml) - wbstream + vp8channel cnc
+- [`server.jitsi.datachannel.yaml`](./examples/server/server.jitsi.datachannel.yaml) - jitsi + datachannel srv
+- [`client.jitsi.datachannel.yaml`](./examples/client/client.jitsi.datachannel.yaml) - jitsi + datachannel cnc
+- [`server.jitsi.videochannel.yaml`](./examples/server/server.jitsi.videochannel.yaml) - jitsi + videochannel srv
+- [`client.jitsi.videochannel.yaml`](./examples/client/client.jitsi.videochannel.yaml) - jitsi + videochannel cnc
+- [`server.jitsi.seichannel.yaml`](./examples/server/server.jitsi.seichannel.yaml) - jitsi + seichannel srv
+- [`client.jitsi.seichannel.yaml`](./examples/client/client.jitsi.seichannel.yaml) - jitsi + seichannel cnc
+- [`server.jitsi.vp8channel.yaml`](./examples/server/server.jitsi.vp8channel.yaml) - jitsi + vp8channel srv
+- [`client.jitsi.vp8channel.yaml`](./examples/client/client.jitsi.vp8channel.yaml) - jitsi + vp8channel cnc
+- [`server.telemost.datachannel.yaml`](./examples/server/server.telemost.datachannel.yaml) - telemost + datachannel srv
+- [`client.telemost.datachannel.yaml`](./examples/client/client.telemost.datachannel.yaml) - telemost + datachannel cnc
+- [`server.telemost.videochannel.yaml`](./examples/server/server.telemost.videochannel.yaml) - telemost + videochannel srv
+- [`client.telemost.videochannel.yaml`](./examples/client/client.telemost.videochannel.yaml) - telemost + videochannel cnc
+- [`server.telemost.seichannel.yaml`](./examples/server/server.telemost.seichannel.yaml) - telemost + seichannel srv
+- [`client.telemost.seichannel.yaml`](./examples/client/client.telemost.seichannel.yaml) - telemost + seichannel
+- [`server.telemost.vp8channel.yaml`](./examples/server/server.telemost.vp8channel.yaml) - telemost + vp8channel srv
+- [`client.telemost.vp8channel.yaml`](./examples/client/client.telemost.vp8channel.yaml) - telemost + vp8channel cnc
+- [`server.wbstream.datachannel.yaml`](./examples/server/server.wbstream.datachannel.yaml) - wbstream + datachannel srv
+- [`client.wbstream.datachannel.yaml`](./examples/client/client.wbstream.datachannel.yaml) - wbstream + datachannel cnc
+- [`server.wbstream.videochannel.yaml`](./examples/server/server.wbstream.videochannel.yaml) - wbstream + videochannel srv
+- [`client.wbstream.videochannel.yaml`](./examples/client/client.wbstream.videochannel.yaml) - wbstream + videochannel cnc
+- [`server.wbstream.seichannel.yaml`](./examples/server/server.wbstream.seichannel.yaml) - wbstream + seichannel srv
+- [`client.wbstream.seichannel.yaml`](./examples/client/client.wbstream.seichannel.yaml) - wbstream + seichannel cnc
+- [`server.wbstream.vp8channel.yaml`](./examples/server/server.wbstream.vp8channel.yaml) - wbstream + vp8channel srv
+- [`client.wbstream.vp8channel.yaml`](./examples/client/client.wbstream.vp8channel.yaml) - wbstream + vp8channel cnc
 - [`failover.yaml`](./examples/failover.yaml) - failover
 
 ## Схема
@@ -88,19 +88,16 @@ olcrtc /etc/olcrtc/client.yaml
 
 ### Сервер
 
-> **Jitsi-провайдер:** используйте тот сервер, который доступен в вашей сети. Проверьте в браузере и выберите рабочий:
-> - `https://meet.small-dm.ru/`
-> - `https://meet1.arbitr.ru/` 
-> - `https://meet.handyweb.org/`
+> **Jitsi-провайдер:** берите инстансы из файла [`examples/jitsi.instances.yaml`](./examples/jitsi.instances.yaml), а не из голого текста. Проверьте хост в браузере и выберите рабочий.
 
 ```yaml
 mode: srv
 auth:
   provider: jitsi
 room:
-  # Используйте тот Jitsi-сервер, который работает в вашей сети:
-  # https://meet.small-dm.ru/ROOM  или  https://meet1.arbitr.ru/ROOM  или  https://meet.handyweb.org/ROOM
-  id: "https://meet.small-dm.ru/REPLACE_ME_WITH_ROOM_ID"
+  # Хост берите из docs/examples/jitsi.instances.yaml:
+  # https://HOST/ROOM
+  id: "https://REPLACE_ME_WITH_HOST/REPLACE_ME_WITH_ROOM_ID"
 crypto:
   key: "REPLACE_ME_WITH_64_HEX_CHARS"
 net:
@@ -116,9 +113,9 @@ mode: cnc
 auth:
   provider: jitsi
 room:
-  # Используйте тот Jitsi-сервер, который работает в вашей сети:
-  # https://meet.small-dm.ru/ROOM  или  https://meet1.arbitr.ru/ROOM  или  https://meet.handyweb.org/ROOM
-  id: "https://meet.small-dm.ru/REPLACE_ME_WITH_ROOM_ID"
+  # Хост берите из docs/examples/jitsi.instances.yaml:
+  # https://HOST/ROOM
+  id: "https://REPLACE_ME_WITH_HOST/REPLACE_ME_WITH_ROOM_ID"
 crypto:
   key: "REPLACE_ME_WITH_64_HEX_CHARS"
 net:

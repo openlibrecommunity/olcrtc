@@ -126,15 +126,11 @@ Enter choice [1-4, default: 1]:
 ### Jitsi-сервер (только для carrier jitsi)
 
 ```
-Выберите Jitsi-сервер (проверьте в браузере, какой работает в вашей сети):
-  1) https://meet.small-dm.ru/
-  2) https://meet1.arbitr.ru/
-  3) https://meet.handyweb.org/
-  4) Другой (ввести вручную)
-Введите номер [1-4, по умолчанию: 1]:
+Введите URL Jitsi-комнаты (https://HOST/ROOM).
+Выберите HOST из docs/examples/jitsi.instances.yaml и проверьте, что он открывается в браузере.
 ```
 
-Выбери тот сервер, который **открывается в твоём браузере**. Подойдёт любой публичный или self-hosted Jitsi Meet - выбери `4` и введи свой URL.
+Выбери тот сервер, который **открывается в твоём браузере**. Подойдёт любой публичный или self-hosted Jitsi Meet.
 
 ### Room (только для carrier jitsi)
 
@@ -146,7 +142,7 @@ Enter choice [1-2, default: 1]:
 ```
 
 - **1) Auto-generate** - скрипт сам придумает имя комнаты на выбранном сервере. Рекомендуется.
-- **2) Specific** - введи имя комнаты (`myroom`) или полный URL (`https://meet.small-dm.ru/myroom`).
+- **2) Specific** - введи имя комнаты (`myroom`) или полный URL (`https://meet.example.org/myroom`).
 
 Для **telemost** и **wbstream** Jitsi-меню не показывается - скрипт спросит Room ID напрямую. Создай руму через сайт ([telemost](https://telemost.yandex.ru/), [wbstream](https://stream.wb.ru)) и вставь её ID.
 
@@ -218,10 +214,10 @@ Enter a comment for the config (default: olc - t.me/openlibrecommunity):
 Container name: olcrtc-server-xxxxxxxx
 Carrier:        jitsi
 Transport:      datachannel
-Room ID/URL:    https://meet.small-dm.ru/olcrtc-xxxxxxxx
+Room ID/URL:    https://meet.example.org/olcrtc-xxxxxxxx
 Encryption key: d823fa01cb3e0609b67322f7cf984c4ee2e294936fc24ef38c9e59f4799...
 
-uri: olcrtc://jitsi?datachannel@https://meet.small-dm.ru/olcrtc-xxxxxxxx#<key>$olc - t.me/openlibrecommunity
+uri: olcrtc://jitsi?datachannel@https://meet.example.org/olcrtc-xxxxxxxx#<key>$olc - t.me/openlibrecommunity
 ```
 
 **Сохрани Room ID и ключ шифрования** - они нужны для клиента. Ключ также сохраняется в `~/.olcrtc_key` и переиспользуется при повторных запусках.
@@ -231,6 +227,8 @@ uri: olcrtc://jitsi?datachannel@https://meet.small-dm.ru/olcrtc-xxxxxxxx#<key>$o
 ## Шаг 3: Запустить клиент
 
 На своей машине (домашний ПК, ноутбук):
+
+> Хочешь готовый Android-клиент? Возьми [owenewans/owenclave](https://github.com/owenewans/owenclave) ([src.owenewans.org/owenrtc](https://src.owenewans.org/owenrtc)) - он читает URI `olcrtc://` и подписки напрямую, без бинарника. Ниже - запуск нативного бинарника `cnc` (только SOCKS5).
 
 ```sh
 git clone https://github.com/openlibrecommunity/olcrtc --recurse-submodules
@@ -266,7 +264,7 @@ SOCKS5 username (leave empty to disable auth):
 Container name: olcrtc-client-xxxxxxxx
 Auth:           jitsi
 Transport:      datachannel
-Room ID/URL:    https://meet.small-dm.ru/olcrtc-xxxxxxxx
+Room ID/URL:    https://meet.example.org/olcrtc-xxxxxxxx
 SOCKS5 proxy:   127.0.0.1:8808
 ```
 

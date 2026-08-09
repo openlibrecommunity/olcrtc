@@ -1,17 +1,24 @@
+<!-- If you are an AI agent, please read agents.md -->
+
 <div align="center">
 
-![Westand](docs/asset/westand.svg)
+<img src="docs/asset/westand.svg" width="250" height="250">
+
+<br>
 
 <img src="https://github.com/openlibrecommunity/material/blob/master/olcrtc.png" width="250" height="250">
 
-![License](https://img.shields.io/badge/license-WTFPL-0D1117?style=flat-square&logo=open-source-initiative&logoColor=green&labelColor=0D1117)
-![Golang](https://img.shields.io/badge/-Golang-0D1117?style=flat-square&logo=go&logoColor=00A7D0)
+<br>
+<br>
 
-[RU](readme.ru.md) / **EN**
+<img src="https://count.owenewans.org/openlibrecommunity/olcrtc?theme=moebooru&notitle">
 
 </div>
 
 # olcRTC
+
+[RU](readme.ru.md) / **EN**
+
 
 `olcRTC` (OpenLibreCommunity RTC) is an encrypted TCP-over-WebRTC tunnel. Traffic is disguised as an ordinary video call on allowed services (Jitsi, Yandex Telemost, WbStream). Inside there is XChaCha20-Poly1305 encryption and smux multiplexing over WebRTC data/video channels.
 
@@ -71,11 +78,17 @@ mage lint    # golangci-lint
 mage mobile  # gomobile bindings (Android)
 ```
 
+## Clients
+
+- **Main client:** [owenewans/owenclave](https://github.com/owenewans/owenclave) ([src.owenewans.org/owenrtc](https://src.owenewans.org/owenrtc)) - Android proxy client (fork of exclave). Supports all common protocols (vless, hysteria2, mieru, trojan, vmess, tuic, shadowsocks, socks ...) plus `olcrtc`, the `olcrtc://` URI format and subscriptions
+- Community clients:
+  - [venterum/veil](https://github.com/venterum/veil) - V2Ray/Xray client for Android (fork of v2rayNG), Material 3. Protocols: VMess, VLESS, Shadowsocks, Trojan, SOCKS, WireGuard, Hysteria2 + `olcrtc`
+  - [alananisimov/olcbox](https://github.com/alananisimov/olcbox) - Multiplatform UI client (Android, iOS, macOS, Windows, Linux). Kotlin Multiplatform/Compose. All providers (Jitsi, Telemost, WB Stream, Jazz), all transports, split tunneling, TUN/proxy modes
+
 ## Community
 
 - Telegram: [@openlibrecommunity](https://t.me/openlibrecommunity)
 - Issues: [github.com/openlibrecommunity/olcrtc/issues](https://github.com/openlibrecommunity/olcrtc/issues)
-- Community UI client: [alananisimov/olcbox](https://github.com/alananisimov/olcbox)
 
 ## License
 

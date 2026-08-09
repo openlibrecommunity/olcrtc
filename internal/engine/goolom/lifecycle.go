@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"runtime"
 	"sync"
 	"time"
 
@@ -12,6 +13,7 @@ import (
 	"github.com/openlibrecommunity/olcrtc/internal/engine"
 	"github.com/openlibrecommunity/olcrtc/internal/logger"
 	"github.com/openlibrecommunity/olcrtc/internal/protect"
+	"github.com/pion/ice/v4"
 	"github.com/pion/interceptor"
 	"github.com/pion/webrtc/v4"
 )
@@ -127,11 +129,19 @@ func (s *Session) setupPeerConnections(config webrtc.Configuration) error {
 }
 
 // newWebRTCAPI builds a pion API with IPv4-only ICE and the default media
-// engine + interceptors.
+// engine + interceptors. On Android 11+ SELinux denies netlink_route_socket
+// for untrusted apps (b/155595000), so ProtectedNet (getifaddrs-based) must
+// be installed even without a Protector.
 func newWebRTCAPI() (*webrtc.API, error) {
 	settingEngine := webrtc.SettingEngine{}
-	if protect.Protector != nil {
+	if protect.Protector != nil || runtime.GOOS == "android" {
+		pnet, err := protect.NewProtectedNet()
+		if err != nil {
+			return nil, fmt.Errorf("protected net: %w", err)
+		}
+		settingEngine.SetNet(pnet)
 		settingEngine.SetICEProxyDialer(protect.NewProxyDialer())
+		settingEngine.SetICEMulticastDNSMode(ice.MulticastDNSModeDisabled)
 	}
 	settingEngine.LoggerFactory = logger.NewPionLoggerFactory()
 

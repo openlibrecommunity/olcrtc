@@ -1,36 +1,36 @@
-# Клиентский конфиг: jitsi + datachannel
-# Запуск: olcrtc docs/examples/client/client.jitsi.datachannel.yaml
+# Client config: jitsi + datachannel
+# Run: olcrtc docs/examples/client/client.jitsi.datachannel.yaml
 
-mode: cnc
+mode: cnc # role: srv (server) or cnc (client)
 
 auth:
-  provider: jitsi
+  provider: jitsi # call service provider used for signaling
 
-# Для jitsi: полный URL комнаты (https://host/room или host/room).
-# Должен совпадать с сервером.
-# Доступные серверы: meet.small-dm.ru, meet1.arbitr.ru или meet.handyweb.org
-# Проверьте в браузере, какой работает в вашей сети.
+# For jitsi: full room URL (https://host/room or host/room).
+# Must match the server.
+# Instances: see docs/examples/jitsi.instances.yaml
+# Check in a browser which one works in your network.
 room:
-  id: "https://meet.small-dm.ru/REPLACE_WITH_ROOM_NAME"
+  id: "https://meet.example.org/REPLACE_WITH_ROOM_NAME" # room name / URL
 
 crypto:
-  # Можно использовать key_file: "./olcrtc.key", чтобы не хранить секрет прямо здесь.
-  key: "REPLACE_ME_WITH_64_HEX_CHARS" # должен совпадать с сервером
+  # You can use key_file: "./olcrtc.key" to avoid storing the secret here.
+  key: "REPLACE_ME_WITH_64_HEX_CHARS" # must match the server
 
 net:
-  transport: datachannel
-  dns: "8.8.8.8:53"
+  transport: datachannel # transport to use, e.g. datachannel
+  dns: "8.8.8.8:53" # dns used to resolve names
 
 liveness:
-  interval: 10s
-  timeout: 5s
-  failures: 3
+  interval: 10s # how often to send liveness checks
+  timeout: 5s # wait time for a liveness reply
+  failures: 3 # consecutive failures before the link is considered dead
 
-socks:
-  host: "127.0.0.1"
-  port: 8808
-  user: "" # необязательная входящая auth
-  pass: ""
+socks: # local socks proxy exposed to apps
+  host: "127.0.0.1" # address to listen on
+  port: 8808 # port to listen on
+  user: "" # optional inbound auth
+  pass: "" # optional inbound auth
 
-data: data
-debug: false
+data: data # where to store / read data
+debug: false # log actions in more detail

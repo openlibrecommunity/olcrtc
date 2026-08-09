@@ -74,7 +74,7 @@ olcrtc client.yaml
 
 | Provider | Engine | Комментарий |
 |---|---|---|
-| `jitsi` | `jitsi` | URL комнаты Jitsi (`meet.small-dm.ru`, `meet1.arbitr.ru` или `meet.handyweb.org`), без отдельной регистрации |
+| `jitsi` | `jitsi` | URL комнаты Jitsi, инстансы в docs/examples/jitsi.instances.yaml, без отдельной регистрации |
 | `telemost` | `goolom` | credentials через Yandex Telemost API, с отдельной регистрацией |
 | `wbstream` | `livekit` | credentials через WbBStream API, с отдельной регистрацией |
 | `none` | задаётся в `engine.name` | прямой engine-режим с `engine.url` и `engine.token`, с отдельной регистрацией |
@@ -133,8 +133,8 @@ auth:
   provider: jitsi
 room:
   # Используйте тот Jitsi-сервер, который работает в вашей сети:
-  # https://meet.small-dm.ru/ROOM  или  https://meet1.arbitr.ru/ROOM  или  https://meet.handyweb.org/ROOM
-  id: "https://meet.small-dm.ru/REPLACE_ME_WITH_ROOM_ID"
+  # Инстансы: docs/examples/jitsi.instances.yaml - https://HOST/ROOM
+  id: "https://meet.example.org/REPLACE_ME_WITH_ROOM_ID"
 crypto:
   key: "REPLACE_ME_WITH_64_HEX_CHARS"
 net:
@@ -151,8 +151,8 @@ auth:
   provider: jitsi
 room:
   # Используйте тот Jitsi-сервер, который работает в вашей сети:
-  # https://meet.small-dm.ru/ROOM  или  https://meet1.arbitr.ru/ROOM  или  https://meet.handyweb.org/ROOM
-  id: "https://meet.small-dm.ru/REPLACE_ME_WITH_ROOM_ID"
+  # Инстансы: docs/examples/jitsi.instances.yaml - https://HOST/ROOM
+  id: "https://meet.example.org/REPLACE_ME_WITH_ROOM_ID"
 crypto:
   key: "REPLACE_ME_WITH_64_HEX_CHARS"
 net:
@@ -213,8 +213,8 @@ Go версия: `1.26+`. Для `videochannel` нужен `ffmpeg`; для `cod
 ```go
 sess, err := olcrtc.New(ctx, olcrtc.Config{
     Auth:   "jitsi",
-    // Используйте meet.small-dm.ru, meet1.arbitr.ru или meet.handyweb.org - тот, что работает в вашей сети
-    RoomID: "https://meet.small-dm.ru/myroom",
+    // Инстансы: docs/examples/jitsi.instances.yaml
+    RoomID: "https://meet.example.org/myroom",
 })
 if err != nil {
     return err
@@ -228,8 +228,8 @@ conn, err := sess.Dial(ctx)
 srv := tunnel.New(tunnel.Config{
     Transport: "datachannel",
     Carrier:   "jitsi",
-    // Используйте meet.small-dm.ru, meet1.arbitr.ru или meet.handyweb.org - тот, что работает в вашей сети
-    RoomURL:   "https://meet.small-dm.ru/myroom",
+    // Инстансы: docs/examples/jitsi.instances.yaml
+    RoomURL:   "https://meet.example.org/myroom",
     KeyHex:    "<64-char hex>",
     DNSServer: "8.8.8.8:53",
 })
@@ -248,6 +248,18 @@ err := srv.Run(ctx)
 - `Check`/ping helpers для проверки доступности.
 
 По умолчанию mobile-клиент использует `vp8channel`; `datachannel` тоже поддерживается.
+
+## Клиенты
+
+Готовые клиенты, которые говорят на `olcrtc`:
+
+| Клиент | Роль | Протоколы |
+|---|---|---|
+| [owenewans/owenclave](https://github.com/owenewans/owenclave) ([src.owenewans.org/owenrtc](https://src.owenewans.org/owenrtc)) | **основной клиент**, Android (форк exclave) | все распространённые протоколы (vless, hysteria2, mieru, trojan, vmess, tuic, shadowsocks, socks ...) плюс `olcrtc`, формат URI `olcrtc://` и подписки |
+| [venterum/veil](https://github.com/venterum/veil) | клиент сообщества, Android (форк v2rayNG), Material 3 | VMess, VLESS, Shadowsocks, Trojan, SOCKS, WireGuard, Hysteria2 + `olcrtc` |
+| [alananisimov/olcbox](https://github.com/alananisimov/olcbox) | клиент сообщества, мультиплатформенный (Android, iOS, macOS, Windows, Linux) | Все провайдеры (Jitsi, Telemost, WB Stream, Jazz), все транспорты, split tunneling, режимы TUN/proxy |
+
+`owenclave` - референсный клиент для URI `olcrtc://` и формата подписки. Нативный бинарник `olcrtc` в `mode: cnc` - тоже полноценный клиент, он только поднимает SOCKS5-слушатель без UI.
 
 ## Тесты
 

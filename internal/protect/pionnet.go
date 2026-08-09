@@ -1,9 +1,17 @@
 // SPDX-License-Identifier: WTFPL
 
 // ProtectedNet wraps Pion's network adapter. It applies Protector to each
-// socket fd and hides tunnel-style interfaces from candidate gathering. Callers
-// install it only when Protector is set, so default builds keep Pion's standard
-// network stack.
+// socket fd and hides tunnel-style interfaces from candidate gathering.
+//
+// On Android 11+ (API 30) SELinux denies untrusted_app from binding
+// netlink_route_socket (b/155595000). Go's net.Interfaces() and the anet
+// library both use AF_NETLINK internally, so ProtectedNet must not depend
+// on stdnet.Net (whose constructor calls anet.Interfaces at init time).
+// Instead, interface enumeration is split into platform-specific files:
+//
+//   - pionnet_default.go: uses anet (net.Interfaces wrapper) on non-android.
+//   - pionnet_android.go: uses getifaddrs(3) via cgo, no netlink at all.
+//   - pionnet_android_nocgo.go: returns an error (cgo required on android).
 
 package protect
 
@@ -16,7 +24,16 @@ import (
 	"syscall"
 
 	"github.com/pion/transport/v4"
-	"github.com/pion/transport/v4/stdnet"
+)
+
+var (
+	// ErrUnexpectedConnType is returned when a protected listen/dial yields an
+	// unexpected concrete type. The caller closes that connection instead of
+	// using an unprotected fallback.
+	ErrUnexpectedConnType = errors.New("protect: unexpected connection type")
+
+	// ErrInterfacesUnavailable is returned when interface enumeration fails.
+	ErrInterfacesUnavailable = errors.New("protect: interfaces unavailable")
 )
 
 // tunInterfacePrefixes lists interface name prefixes excluded from candidate
@@ -25,33 +42,27 @@ import (
 //nolint:gochecknoglobals // fixed lookup table; a slice cannot be const
 var tunInterfacePrefixes = []string{"tun", "ppp", "pptp"}
 
-// ErrUnexpectedConnType is returned when a protected listen/dial yields an
-// unexpected concrete type. The caller closes that connection instead of using
-// an unprotected fallback.
-var ErrUnexpectedConnType = errors.New("protect: unexpected connection type")
-
-// ProtectedNet wraps Pion's standard net.
+// ProtectedNet implements pion's transport.Net with socket protection and
+// tunnel-interface filtering. Interface data is loaded once at construction
+// time via a platform-specific loadInterfaces function.
 type ProtectedNet struct {
-	*stdnet.Net
+	interfaces []*transport.Interface
 }
 
-// NewProtectedNet builds a ProtectedNet over Pion's standard net.
+// NewProtectedNet builds a ProtectedNet with platform-specific interface
+// enumeration.
 func NewProtectedNet() (*ProtectedNet, error) {
-	base, err := stdnet.NewNet()
+	ifs, err := loadInterfaces()
 	if err != nil {
-		return nil, fmt.Errorf("stdnet: %w", err)
+		return nil, fmt.Errorf("load interfaces: %w", err)
 	}
-	return &ProtectedNet{Net: base}, nil
+	return &ProtectedNet{interfaces: ifs}, nil
 }
 
 // Interfaces returns system interfaces after filtering tunnel-style devices.
 func (n *ProtectedNet) Interfaces() ([]*transport.Interface, error) {
-	all, err := n.Net.Interfaces()
-	if err != nil {
-		return nil, fmt.Errorf("list interfaces: %w", err)
-	}
-	out := make([]*transport.Interface, 0, len(all))
-	for _, ifc := range all {
+	out := make([]*transport.Interface, 0, len(n.interfaces))
+	for _, ifc := range n.interfaces {
 		if !isTunInterface(ifc.Name) {
 			out = append(out, ifc)
 		}
@@ -59,16 +70,30 @@ func (n *ProtectedNet) Interfaces() ([]*transport.Interface, error) {
 	return out, nil
 }
 
+// InterfaceByIndex returns the interface specified by index.
+func (n *ProtectedNet) InterfaceByIndex(index int) (*transport.Interface, error) {
+	for _, ifc := range n.interfaces {
+		if ifc.Index == index {
+			if isTunInterface(ifc.Name) {
+				return nil, transport.ErrInterfaceNotFound
+			}
+			return ifc, nil
+		}
+	}
+	return nil, fmt.Errorf("%w: index=%d", transport.ErrInterfaceNotFound, index)
+}
+
 // InterfaceByName applies the same filtering as Interfaces.
 func (n *ProtectedNet) InterfaceByName(name string) (*transport.Interface, error) {
 	if isTunInterface(name) {
 		return nil, transport.ErrInterfaceNotFound
 	}
-	ifc, err := n.Net.InterfaceByName(name)
-	if err != nil {
-		return nil, fmt.Errorf("lookup interface %q: %w", name, err)
+	for _, ifc := range n.interfaces {
+		if ifc.Name == name {
+			return ifc, nil
+		}
 	}
-	return ifc, nil
+	return nil, fmt.Errorf("%w: %s", transport.ErrInterfaceNotFound, name)
 }
 
 func isTunInterface(name string) bool {
@@ -170,6 +195,33 @@ func (n *ProtectedNet) ListenTCP(network string, laddr *net.TCPAddr) (transport.
 	return protectedTCPListener{tl}, nil
 }
 
+// ResolveIPAddr returns an address of IP end point.
+func (n *ProtectedNet) ResolveIPAddr(network, address string) (*net.IPAddr, error) {
+	addr, err := net.ResolveIPAddr(network, address)
+	if err != nil {
+		return nil, fmt.Errorf("resolve ip %s %q: %w", network, address, err)
+	}
+	return addr, nil
+}
+
+// ResolveUDPAddr returns an address of UDP end point.
+func (n *ProtectedNet) ResolveUDPAddr(network, address string) (*net.UDPAddr, error) {
+	addr, err := net.ResolveUDPAddr(network, address)
+	if err != nil {
+		return nil, fmt.Errorf("resolve udp %s %q: %w", network, address, err)
+	}
+	return addr, nil
+}
+
+// ResolveTCPAddr returns an address of TCP end point.
+func (n *ProtectedNet) ResolveTCPAddr(network, address string) (*net.TCPAddr, error) {
+	addr, err := net.ResolveTCPAddr(network, address)
+	if err != nil {
+		return nil, fmt.Errorf("resolve tcp %s %q: %w", network, address, err)
+	}
+	return addr, nil
+}
+
 // CreateDialer returns a dialer that protects each fd. It copies d and chains
 // any existing Control hook.
 func (n *ProtectedNet) CreateDialer(d *net.Dialer) transport.Dialer {
@@ -182,7 +234,7 @@ func (n *ProtectedNet) CreateDialer(d *net.Dialer) transport.Dialer {
 	} else {
 		dialer.Control = chainControl(dialer.Control)
 	}
-	return n.Net.CreateDialer(&dialer)
+	return &protectedDialer{dialer: dialer}
 }
 
 // CreateListenConfig returns a listen config that protects each fd. It copies
@@ -192,9 +244,40 @@ func (n *ProtectedNet) CreateListenConfig(lc *net.ListenConfig) transport.Listen
 	if lc != nil {
 		cfg = *lc
 	}
-	// net.ListenConfig exposes Control only; net.Dialer is the type with ControlContext.
 	cfg.Control = chainControl(cfg.Control)
-	return n.Net.CreateListenConfig(&cfg)
+	return &protectedListenConfig{lc: cfg}
+}
+
+type protectedDialer struct {
+	dialer net.Dialer
+}
+
+func (d *protectedDialer) Dial(network, address string) (net.Conn, error) {
+	conn, err := d.dialer.Dial(network, address)
+	if err != nil {
+		return nil, fmt.Errorf("protected dial %s %q: %w", network, address, err)
+	}
+	return conn, nil
+}
+
+type protectedListenConfig struct {
+	lc net.ListenConfig
+}
+
+func (p *protectedListenConfig) Listen(ctx context.Context, network, address string) (net.Listener, error) {
+	l, err := p.lc.Listen(ctx, network, address)
+	if err != nil {
+		return nil, fmt.Errorf("protected listen %s %q: %w", network, address, err)
+	}
+	return l, nil
+}
+
+func (p *protectedListenConfig) ListenPacket(ctx context.Context, network, address string) (net.PacketConn, error) {
+	pc, err := p.lc.ListenPacket(ctx, network, address)
+	if err != nil {
+		return nil, fmt.Errorf("protected listen packet %s %q: %w", network, address, err)
+	}
+	return pc, nil
 }
 
 // chainControl runs the protector first, then any existing Control hook.

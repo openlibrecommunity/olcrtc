@@ -45,7 +45,7 @@ const (
 	localDNSServer      = "127.0.0.1:53"
 	videoHWNone         = "none"
 	testClientDeviceID  = "client-1"
-	defaultJitsiRoomURL = "https://meet.handyweb.org/deadbeef"
+	defaultJitsiRoomURL = "https://meet.ffmuc.net"
 )
 
 var (
@@ -819,7 +819,7 @@ func realE2EExpectationLabel(expectation realE2EExpectation) string {
 // logUnstableOutcome records the result of an Unstable matrix entry
 // without failing the test. Unstable combos exist to keep the matrix
 // honest about transports that flap against a particular carrier
-// (e.g. seichannel against meet.handyweb.org's bandwidth allocator)
+// (e.g. seichannel against meet.ffmuc.net's bandwidth allocator)
 // while still surfacing whether the run happened to pass or fail.
 func logUnstableOutcome(t *testing.T, label, carrierName, transportName string, err error) {
 	t.Helper()
@@ -955,14 +955,14 @@ func realRoomURL(ctx context.Context, t *testing.T, carrierName string) string {
 		return ""
 	case "jitsi":
 		// Jitsi has no notion of "creating" a room - names are conjured
-		// on first join. The default flag points at meet.handyweb.org
-		// by default. When the flag is left at its default value, a
-		// per-process random suffix is appended
-		// to the slug: two participants share a single room by design (one
-		// pair, one shared key), so any third participant - including another
-		// concurrent test process with the same shared key - would corrupt
-		// the wire protocol on both sides. Users overriding the flag are
-		// trusted to manage room uniqueness themselves.
+		// on first join. The default flag points at meet.ffmuc.net.
+		// When the flag is left at its default value, a per-process
+		// random 8-hex slug is appended: two participants share a single
+		// room by design (one pair, one shared key), so any third
+		// participant - including another concurrent test process with
+		// the same shared key - would corrupt the wire protocol on both
+		// sides. Users overriding the flag are trusted to manage room
+		// uniqueness themselves.
 		_ = ctx
 		room := *realE2EJitsiRoom
 		if room == "" {
@@ -983,18 +983,18 @@ var (
 )
 
 // defaultJitsiRoomWithSuffix returns the default Jitsi room URL with a random
-// 8-hex-char suffix appended to the slug. Computed once per test process and
-// cached so all sub-tests (server + client) land in the same MUC.
+// 8-hex-char slug. Computed once per test process and cached so all sub-tests
+// (server + client) land in the same MUC.
 func defaultJitsiRoomWithSuffix() string {
 	jitsiRoomOnce.Do(func() {
 		var b [4]byte
 		if _, err := rand.Read(b[:]); err != nil {
 			// crypto/rand failing on a healthy host is exceptional; fall back
 			// to PID to keep tests usable rather than blowing up here.
-			jitsiRoomURL = fmt.Sprintf("%s-%d", defaultJitsiRoomURL, os.Getpid())
+			jitsiRoomURL = fmt.Sprintf("%s/%x", defaultJitsiRoomURL, os.Getpid())
 			return
 		}
-		jitsiRoomURL = defaultJitsiRoomURL + "-" + hex.EncodeToString(b[:])
+		jitsiRoomURL = defaultJitsiRoomURL + "/" + hex.EncodeToString(b[:])
 	})
 	return jitsiRoomURL
 }

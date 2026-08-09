@@ -255,3 +255,5 @@ cpu.prof
 .kirograph
 package.json
 package-lock.json
+.opencode
+.direnv

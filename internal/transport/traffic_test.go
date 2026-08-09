@@ -66,3 +66,41 @@ func TestTrafficWrapperAppliesMinimumDelay(t *testing.T) {
 		t.Fatalf("Send() elapsed = %v, want at least 2ms", elapsed)
 	}
 }
+
+// ai-generated: this whole block (stub type + 2 tests below), new,
+// peer-restart-corroboration PR.
+//
+// trafficStubLinkHealthTransport additionally implements
+// LinkHealthObserver, to verify trafficTransport forwards to it.
+type trafficStubLinkHealthTransport struct {
+	trafficStubTransport
+	unhealthy []bool
+}
+
+func (s *trafficStubLinkHealthTransport) NotifyLinkHealth(unhealthy bool) {
+	s.unhealthy = append(s.unhealthy, unhealthy)
+}
+
+func TestTrafficWrapperForwardsLinkHealth(t *testing.T) {
+	inner := &trafficStubLinkHealthTransport{}
+	tr := WithTraffic(inner, TrafficConfig{MinDelay: time.Millisecond})
+	tt, ok := tr.(LinkHealthObserver)
+	if !ok {
+		t.Fatal("wrapped transport does not implement LinkHealthObserver")
+	}
+	tt.NotifyLinkHealth(true)
+	tt.NotifyLinkHealth(false)
+	if got := inner.unhealthy; len(got) != 2 || got[0] != true || got[1] != false {
+		t.Fatalf("inner.unhealthy = %v, want [true false]", got)
+	}
+}
+
+func TestTrafficWrapperNotifyLinkHealthNoopWhenUnsupported(t *testing.T) {
+	inner := &trafficStubTransport{}
+	tr := WithTraffic(inner, TrafficConfig{MinDelay: time.Millisecond})
+	tt, ok := tr.(LinkHealthObserver)
+	if !ok {
+		t.Fatal("wrapped transport does not implement LinkHealthObserver")
+	}
+	tt.NotifyLinkHealth(true) // must not panic when inner lacks the method
+}

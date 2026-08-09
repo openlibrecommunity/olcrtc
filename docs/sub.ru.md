@@ -161,7 +161,7 @@ olcrtc://wbstream?datachannel@abc123xyz#aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 
 ## Имплементация клиента для подписок
 
-На данный момент не существует единой реализации, но в скором времени они точно появятся даже в официальном репозитории.
+Основной клиент, который читает этот формат подписки - [owenewans/owenclave](https://github.com/owenewans/owenclave) ([src.owenewans.org/owenrtc](https://src.owenewans.org/owenrtc)) - Android-клиент прокси (форк exclave), поддерживающий все распространённые протоколы (vless, hysteria2, mieru, trojan, vmess, tuic, shadowsocks, socks ...) плюс `olcrtc`, формат URI `olcrtc://` и подписки.
 
 ---
 

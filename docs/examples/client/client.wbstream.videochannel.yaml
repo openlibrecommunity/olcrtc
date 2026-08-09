@@ -1,47 +1,47 @@
-# Клиентский конфиг: wbstream + videochannel
-# Запуск: olcrtc docs/examples/client/client.wbstream.videochannel.yaml
+# Client config: wbstream + videochannel
+# Run: olcrtc docs/examples/client/client.wbstream.videochannel.yaml
 
-mode: cnc
+mode: cnc # role: srv (server) or cnc (client)
 
 auth:
-  provider: wbstream
+  provider: wbstream # call service provider used for signaling
 
-# Для wbstream: Room ID, который вернул сервис.
-# Должен совпадать с сервером.
+# For wbstream: Room ID returned by the service.
+# Must match the server.
 room:
-  id: "REPLACE_WITH_WB_ROOM_ID"
+  id: "REPLACE_WITH_WB_ROOM_ID" # room id
 
 crypto:
-  # Можно использовать key_file: "./olcrtc.key", чтобы не хранить секрет прямо здесь.
-  key: "REPLACE_ME_WITH_64_HEX_CHARS" # должен совпадать с сервером
+  # You can use key_file: "./olcrtc.key" to avoid storing the secret here.
+  key: "REPLACE_ME_WITH_64_HEX_CHARS" # must match the server
 
 net:
-  transport: videochannel
-  dns: "8.8.8.8:53"
+  transport: videochannel # transport to use, e.g. datachannel
+  dns: "8.8.8.8:53" # dns used to resolve names
 
 liveness:
-  interval: 10s
-  timeout: 5s
-  failures: 3
+  interval: 10s # how often to send liveness checks
+  timeout: 5s # wait time for a liveness reply
+  failures: 3 # consecutive failures before the link is considered dead
 
-socks:
-  host: "127.0.0.1"
-  port: 8808
-  user: "" # необязательная входящая auth
-  pass: ""
+socks: # local socks proxy exposed to apps
+  host: "127.0.0.1" # address to listen on
+  port: 8808 # port to listen on
+  user: "" # optional inbound auth
+  pass: "" # optional inbound auth
 
 video:
-  width: 1920
-  height: 1080
-  fps: 30
-  bitrate: "2M"
-  hw: none
-  codec: qrcode
-  qr_size: 0
-  qr_recovery: low
-  tile_module: 4
-  tile_rs: 20
+  width: 1920 # frame width in pixels
+  height: 1080 # frame height in pixels
+  fps: 30 # frames per second
+  bitrate: "2M" # target video bitrate
+  hw: none # hardware acceleration (none, or vendor codec)
+  codec: qrcode # payload encoding used inside the video
+  qr_size: 0 # qr module size in px (0 = auto)
+  qr_recovery: low # qr error correction level (low/medium/high)
+  tile_module: 4 # data tile module size
+  tile_rs: 20 # reed-solomon parity per tile
+ffmpeg: ffmpeg # ffmpeg binary path or name
 
-ffmpeg: ffmpeg
-data: data
-debug: false
+data: data # where to store / read data
+debug: false # log actions in more detail

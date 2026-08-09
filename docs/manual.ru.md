@@ -160,7 +160,7 @@ openssl rand -hex 32
 
 ### jitsi + datachannel (рекомендуется)
 
-Самый простой способ: используй любой self-hosted или публичный Jitsi Meet инстанс. Регистрация не нужна, имя комнаты выдумывается на лету. Доступные публичные серверы: `meet.small-dm.ru`, `meet1.arbitr.ru` и `meet.handyweb.org` - **обязательно проверь в браузере, какой из них работает в твоей сети**, и используй тот, который открывается. Также подойдёт любой другой (`meet.jit.si`, свой self-hosted и т.п.).
+Самый простой способ: используй любой self-hosted или публичный Jitsi Meet инстанс. Регистрация не нужна, имя комнаты выдумывается на лету. Доступные инстансы перечислены в [`docs/examples/jitsi.instances.yaml`](./examples/jitsi.instances.yaml) - **обязательно проверь в браузере, какой из них работает в твоей сети**, и используй тот, который открывается. Также подойдёт любой другой (`meet.jit.si`, свой self-hosted и т.п.).
 
 Создай YAML конфиг:
 
@@ -170,8 +170,8 @@ mode: srv
 auth:
   provider: jitsi
 room:
-  # Используйте meet.small-dm.ru, meet1.arbitr.ru или meet.handyweb.org - тот, что работает в вашей сети
-  id: "https://meet.small-dm.ru/myroom"
+  # Инстансы: docs/examples/jitsi.instances.yaml
+  id: "https://meet.example.org/myroom"
 crypto:
   key: "d823fa01cb3e0609b67322f7cf984c4ee2e4ce2e294936fc24ef38c9e59f4799"
 net:
@@ -237,6 +237,8 @@ Room ID нужно передать клиенту.
 
 На своей машине. `auth.provider`, `net.transport`, `room.id` и `crypto.key` должны совпадать с сервером.
 
+> Хочешь готовый Android-клиент вместо YAML-конфига? Возьми [owenewans/owenclave](https://github.com/owenewans/owenclave) ([src.owenewans.org/owenrtc](https://src.owenewans.org/owenrtc)) - он читает URI `olcrtc://` и подписки напрямую. Ниже - запуск нативного бинарника `cnc` (только SOCKS5).
+
 ### jitsi + datachannel (рекомендуется)
 
 ```yaml
@@ -245,8 +247,8 @@ mode: cnc
 auth:
   provider: jitsi
 room:
-  # Используйте meet.small-dm.ru, meet1.arbitr.ru или meet.handyweb.org - тот, что работает в вашей сети
-  id: "https://meet.small-dm.ru/myroom"
+  # Инстансы: docs/examples/jitsi.instances.yaml
+  id: "https://meet.example.org/myroom"
 crypto:
   key: "<hex-key-такой-же-как-на-сервере>"
 net:
@@ -497,7 +499,7 @@ mode: srv
 auth:
   provider: jitsi
 room:
-  id: "https://meet1.arbitr.ru/room1"
+  id: "https://meet.example.org/room1"
 crypto:
   key: "aaaa...1111"
 net:
@@ -538,7 +540,7 @@ mode: cnc
 auth:
   provider: jitsi
 room:
-  id: "https://meet1.arbitr.ru/room1"
+  id: "https://meet.example.org/room1"
 crypto:
   key: "aaaa...1111"
 net:

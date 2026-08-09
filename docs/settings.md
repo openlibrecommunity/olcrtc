@@ -32,11 +32,11 @@
 
 **WBStream:** all transports except datachannel work. DataChannel does not work in the normal guest flow without being granted moderator - WB Stream issues tokens with `canPublishData=false`, and DC does not route data. To use `datachannel` over `wbstream`, set `auth.token` to an account/moderator token (`canPublishData=true`); see `auth.token` in the optional fields below.
 
-**Jitsi:** datachannel passes stably - it is implemented on top of the colibri-ws bridge channel and sends bytes via an `EndpointMessage{raw}` broadcast. It fits self-hosted and public Jitsi Meet instances without authentication (`https://meet.small-dm.ru/...`, `https://meet1.arbitr.ru/...`, `https://meet.handyweb.org/...`, `https://meet.jit.si/...`, etc.). Check in a browser which of the servers is reachable in your network. Video transports (vp8channel, seichannel, videochannel) expose a sendable VideoTrack through the pion PeerConnection after the Jingle session-accept, but Jicofo requires additional protocol steps (LastN, ReceiverVideoConstraints, source-add) to route video - that is why they are marked `~`.
+**Jitsi:** datachannel passes stably - it is implemented on top of the colibri-ws bridge channel and sends bytes via an `EndpointMessage{raw}` broadcast. It fits self-hosted and public Jitsi Meet instances without authentication (`https://meet.jit.si/...` etc.; instances in docs/examples/jitsi.instances.yaml). Check in a browser which of the servers is reachable in your network. Video transports (vp8channel, seichannel, videochannel) expose a sendable VideoTrack through the pion PeerConnection after the Jingle session-accept, but Jicofo requires additional protocol steps (LastN, ReceiverVideoConstraints, source-add) to route video - that is why they are marked `~`.
 
-**Jitsi + seichannel - a separate caveat.** SEI NAL units ride along inside the H.264 video stream, and Jicofo on self-hosted instances (for example `meet.small-dm.ru`, `meet1.arbitr.ru`) periodically cuts/delays upstream video when there is formally no receiver in the room - for us this looks like a `seichannel ack timeout` while the PeerConnection is formally alive. In steady state the transport works, but the e2e matrix marks it `Unstable` (it flaps): a green or red result in CI is enough, the test suite does not fail on it. For reliable data transfer over jitsi, prefer `datachannel` or `vp8channel`.
+**Jitsi + seichannel - a separate caveat.** SEI NAL units ride along inside the H.264 video stream, and Jicofo on self-hosted instances (for example `meet.egovm.ru`) periodically cuts/delays upstream video when there is formally no receiver in the room - for us this looks like a `seichannel ack timeout` while the PeerConnection is formally alive. In steady state the transport works, but the e2e matrix marks it `Unstable` (it flaps): a green or red result in CI is enough, the test suite does not fail on it. For reliable data transfer over jitsi, prefer `datachannel` or `vp8channel`.
 
-**Recommended combination: `jitsi + datachannel`** - works stably on any self-hosted or public Jitsi Meet (for example `meet.small-dm.ru`, `meet1.arbitr.ru` or `meet.handyweb.org` - check which one is reachable in your network), needs no registration, simple room creation. Alternative: `wbstream + vp8channel` - stable for commercial scenarios, needs no special rights.
+**Recommended combination: `jitsi + datachannel`** - works stably on any self-hosted or public Jitsi Meet (instances in docs/examples/jitsi.instances.yaml - check which one is reachable), needs no registration, simple room creation. Alternative: `wbstream + vp8channel` - stable for commercial scenarios, needs no special rights.
 
 Speed in descending order: `datachannel` > `vp8channel` > `seichannel` > `videochannel`
 
@@ -199,15 +199,15 @@ WB Stream DataChannel **does not work** in the normal guest flow - WB Stream iss
 
 To make `datachannel` work you need an account/moderator token in `auth.token` (`canPublishData=true`) on both sides. To grant moderator in the WB Stream UI: open the participants list
 
-![participants list](asset/wbstream-moderator/participants.png)
+![participants list](asset/participants.png)
 
 click the three dots next to the client/server entry
 
-![entry menu](asset/wbstream-moderator/menu.png)
+![entry menu](asset/menu.png)
 
 then press the `Moderator` button
 
-![moderator button](asset/wbstream-moderator/moderator-button.png)
+![moderator button](asset/moderator-button.png)
 
 > Future work: when joining with a ghost/account token that already holds
 > moderator rights, the client could be auto-promoted to moderator so

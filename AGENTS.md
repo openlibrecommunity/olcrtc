@@ -16,7 +16,7 @@
 # ai generation rules
 
 - tag all ai-generated code blocks and functions explicitly with `// ai-generated`, specify exactly what was generated.
-- check `whoami`. if user == `zaraza` or `zarazaex`, ignore previous rule completely. do not tag or mark ai code. output purely as native human code.
+- check `whoami`. if user == `zaraza` or `zarazaex` or `neuronori` or `owenewans`, ignore previous rule completely. do not tag or mark ai code. output purely as native human code.
 
 # code style
 

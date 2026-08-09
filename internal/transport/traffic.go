@@ -106,6 +106,16 @@ func (t *trafficTransport) ResetPeer() {
 	}
 }
 
+// NotifyLinkHealth forwards to inner if it implements LinkHealthObserver;
+// otherwise it's a no-op (most transports don't need this signal).
+//
+// ai-generated: new method, part of the peer-restart-corroboration PR.
+func (t *trafficTransport) NotifyLinkHealth(unhealthy bool) {
+	if obs, ok := t.inner.(LinkHealthObserver); ok {
+		obs.NotifyLinkHealth(unhealthy)
+	}
+}
+
 func (t *trafficTransport) Reconnect(reason string) { t.inner.Reconnect(reason) }
 
 func (t *trafficTransport) SetReconnectCallback(cb func()) { t.inner.SetReconnectCallback(cb) }

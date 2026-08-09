@@ -1,48 +1,48 @@
-# Failover-конфиг
-# Используй одинаковый порядок профилей на сервере и на клиенте.
+# Failover config
+# Use the same profile order on both server and client.
 
-mode: srv
+mode: srv # role: srv (server) or cnc (client)
 
 crypto:
-  key_file: "./olcrtc.key"
+  key_file: "./olcrtc.key" # path to file holding the 32-byte hex key
 
 net:
-  dns: "8.8.8.8:53"
+  dns: "8.8.8.8:53" # dns used to resolve names
 
 liveness:
-  interval: 10s
-  timeout: 5s
-  failures: 3
+  interval: 10s # how often to send liveness checks
+  timeout: 5s # wait time for a liveness reply
+  failures: 3 # consecutive failures before the link is considered dead
 
-# Необязательный плановый rebuild для каждого активного профиля.
+# Optional scheduled rebuild for each active profile.
 # lifecycle:
 #   max_session_duration: 6h
 
-# Необязательный лимит/pacing для зашифрованных wire-сообщений.
+# Optional limit / pacing for encrypted wire messages.
 # traffic:
 #   max_payload_size: 4096
 #   min_delay: 5ms
 #   max_delay: 30ms
 
-data: data
+data: data # where to store / read data
 
-profiles:
-  - name: wb-vp8
+profiles: # ordered list of link profiles, tried top to bottom
+  - name: wb-vp8 # profile label
     auth:
-      provider: wbstream
+      provider: wbstream # call service provider used for signaling
     room:
-      id: "REPLACE_WITH_WB_ROOM_ID"
+      id: "REPLACE_WITH_WB_ROOM_ID" # room id
     net:
-      transport: vp8channel
+      transport: vp8channel # transport for this profile
 
-  - name: jitsi-datachannel
+  - name: jitsi-datachannel # profile label
     auth:
-      provider: jitsi
+      provider: jitsi # call service provider used for signaling
     room:
-      id: "https://meet.example.org/REPLACE_WITH_ROOM_NAME"
+      id: "https://meet.example.org/REPLACE_WITH_ROOM_NAME" # room name / URL
     net:
-      transport: datachannel
+      transport: datachannel # transport for this profile
 
 failover:
-  retry_delay: 2s
-  max_cycles: 0
+  retry_delay: 2s # wait between profile switch attempts
+  max_cycles: 0 # max full cycles over profiles (0 = unlimited)

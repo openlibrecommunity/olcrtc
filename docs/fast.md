@@ -126,15 +126,11 @@ Recommendations:
 ### Jitsi server (carrier jitsi only)
 
 ```
-Choose a Jitsi server (check in the browser which one works in your network):
-  1) https://meet.small-dm.ru/
-  2) https://meet1.arbitr.ru/
-  3) https://meet.handyweb.org/
-  4) Other (enter manually)
-Enter number [1-4, default: 1]:
+Enter a Jitsi room URL (https://HOST/ROOM).
+Pick a HOST from docs/examples/jitsi.instances.yaml and verify it opens in a browser.
 ```
 
-Pick the one that **opens in your browser**. Any public or self-hosted Jitsi Meet works - choose `4` and enter your URL.
+Pick the one that **opens in your browser**. Any public or self-hosted Jitsi Meet works.
 
 ### Room (carrier jitsi only)
 
@@ -146,7 +142,7 @@ Enter choice [1-2, default: 1]:
 ```
 
 - **1) Auto-generate** - the script picks a room name on the chosen server. Recommended.
-- **2) Specific** - enter a room name (`myroom`) or a full URL (`https://meet.small-dm.ru/myroom`).
+- **2) Specific** - enter a room name (`myroom`) or a full URL (`https://meet.example.org/myroom`).
 
 For **telemost** and **wbstream** the Jitsi menu is not shown - the script asks for the Room ID directly. Create a room on the site ([telemost](https://telemost.yandex.ru/), [wbstream](https://stream.wb.ru)) and paste its ID.
 
@@ -218,10 +214,10 @@ After startup the script prints the container name, carrier, transport, Room ID,
 Container name: olcrtc-server-xxxxxxxx
 Carrier:        jitsi
 Transport:      datachannel
-Room ID/URL:    https://meet.small-dm.ru/olcrtc-xxxxxxxx
+Room ID/URL:    https://meet.example.org/olcrtc-xxxxxxxx
 Encryption key: d823fa01cb3e0609b67322f7cf984c4ee2e294936fc24ef38c9e59f4799...
 
-uri: olcrtc://jitsi?datachannel@https://meet.small-dm.ru/olcrtc-xxxxxxxx#<key>$olc - t.me/openlibrecommunity
+uri: olcrtc://jitsi?datachannel@https://meet.example.org/olcrtc-xxxxxxxx#<key>$olc - t.me/openlibrecommunity
 ```
 
 **Save the Room ID and the encryption key** - the client needs them. The key is also saved to `~/.olcrtc_key` and reused on later runs.
@@ -231,6 +227,8 @@ uri: olcrtc://jitsi?datachannel@https://meet.small-dm.ru/olcrtc-xxxxxxxx#<key>$o
 ## Step 3: Run the client
 
 On your machine (home PC, laptop):
+
+> Prefer a ready-made Android client? Use [owenewans/owenclave](https://github.com/owenewans/owenclave) ([src.owenewans.org/owenrtc](https://src.owenewans.org/owenrtc)) - it reads the `olcrtc://` URI and subscriptions directly, no binary needed. The steps below run the native `cnc` binary (SOCKS5 only).
 
 ```sh
 git clone https://github.com/openlibrecommunity/olcrtc --recurse-submodules
@@ -266,7 +264,7 @@ Press Enter for address and port - the proxy comes up on `127.0.0.1:8808`. If yo
 Container name: olcrtc-client-xxxxxxxx
 Auth:           jitsi
 Transport:      datachannel
-Room ID/URL:    https://meet.small-dm.ru/olcrtc-xxxxxxxx
+Room ID/URL:    https://meet.example.org/olcrtc-xxxxxxxx
 SOCKS5 proxy:   127.0.0.1:8808
 ```
 

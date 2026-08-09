@@ -161,7 +161,7 @@ olcrtc://wbstream?datachannel@abc123xyz#aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 
 ## Subscription client implementation
 
-There is no single implementation yet, but they will surely appear soon, even in the official repository.
+The main client that reads this subscription format is [owenewans/owenclave](https://github.com/owenewans/owenclave) ([src.owenewans.org/owenrtc](https://src.owenewans.org/owenrtc)) - an Android proxy client (fork of exclave) that supports all common protocols (vless, hysteria2, mieru, trojan, vmess, tuic, shadowsocks, socks ...) plus `olcrtc`, the `olcrtc://` URI format and subscriptions.
 
 ---
 

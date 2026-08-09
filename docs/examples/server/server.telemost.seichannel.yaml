@@ -1,41 +1,41 @@
-# Серверный конфиг: telemost + seichannel
-# Запуск: olcrtc docs/examples/server/server.telemost.seichannel.yaml
+# Server config: telemost + seichannel
+# Run: olcrtc docs/examples/server/server.telemost.seichannel.yaml
 
-mode: srv
+mode: srv # role: srv (server) or cnc (client)
 
 auth:
-  provider: telemost
+  provider: telemost # call service provider used for signaling
 
-# Для telemost: Room ID, который вернул сервис.
-# Должен совпадать с клиентом.
+# For telemost: Room ID returned by the service.
+# Must match the client.
 room:
-  id: "REPLACE_WITH_TELEMOST_ROOM_ID"
+  id: "REPLACE_WITH_TELEMOST_ROOM_ID" # room id
 
 crypto:
-  # 32 байта в hex (64 символа). Сгенерировать: openssl rand -hex 32
-  # Можно использовать key_file: "./olcrtc.key", чтобы не хранить секрет прямо здесь.
-  key: "REPLACE_ME_WITH_64_HEX_CHARS" # должен совпадать с клиентом
+  # 32 bytes in hex (64 chars). Generate: openssl rand -hex 32
+  # You can use key_file: "./olcrtc.key" to avoid storing the secret here.
+  key: "REPLACE_ME_WITH_64_HEX_CHARS" # must match the client
 
 net:
-  transport: seichannel
-  dns: "8.8.8.8:53"
+  transport: seichannel # transport to use, e.g. datachannel
+  dns: "8.8.8.8:53" # dns used to resolve names
 
 liveness:
-  interval: 10s
-  timeout: 5s
-  failures: 3
+  interval: 10s # how often to send liveness checks
+  timeout: 5s # wait time for a liveness reply
+  failures: 3 # consecutive failures before the link is considered dead
 
-socks:
-  proxy_addr: "" # например "127.0.0.1"
-  proxy_port: 0 # например 1080
-  proxy_user: "" # необязательная auth для upstream-прокси (RFC 1929)
-  proxy_pass: ""
+socks: # upstream socks proxy
+  proxy_addr: "" # e.g. "127.0.0.1"
+  proxy_port: 0 # e.g. 1080
+  proxy_user: "" # optional auth for upstream proxy (RFC 1929)
+  proxy_pass: "" # optional auth for upstream proxy (RFC 1929)
 
 sei:
-  fps: 30
-  batch_size: 64
-  fragment_size: 900
-  ack_timeout_ms: 2000
+  fps: 30 # frames per second
+  batch_size: 64 # messages packed per batch
+  fragment_size: 900 # max payload bytes per fragment
+  ack_timeout_ms: 2000 # ack wait before retransmit (ms)
 
-data: data
-debug: false
+data: data # where to store / read data
+debug: false # log actions in more detail

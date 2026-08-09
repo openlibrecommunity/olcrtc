@@ -32,11 +32,11 @@
 
 **WBStream:** все транспорты кроме datachannel работают. DataChannel в обычном guest flow без выдавания модератора не работает - WB Stream выдаёт токены с `canPublishData=false`, и DC не маршрутизирует данные. Чтобы использовать `datachannel` поверх `wbstream`, задай `auth.token` с токеном аккаунта/модератора (`canPublishData=true`); см. `auth.token` в необязательных полях ниже.
 
-**Jitsi:** datachannel стабильно проходит - реализован поверх colibri-ws bridge channel и шлёт байты через `EndpointMessage{raw}` broadcast. Подходит для self-hosted и публичных Jitsi Meet инстансов без аутентификации (`https://meet.small-dm.ru/...`, `https://meet1.arbitr.ru/...`, `https://meet.handyweb.org/...`, `https://meet.jit.si/...` и т.п.). Проверьте в браузере, какой из серверов доступен в вашей сети. Видео-транспорты (vp8channel, seichannel, videochannel) экспонируют sendable VideoTrack через pion PeerConnection после Jingle session-accept, но Jicofo требует дополнительных протокольных шагов (LastN, ReceiverVideoConstraints, source-add) для маршрутизации видео - поэтому они помечены `~` .
+**Jitsi:** datachannel стабильно проходит - реализован поверх colibri-ws bridge channel и шлёт байты через `EndpointMessage{raw}` broadcast. Подходит для self-hosted и публичных Jitsi Meet инстансов без аутентификации (`https://meet.jit.si/...` и т.п.; инстансы в docs/examples/jitsi.instances.yaml). Проверьте в браузере, какой из серверов доступен в вашей сети. Видео-транспорты (vp8channel, seichannel, videochannel) экспонируют sendable VideoTrack через pion PeerConnection после Jingle session-accept, но Jicofo требует дополнительных протокольных шагов (LastN, ReceiverVideoConstraints, source-add) для маршрутизации видео - поэтому они помечены `~` .
 
-**Jitsi + seichannel - отдельная оговорка.** SEI NAL-юниты идут пассажиром в H.264 видеопотоке, а Jicofo на self-hosted инстансах (например `meet.small-dm.ru`, `meet1.arbitr.ru`) периодически режет/откладывает upstream видео когда ресивера в комнате формально нет - для нас это выглядит как `seichannel ack timeout` при формально живом PeerConnection. В steady-state транспорт работает, но e2e матрица помечает его `Unstable` (флаппит): зелёного и красного результата в CI достаточно, тест suite на этом не валится. Для надёжной передачи данных через jitsi предпочтительнее `datachannel` или `vp8channel`.
+**Jitsi + seichannel - отдельная оговорка.** SEI NAL-юниты идут пассажиром в H.264 видеопотоке, а Jicofo на self-hosted инстансах (например `meet.egovm.ru`) периодически режет/откладывает upstream видео когда ресивера в комнате формально нет - для нас это выглядит как `seichannel ack timeout` при формально живом PeerConnection. В steady-state транспорт работает, но e2e матрица помечает его `Unstable` (флаппит): зелёного и красного результата в CI достаточно, тест suite на этом не валится. Для надёжной передачи данных через jitsi предпочтительнее `datachannel` или `vp8channel`.
 
-**Рекомендуемая комбинация: `jitsi + datachannel`** - стабильно работает на любом self-hosted или публичном Jitsi Meet (например `meet.small-dm.ru`, `meet1.arbitr.ru` или `meet.handyweb.org` - проверьте, какой доступен в вашей сети), не требует регистрации, простая руму создания. Альтернатива: `wbstream + vp8channel` - стабильно для коммерческих сценариев, не требует специальных прав.
+**Рекомендуемая комбинация: `jitsi + datachannel`** - стабильно работает на любом self-hosted или публичном Jitsi Meet (инстансы в docs/examples/jitsi.instances.yaml - проверьте, какой доступен), не требует регистрации, простая руму создания. Альтернатива: `wbstream + vp8channel` - стабильно для коммерческих сценариев, не требует специальных прав.
 
 Скорость по убыванию: `datachannel` > `vp8channel` > `seichannel` > `videochannel`
 
@@ -200,15 +200,15 @@ WB Stream DataChannel **не работает** в обычном guest flow - W
 
 Чтобы `datachannel` заработал, нужен токен аккаунта/модератора в `auth.token` (`canPublishData=true`) с обеих сторон. Как выдать модератора в UI WB Stream: открой список участников
 
-![список участников](asset/wbstream-moderator/participants.png)
+![список участников](asset/participants.png)
 
 нажми три точки рядом с записью клиента/сервера
 
-![меню записи](asset/wbstream-moderator/menu.png)
+![меню записи](asset/menu.png)
 
 потом нажми кнопку `Модератор`
 
-![кнопка модератора](asset/wbstream-moderator/moderator-button.png)
+![кнопка модератора](asset/moderator-button.png)
 
 > На будущее: когда подключаемся с ghost/account токеном, у которого уже
 > есть права модератора, клиента можно было бы авто-повышать до модератора,
