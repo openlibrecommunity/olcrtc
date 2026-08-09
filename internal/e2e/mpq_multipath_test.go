@@ -617,3 +617,136 @@ func TestMPQMultiRoomSeparateCalls(t *testing.T) {
 		t.Fatal("room-b path carried no bytes (bond collapsed onto one room?)")
 	}
 }
+
+// --- Two concurrent clients over the same two rooms (separate calls) ---
+//
+// ai-generated: roomClientTrafficSum helper and
+// TestMPQMultiRoomTwoClientsSeparateCalls below, this phase's two-simultaneous-
+// client e2e coverage.
+
+// roomClientTrafficSum totals the server->client bytes delivered to EVERY
+// client carrier of the room, across all concurrent clients sharing it.
+func roomClientTrafficSum(hub *mpqPeerHub, room string) int64 {
+	hub.mu.Lock()
+	defer hub.mu.Unlock()
+	var total int64
+	for _, c := range hub.roomLocked(room).clients {
+		total += c.recvBytes.Load()
+	}
+	return total
+}
+
+// TestMPQMultiRoomTwoClientsSeparateCalls runs TWO independent mpq clients
+// concurrently over the SAME two rooms (the "separate calls" topology: one
+// path per room per client), while the server hosts one carrier per room and
+// demuxes each path's client by peerID. Both clients must serve real SOCKS
+// traffic end-to-end without cross-talk - each echo round-trip proves its
+// own tunnel returns its own payload - and both rooms must carry traffic.
+func TestMPQMultiRoomTwoClientsSeparateCalls(t *testing.T) {
+	echoAddr := startEchoServer(t)
+
+	carrierName, hub := registerMPQPeerCarrier(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	t.Cleanup(cancel)
+
+	paths := twoRoomPaths()
+	serverErr := make(chan error, 1)
+	go func() {
+		serverErr <- server.Run(ctx, server.Config{
+			Transport:      transportData,
+			TransportProto: "mpq",
+			Carrier:        carrierName,
+			KeyHex:         testKeyHex,
+			DNSServer:      localDNSServer,
+			Paths:          paths,
+		})
+	}()
+
+	// Wait for the server carrier of EVERY room before starting the clients
+	// (their QUIC handshakes must land on a live listener in each room). The
+	// hub's serverUp channel closes once per room and is shared: both clients
+	// wait on the same channel.
+	for _, ps := range paths {
+		hub.mu.Lock()
+		serverUp := hub.roomLocked(ps.RoomURL).serverUp
+		hub.mu.Unlock()
+		select {
+		case <-serverUp:
+		case err := <-serverErr:
+			t.Fatalf("mpq server exited before connecting room %s: %v", ps.RoomURL, err)
+		case <-time.After(5 * time.Second):
+			t.Fatalf("mpq server carrier for room %s did not connect", ps.RoomURL)
+		}
+	}
+
+	readyA := make(chan struct{})
+	errA := make(chan error, 1)
+	addrA := freeLocalAddr(ctx, t)
+	go func() {
+		errA <- client.RunWithReady(ctx, client.Config{
+			Transport:      transportData,
+			TransportProto: "mpq",
+			Carrier:        carrierName,
+			DeviceID:       testClientDeviceID,
+			LocalAddr:      addrA,
+			KeyHex:         testKeyHex,
+			DNSServer:      localDNSServer,
+			Paths:          paths,
+		}, func() { close(readyA) })
+	}()
+
+	readyB := make(chan struct{})
+	errB := make(chan error, 1)
+	addrB := freeLocalAddr(ctx, t)
+	go func() {
+		errB <- client.RunWithReady(ctx, client.Config{
+			Transport:      transportData,
+			TransportProto: "mpq",
+			Carrier:        carrierName,
+			DeviceID:       "client-2",
+			LocalAddr:      addrB,
+			KeyHex:         testKeyHex,
+			DNSServer:      localDNSServer,
+			Paths:          paths,
+		}, func() { close(readyB) })
+	}()
+
+	// Both clients must come up concurrently over the shared room set.
+	waitForReadyWithin(t, readyA, 15*time.Second)
+	waitForReadyWithin(t, readyB, 15*time.Second)
+
+	// Each room now holds one client carrier per client (2 = one for each
+	// concurrent client); the per-peer demux keeps the two sessions apart even
+	// though they share the same two rooms.
+	hub.mu.Lock()
+	nA := len(hub.roomLocked(testRoom + "-a").clients)
+	nB := len(hub.roomLocked(testRoom + "-b").clients)
+	hub.mu.Unlock()
+	if nA != 2 || nB != 2 {
+		t.Fatalf("want 2 client carriers per room (one per client), got room-a=%d room-b=%d", nA, nB)
+	}
+
+	connA := connectViaSOCKS(t, addrA, echoAddr)
+	defer func() { _ = connA.Close() }()
+	connB := connectViaSOCKS(t, addrB, echoAddr)
+	defer func() { _ = connB.Close() }()
+
+	// Interleaved round-trips on both tunnels: each echo returns its own
+	// payload byte-for-byte, so client-A seeing client-B's stream would fail
+	// here. A small plus a bulk transfer give mpq's scheduler both rooms to
+	// stripe over.
+	echoRoundTrip(t, connA, 4096, 10*time.Second)
+	echoRoundTrip(t, connB, 4096, 10*time.Second)
+	echoRoundTrip(t, connA, 256*1024, 30*time.Second)
+	echoRoundTrip(t, connB, 256*1024, 30*time.Second)
+
+	// Both rooms carried traffic end-to-end (the sum counts every client's
+	// carriers, so each room must have moved bytes even with both clients).
+	if got := roomClientTrafficSum(hub, testRoom+"-a"); got == 0 {
+		t.Fatal("room-a carried no bytes with two concurrent clients")
+	}
+	if got := roomClientTrafficSum(hub, testRoom+"-b"); got == 0 {
+		t.Fatal("room-b carried no bytes with two concurrent clients")
+	}
+}
