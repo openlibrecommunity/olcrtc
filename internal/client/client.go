@@ -70,7 +70,7 @@ type Client struct {
 	// mpqSession is the mpq-brutal bonding session (io.ReadWriteCloser) that
 	// backs the smux session when TransportProto is "mpq". Closing it tears down
 	// the QUIC paths; it is nil in the legacy muxconn path.
-	mpqSession io.Closer
+	mpqSession *core.Session
 	// mpqCarriers holds every raw carrier brought up for an mpq multipath dial
 	// (one per path); shutdown closes them all. For a single-path mpq dial only
 	// c.ln is used and this stays nil.
@@ -339,7 +339,9 @@ func (c *Client) bringUpLinkMPQ(
 	if err != nil {
 		return fmt.Errorf("mpq: dial session: %w", err)
 	}
+	c.sessMu.Lock()
 	c.mpqSession = sess
+	c.sessMu.Unlock()
 	// pathIDs[i] is the mpq pathID of carrier i, or -1 if that path never
 	// attached. Carrier 0 is core.Dial's single initial path, which mpq-brutal
 	// always assigns pathID 0 (see core.Dial). It maps carrier index -> pathID so
@@ -1161,10 +1163,27 @@ func (c *Client) startControlLoop(
 		if err != nil {
 			logger.Warnf("client control stream ended: %v", err)
 		}
-		// ai-generated: mpq branch (no partial rewire for mpq sessions, see
-		// mpqSessionLost below).
+		// ai-generated: mpq gate (control loss must not kill a live tunnel).
+		// No partial rewire exists for mpq (see mpqSessionLost below), and a
+		// missing pong is not proof the link is dead: the control stream
+		// shares the mpq session with bulk data, so under sustained outbound
+		// load pings queue behind data chunks and the liveness timeout fires
+		// even though the session is healthy. A dead session keeps today's
+		// tear-down re-raise; a live one skips teardown entirely, because link
+		// liveness is owned by the layers below (QUIC path idle timeout +
+		// keepalive, mpq FailPath, session death when no path remains).
 		if cfg.TransportProto == "mpq" {
-			c.mpqSessionLost(cancel)
+			if !c.mpqSessionAlive() {
+				c.mpqSessionLost(cancel)
+				return
+			}
+			logger.Warnf("mpq: control stream lost while mpq session alive - skipping teardown, link liveness is handled by QUIC path keepalive")
+			// The control goroutine exits here and the tunnel keeps running. A
+			// genuinely dead session still needs to re-raise, but the SOCKS
+			// data plane cannot detect it (its smux streams just error out and
+			// connections are dropped), so watch the session and tear down on
+			// actual death.
+			go c.watchMPQSessionDeath(controlCtx, cancel)
 			return
 		}
 		// handleReconnect now retries indefinitely on liveness so it only
@@ -1189,6 +1208,65 @@ func (c *Client) mpqSessionLost(cancel context.CancelFunc) {
 	c.recordReconnect()
 	logger.Warnf("mpq: control plane lost - no partial rewire for mpq, tearing down for a full session re-raise")
 	cancel()
+}
+
+// mpqSessionDeathPoll is the poll interval of the mpq session-death watcher.
+// The layers below detect a dead path in seconds (QUIC idle timeout +
+// keepalive), so half a second of added latency is invisible.
+const mpqSessionDeathPoll = 500 * time.Millisecond
+
+// ai-generated: new helpers (mpq control-loss gate, see startControlLoop).
+//
+// mpqSessionAlive reports whether the mpq tunnel's underlying session can
+// still carry traffic. A session is dead when smux closed it (local Close,
+// keepalive write failure) or when the mpq-brutal layer lost every path - at
+// that point mpq closes its receive buffer, Read returns io.EOF and smux
+// errors out. Both signals are race-safe (smux atomic closed flag; mpq Paths
+// snapshot + per-path atomic Alive), so callers may poll concurrently with
+// session teardown. With no mpq handle installed (pure smux bring-up) it
+// falls back to the smux flag only.
+func (c *Client) mpqSessionAlive() bool {
+	c.sessMu.RLock()
+	sess := c.session
+	mpqSess := c.mpqSession
+	c.sessMu.RUnlock()
+	if sess != nil && sess.IsClosed() {
+		return false
+	}
+	if mpqSess == nil {
+		return true
+	}
+	for _, p := range mpqSess.Paths() {
+		if p.Alive() {
+			return true
+		}
+	}
+	return false
+}
+
+// ai-generated: new helper (mpq session-death re-raise).
+//
+// watchMPQSessionDeath runs after a control-stream loss left a live session
+// behind and re-raises the tunnel when that session dies. The SOCKS data
+// plane cannot do it: on a dead session its smux streams just error out and
+// connections are dropped without ever cancelling the run, which would orphan
+// the tunnel. The lower layers have already declared the session dead once
+// mpqSessionAlive turns false, so the only recovery is the mpqSessionLost
+// tear-and-re-raise.
+func (c *Client) watchMPQSessionDeath(ctx context.Context, cancel context.CancelFunc) {
+	ticker := time.NewTicker(mpqSessionDeathPoll)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if !c.mpqSessionAlive() {
+				c.mpqSessionLost(cancel)
+				return
+			}
+		}
+	}
 }
 
 // ai-generated: new function, peer-restart-corroboration PR.

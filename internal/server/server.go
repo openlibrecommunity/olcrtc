@@ -814,11 +814,17 @@ func (s *Server) acceptMPQHandshake(ctx context.Context, sess *smux.Session) (st
 	return sid, true
 }
 
+// ai-generated: comment/log updated for the mpq control-loss gate (mirrors
+// client.startControlLoop): control loss must not tear down a live session.
+//
 // startMPQControlLoop runs the liveness ping/pong loop over an mpq session's
-// control stream. Unlike the singleton startControlLoop it does not reinstall a
-// session on exit (mpq carrier-reconnect is a later step): when the control
-// stream ends the whole bonding session is being torn down by its accept loop,
-// so this just closes the stream and returns.
+// control stream. Unlike the singleton startControlLoop it never reinstalls or
+// tears down a session on exit: a lost control stream is not a link failure -
+// control shares the mpq session with bulk data, so pings can starve under
+// load while the session is healthy. Session liveness is owned by the layers
+// below (QUIC path keepalive, FailPath), and a genuinely dead session tears
+// down through serveMPQSession's stream accept loop, so this just closes the
+// stream and returns.
 func (s *Server) startMPQControlLoop(ctx context.Context, sid string, stream *smux.Stream) {
 	controlCtx, stop := context.WithCancel(ctx)
 	_ = stop // cancelled implicitly when ctx is cancelled; kept for symmetry
@@ -846,7 +852,7 @@ func (s *Server) startMPQControlLoop(ctx context.Context, sid string, stream *sm
 			return
 		}
 		if err != nil {
-			logger.Warnf("mpq control stream ended session=%s: %v", sid, err)
+			logger.Warnf("mpq: control stream lost session=%s - not tearing down, session liveness is handled by QUIC path keepalive: %v", sid, err)
 		}
 	}()
 }

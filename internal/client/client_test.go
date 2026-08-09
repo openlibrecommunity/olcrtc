@@ -743,18 +743,16 @@ func TestStatusRecordsReconnectAndUnhealthy(t *testing.T) {
 	}
 }
 
-// ai-generated: new test (mpq control-plane death must not deadlock and must
-// cancel the run so the outer loop re-raises).
+// ai-generated: updated test (mpq control loss must not kill a live session).
 //
-// TestMPQControlLoopLossCancelsRun drives an mpq-mode control loop whose peer
-// never answers pings: control.Run times out with ErrUnhealthy, and the mpq
-// branch of the loop exit must tear the whole run context down (the outer
-// run/retry loop then re-raises bringUpLinkMPQ from scratch) instead of
-// falling into the legacy handleReconnect rewire, which cannot re-point an mpq
-// session and would leave the tunnel permanently dead. It also proves the
-// teardown path does not deadlock with the control stream open (run with
-// -race).
-func TestMPQControlLoopLossCancelsRun(t *testing.T) {
+// TestMPQControlLoopLossKeepsLiveSession drives an mpq-mode control loop whose
+// peer never answers pings: control.Run times out with ErrUnhealthy, but while
+// the smux session is still alive the run must NOT be cancelled - control
+// starvation under bulk-data load is expected, and link liveness belongs to
+// the QUIC path keepalive at the layers below. Closing the session afterwards
+// must cancel the run through the session-death watcher, so a genuinely dead
+// tunnel still re-raises instead of being orphaned. Run with -race.
+func TestMPQControlLoopLossKeepsLiveSession(t *testing.T) {
 	a, b := net.Pipe()
 	defer func() { _ = a.Close(); _ = b.Close() }()
 
@@ -789,6 +787,90 @@ func TestMPQControlLoopLossCancelsRun(t *testing.T) {
 	runCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	c := &Client{health: runtime.NewHealthTracker(nil)}
+	c.sessMu.Lock()
+	c.session = clientSess
+	c.sessMu.Unlock()
+	c.startControlLoop(runCtx, Config{
+		TransportProto: "mpq",
+		Liveness: control.Config{
+			Interval: 10 * time.Millisecond,
+			Timeout:  100 * time.Millisecond,
+			Failures: 2,
+		},
+	}, cancel, stream)
+
+	// Wait for the control loop to cross its liveness threshold, then give it
+	// time to return and reach the mpq gate.
+	deadline := time.Now().Add(5 * time.Second)
+	for c.health.Status().UnhealthyEvents == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("mpq control loop did not go unhealthy")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	time.Sleep(200 * time.Millisecond)
+
+	// The session is still alive, so the run must have survived the control
+	// loss.
+	select {
+	case <-runCtx.Done():
+		t.Fatal("mpq control loss cancelled the run while the session was alive")
+	default:
+	}
+
+	// Now kill the session: the mpq death watcher re-raises the tunnel.
+	_ = clientSess.Close()
+	select {
+	case <-runCtx.Done():
+	case <-time.After(5 * time.Second):
+		t.Fatal("mpq session death did not cancel the run")
+	}
+}
+
+// ai-generated: new test (mpq session already dead when control dies).
+//
+// TestMPQControlLoopLossDeadSessionCancelsRun keeps today's behaviour: when
+// the smux session is already closed when the control stream fails, the mpq
+// branch tears the whole run down so the outer run/retry loop re-raises
+// bringUpLinkMPQ from scratch.
+func TestMPQControlLoopLossDeadSessionCancelsRun(t *testing.T) {
+	a, b := net.Pipe()
+	defer func() { _ = a.Close(); _ = b.Close() }()
+
+	serverSess, err := smux.Server(a, smuxConfig(0))
+	if err != nil {
+		t.Fatalf("smux.Server() error = %v", err)
+	}
+	defer func() { _ = serverSess.Close() }()
+	clientSess, err := smux.Client(b, smuxConfig(0))
+	if err != nil {
+		t.Fatalf("smux.Client() error = %v", err)
+	}
+	defer func() { _ = clientSess.Close() }()
+
+	peerStreamCh := make(chan *smux.Stream, 1)
+	go func() {
+		stream, err := serverSess.AcceptStream()
+		if err == nil {
+			peerStreamCh <- stream
+		}
+	}()
+	stream, err := clientSess.OpenStream()
+	if err != nil {
+		t.Fatalf("OpenStream() error = %v", err)
+	}
+	peerStream := <-peerStreamCh
+	defer func() { _ = peerStream.Close() }()
+
+	// The session dies before the control stream does.
+	_ = clientSess.Close()
+
+	runCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	c := &Client{health: runtime.NewHealthTracker(nil)}
+	c.sessMu.Lock()
+	c.session = clientSess
+	c.sessMu.Unlock()
 	c.startControlLoop(runCtx, Config{
 		TransportProto: "mpq",
 		Liveness: control.Config{
@@ -800,8 +882,9 @@ func TestMPQControlLoopLossCancelsRun(t *testing.T) {
 
 	select {
 	case <-runCtx.Done():
-		// The mpq control loss tore the run down - the outer loop re-raises.
+		// Dead session + control loss tore the run down - the outer loop
+		// re-raises.
 	case <-time.After(5 * time.Second):
-		t.Fatal("mpq control loop loss did not cancel the run")
+		t.Fatal("mpq control loss with a dead session did not cancel the run")
 	}
 }
