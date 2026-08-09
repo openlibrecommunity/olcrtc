@@ -55,6 +55,14 @@ type bondEntry struct {
 // not grow its own queue without bound.
 const maxBufferedPeerControl = 64
 
+// maxBufferedPeerControlTotal bounds the total number of pre-hello control
+// frames buffered across ALL peers on one carrier. The per-peer cap alone
+// still lets a swarm of never-hello peers grow the demux without bound, so the
+// aggregate is capped too: once it is reached, a new frame for a route-less
+// peer is dropped (the same drop-on-overload a single full peer queue
+// already gets), keeping the demux memory bounded regardless of peer count.
+const maxBufferedPeerControlTotal = 1024
+
 // peerBondPath is the resolved route for one (carrier,peerID) pair: which bond
 // path inbound frames from that peer belong to.
 type peerBondPath struct {
@@ -76,6 +84,9 @@ type peerCarrierDemux struct {
 	mu     sync.Mutex
 	routes map[string]*peerBondPath // peerID -> resolved route (nil until PATH_HELLO)
 	ctlBuf map[string][][]byte      // peerID -> control frames buffered pre-hello
+	// ctlTotal is the total number of control frames currently buffered in
+	// ctlBuf across every peer, bounded by maxBufferedPeerControlTotal.
+	ctlTotal int
 }
 
 func newPeerCarrierDemux(s *Server) *peerCarrierDemux {
@@ -131,6 +142,7 @@ func (s *Server) routePeerBondData(d *peerCarrierDemux, peerID string, data []by
 	d.routes[peerID] = &peerBondPath{be: be, pathIdx: idx}
 	buffered := d.ctlBuf[peerID]
 	delete(d.ctlBuf, peerID)
+	d.ctlTotal -= len(buffered)
 	d.mu.Unlock()
 
 	be.bond.PathOnData(idx)(data)
@@ -141,13 +153,21 @@ func (s *Server) routePeerBondData(d *peerCarrierDemux, peerID string, data []by
 
 // routePeerBondControl handles one inbound control-plane frame for peerID. If
 // the peer's PATH_HELLO has not been seen yet (control raced ahead of data) the
-// frame is buffered and flushed once routePeerBondData resolves the route.
+// frame is buffered and flushed once routePeerBondData resolves the route. The
+// buffer is bounded both per peer (maxBufferedPeerControl) and in aggregate
+// across peers (maxBufferedPeerControlTotal); frames arriving past either cap
+// are dropped, so a swarm of never-hello peers can not grow the demux.
+//
+// ai-generated: buffered-control-frame cap. Added the aggregate
+// maxBufferedPeerControlTotal bound (ctlTotal counter) so a swarm of peers
+// that never send PATH_HELLO can not grow the demux's memory unboundedly.
 func (s *Server) routePeerBondControl(d *peerCarrierDemux, peerID string, data []byte) {
 	d.mu.Lock()
 	route := d.routes[peerID]
 	if route == nil {
-		if len(d.ctlBuf[peerID]) < maxBufferedPeerControl {
+		if len(d.ctlBuf[peerID]) < maxBufferedPeerControl && d.ctlTotal < maxBufferedPeerControlTotal {
 			d.ctlBuf[peerID] = append(d.ctlBuf[peerID], append([]byte(nil), data...))
+			d.ctlTotal++
 		}
 		d.mu.Unlock()
 		return
@@ -155,6 +175,30 @@ func (s *Server) routePeerBondControl(d *peerCarrierDemux, peerID string, data [
 	be := route.be
 	d.mu.Unlock()
 	be.bond.ControlIn(data)
+}
+
+// dropRoutes removes every route (and any control frames buffered for those
+// peers) that resolve to be. Called when the bond dies so that (1) frames still
+// arriving for its peers stop being routed into the closed bond's path sink and
+// (2) a reconnect from the same peerID starts from a clean slate and can
+// register a fresh bond via PATH_HELLO again.
+//
+// ai-generated: stale-route cleanup for dead bonds. Iterates the route table
+// under d.mu and removes every entry (plus buffered control frames) whose
+// bondEntry pointer matches the removed bond.
+func (d *peerCarrierDemux) dropRoutes(be *bondEntry) {
+	d.mu.Lock()
+	for peerID, r := range d.routes {
+		if r.be != be {
+			continue
+		}
+		delete(d.routes, peerID)
+		if n := len(d.ctlBuf[peerID]); n > 0 {
+			delete(d.ctlBuf, peerID)
+			d.ctlTotal -= n
+		}
+	}
+	d.mu.Unlock()
 }
 
 // getOrCreateBond returns the registry entry for id, allocating and starting a
@@ -218,16 +262,27 @@ func (s *Server) addBondPeerPath(be *bondEntry, pt transport.PeerTransport, peer
 		be.id, pathIndex, peerID, be.bond.NumPaths())
 }
 
-// removeBond drops the bond from the registry and closes it and (for peer bonds)
-// its dedicated session. Safe to call repeatedly; the second call is a no-op.
-// Closing the bond never closes the shared peer carriers (see path.closeTransport).
+// removeBond drops the bond from the registry, closes it, closes its dedicated
+// session (streams + smux + muxconn), and drops every peer-carrier route that
+// pointed at it (so no frame keeps flowing into the closed bond and a peer
+// retry from the same peerID can re-register a fresh bond). Safe to call
+// repeatedly; the second call is a no-op. Closing the bond never closes the
+// shared peer carriers (see path.closeTransport).
+//
+// ai-generated: per-bond teardown wiring. Snapshot of the demux registry under
+// bondMu so every peer-carrier route for the removed bond is dropped (Issue C);
+// per-bond sessions had already been closed here since the peer (5b) path.
 func (s *Server) removeBond(id [16]byte) {
 	s.bondMu.Lock()
 	be := s.bonds[id]
 	delete(s.bonds, id)
+	demuxes := append([]*peerCarrierDemux(nil), s.demuxes...)
 	s.bondMu.Unlock()
 	if be == nil {
 		return
+	}
+	for _, d := range demuxes {
+		d.dropRoutes(be)
 	}
 	if be.sess != nil {
 		s.closePeerSession(be.sess, "closed")
@@ -364,7 +419,7 @@ func (s *Server) bondEnded(be *bondEntry, peer bool) {
 // bondEntry's session and tears the bond (not the server) down on failure.
 //
 // ai-generated: sessionReady close-on-exit (issue B). Added the defer +
-// sync.Once that closes ps.sessionReady exactly once on EVERexit path, so a
+// sync.Once that closes ps.sessionReady exactly once on EVERY exit path, so a
 // failed bond handshake wakes up serveBond's waitBondHandshake instead of
 // leaving it spinning until server shutdown.
 //

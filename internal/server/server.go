@@ -140,6 +140,10 @@ type Server struct {
 	// closes it, so serveSingle keeps serving the legacy fallback session.
 	bondMode     chan struct{}
 	bondModeOnce sync.Once
+	// demuxes collects every peer-carrier demux (one per peer-routing carrier,
+	// see buildMultipathCarrier) so removeBond can drop their stale routes when
+	// a bond dies. Guarded by bondMu.
+	demuxes []*peerCarrierDemux
 	// carriers holds every carrier brought up by bringUpMultipath so shutdown
 	// can close them all. Carriers that joined a bond are also closed via
 	// bond.Close (Close is idempotent); this covers any that never did.
@@ -970,6 +974,12 @@ func (s *Server) buildMultipathCarrier(
 		demux.mu.Lock()
 		demux.tr = pt
 		demux.mu.Unlock()
+		// Register the demux so removeBond can drop its routes when a bond
+		// dies (stale frames must stop being routed into the closed bond, and a
+		// peer retry from the same peerID must re-register a fresh bond).
+		s.bondMu.Lock()
+		s.demuxes = append(s.demuxes, demux)
+		s.bondMu.Unlock()
 		// multipathPeer is read by serve() (possibly from another goroutine when
 		// a peer path only comes up via retry), so write it under sessMu.
 		s.sessMu.Lock()

@@ -258,21 +258,6 @@ func waitForBond(t *testing.T, s *Server, id [16]byte) *bondEntry {
 	return nil
 }
 
-func waitBondRemoved(t *testing.T, s *Server, id [16]byte) bool {
-	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		s.bondMu.Lock()
-		be := s.bonds[id]
-		s.bondMu.Unlock()
-		if be == nil {
-			return true
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	return false
-}
-
 // waitBondSession waits until the bond's per-bond session (with a control
 // session, i.e. the sessionReady path) is fully brought up.
 func waitBondSession(t *testing.T, s *Server, id [16]byte) *bondEntry {
@@ -290,6 +275,21 @@ func waitBondSession(t *testing.T, s *Server, id [16]byte) *bondEntry {
 	}
 	t.Fatalf("bond %x control session never started", id)
 	return nil
+}
+
+func waitBondRemoved(t *testing.T, s *Server, id [16]byte) bool {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		s.bondMu.Lock()
+		be := s.bonds[id]
+		s.bondMu.Unlock()
+		if be == nil {
+			return true
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	return false
 }
 
 // testBondClient is a client-side bond session: it opens the handshake stream
@@ -590,5 +590,135 @@ func TestBondHandshakeFailure_ClosesSessionReady(t *testing.T) {
 	case <-done:
 	case <-time.After(5 * time.Second):
 		t.Fatal("bond handshake goroutines leaked: wg.Wait not reached")
+	}
+}
+
+// peerCarrierStub is a peer-routing carrier stub for driving the peer-carrier
+// demux (Phase 5b routing only - no real data plane needed).
+type peerCarrierStub struct {
+	*serverLinkStub
+}
+
+func (p *peerCarrierStub) SendTo(peerID string, data []byte) error {
+	return p.serverLinkStub.Send(data)
+}
+func (p *peerCarrierStub) SupportsPeerRouting() bool { return true }
+func (p *peerCarrierStub) Features() transport.Features {
+	return transport.Features{Reliable: true, Ordered: true, MessageOriented: true}
+}
+
+// ai-generated: regression test for issue C part 1 (stale routes). When a
+// peer-routed bond dies, removeBond must drop every demux route pointing at it
+// so a retry from the same peerID registers a fresh bond, and any frame still
+// arriving for the dead bond's path is dropped instead of routed into the
+// closed bond's handler.
+func TestPeerDemux_DropsStaleRoutesOnBondDeath(t *testing.T) {
+	cipher := testCipher(t)
+	s := newBondTestServer(t, cipher)
+
+	d := newPeerCarrierDemux(s)
+	d.tr = &peerCarrierStub{serverLinkStub: &serverLinkStub{}}
+	s.bondMu.Lock()
+	s.demuxes = append(s.demuxes, d)
+	s.bondMu.Unlock()
+
+	const peerID = "peer-1"
+
+	// First PATH_HELLO resolves the peer to bond A.
+	idA := multipath.NewBondID()
+	s.routePeerBondData(d, peerID, bondHelloFrame(idA, 0))
+	beA := s.bonds[idA]
+	if beA == nil {
+		t.Fatal("first hello did not create a bond")
+	}
+	d.mu.Lock()
+	rA := d.routes[peerID]
+	d.mu.Unlock()
+	if rA == nil || rA.be != beA {
+		t.Fatal("route should resolve to bond A")
+	}
+
+	// Bond death: removeBond must drop the route so a retry can re-register.
+	s.removeBond(idA)
+	d.mu.Lock()
+	stale := d.routes[peerID]
+	d.mu.Unlock()
+	if stale != nil {
+		t.Fatal("stale route survived bond removal")
+	}
+
+	// A stale frame (not a fresh PATH_HELLO) must be dropped, not routed.
+	s.routePeerBondData(d, peerID, bondDataFrame(1, []byte("stale")))
+	d.mu.Lock()
+	if d.routes[peerID] != nil {
+		t.Fatal("stale frame re-registered a route")
+	}
+	d.mu.Unlock()
+
+	// A retry with a fresh bond id re-registers the route and brings up a new
+	// session.
+	idB := multipath.NewBondID()
+	s.routePeerBondData(d, peerID, bondHelloFrame(idB, 0))
+	beB := s.bonds[idB]
+	if beB == nil {
+		t.Fatal("retry did not create a fresh bond")
+	}
+	d.mu.Lock()
+	rB := d.routes[peerID]
+	d.mu.Unlock()
+	if rB == nil || rB.be != beB {
+		t.Fatal("retry did not re-register the route")
+	}
+	if beB.sess == nil {
+		t.Fatal("retried bond has no session")
+	}
+}
+
+// ai-generated: regression test for issue C part 2 (unbounded pre-hello
+// control buffering). Buffered control frames are bounded in aggregate across
+// all peers (maxBufferedPeerControlTotal); past the cap new frames are dropped
+// and resolving a route flushes (and decrements) that peer's queue.
+func TestPeerDemux_CtlBufGlobalCap(t *testing.T) {
+	cipher := testCipher(t)
+	s := newBondTestServer(t, cipher)
+	d := newPeerCarrierDemux(s)
+	d.tr = &peerCarrierStub{serverLinkStub: &serverLinkStub{}}
+
+	// 200 never-hello peers x 10 control frames each: well past both the
+	// per-peer cap (not hit) and the aggregate cap, so the buffer must stop at
+	// the aggregate cap.
+	for i := 0; i < 200; i++ {
+		for j := 0; j < 10; j++ {
+			s.routePeerBondControl(d, fmt.Sprintf("peer-%d", i), []byte("ctl"))
+		}
+	}
+	d.mu.Lock()
+	total := 0
+	for _, frames := range d.ctlBuf {
+		total += len(frames)
+	}
+	bufTotal := d.ctlTotal
+	queuedPeer0 := len(d.ctlBuf["peer-0"])
+	d.mu.Unlock()
+	if bufTotal != maxBufferedPeerControlTotal {
+		t.Fatalf("ctlTotal = %d, want %d", bufTotal, maxBufferedPeerControlTotal)
+	}
+	if total > bufTotal {
+		t.Fatalf("buffered frames %d exceed ctlTotal %d", total, bufTotal)
+	}
+
+	// A PATH_HELLO for one buffered peer flushes its queue and must decrement
+	// the aggregate counter.
+	id := multipath.NewBondID()
+	s.routePeerBondData(d, "peer-0", bondHelloFrame(id, 0))
+	d.mu.Lock()
+	flushed := len(d.ctlBuf["peer-0"])
+	after := d.ctlTotal
+	d.mu.Unlock()
+	if flushed != 0 {
+		t.Fatalf("route resolution did not flush peer-0's buffer (%d frames left)", flushed)
+	}
+	if want := bufTotal - queuedPeer0; after != want {
+		t.Fatalf("ctlTotal after flush = %d, want %d", after, want)
 	}
 }
