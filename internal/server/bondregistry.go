@@ -23,6 +23,18 @@ import (
 // single Bond fans traffic across every carrier (path) that announced the same
 // bond id, and one muxconn+smux+handshake stack runs on top of the Bond - not
 // on any individual carrier - so N carriers collapse into one logical session.
+//
+// Every bond (5a and 5b alike) runs its OWN dedicated session stored on the
+// entry (sess below) with its own handshake acceptor and stream accept loop,
+// so several concurrent bonds - one per client - never share (or clobber) a
+// singleton s.session. Non-peer carriers are still limited to ONE client per
+// bond id because a non-peer broadcast carrier cannot demux frames by sender:
+// the first PATH_HELLO claims the carrier's router for its bond, and any later
+// client on the same carrier is folded into that first bond. Multi-client on a
+// shared room requires peer-routing (5b) or the mpq transport. The registry
+// handles concurrent bonds safely either way (no shared mutable session state,
+// dedup by bond id); it just cannot separate two non-peer clients on one
+// carrier, which is inherent to such carriers.
 type bondEntry struct {
 	id      [16]byte
 	bond    *multipath.Bond
@@ -30,19 +42,17 @@ type bondEntry struct {
 	paths   map[uint16]struct{}
 
 	// peer marks a Phase-5b bond whose paths are peer-routed over carriers
-	// shared with other clients. Such a bond runs its own dedicated session
-	// (below) with its own accept loop, isolated from every other client's
-	// bond, rather than the singleton s.session used by 5a.
+	// shared with other clients.
 	peer    bool
 	carrier transport.Transport // multipath.AsCarrier(bond), for liveness tuning
-	sess    *peerSession        // per-bond session state (peer bonds only)
+	sess    *peerSession        // per-bond session state (5a and 5b)
 }
 
 // maxBufferedPeerControl bounds how many pre-hello control frames a single peer
 // may queue while its data-plane PATH_HELLO is still in flight (control and data
 // ride separate KCP sessions, so either may arrive first). It is generous enough
 // for a full handshake burst but capped so a peer that never sends a hello can
-// not grow this without bound.
+// not grow its own queue without bound.
 const maxBufferedPeerControl = 64
 
 // peerBondPath is the resolved route for one (carrier,peerID) pair: which bond
@@ -225,18 +235,29 @@ func (s *Server) removeBond(id [16]byte) {
 	_ = be.bond.Close()
 }
 
-// startBondSession brings up the single muxconn+smux session that runs over the
-// whole bond and wires the bond's reassembled output into it. Because Bond
-// itself satisfies transport.Transport, this reuses the ordinary data-session
-// plumbing (serveSingle drives the handshake and the accept loop over
-// s.session exactly as it does for a lone carrier). When every path of the
-// bond dies, Bond fires its ended callback and we tear the run down.
-func (s *Server) startBondSession(be *bondEntry) {
-	// AsCarrier returns a control-capable wrapper only when every path of the
-	// bond exposes an isolated control plane (vp8channel); otherwise the bare
-	// bond, for which muxconn.NewControl below returns nil and the handshake
-	// stays inline on the data session (serveSingle drives it). Paths are
-	// homogeneous, so classifying on the first path is sound.
+// startBondSession brings up the dedicated muxconn+smux session for one bond
+// and launches its per-bond handshake acceptor and stream accept loop. The
+// session is stored on the bondEntry (not in a singleton s.session), so N
+// concurrent bonds - one per client - each get an isolated session the same
+// way peer-routed bonds (5b) already do.
+//
+// peer marks a Phase-5b peer-routed bond: its death only ever drops the bond,
+// never the whole server. A non-peer bond that dies cancels the run only when
+// it was the last live bond (see bondEnded), preserving the pre-multi-client
+// "the only bond died, tear the run down" behaviour without letting one of
+// several concurrent bonds kill them all.
+//
+// When the bond exposes an isolated control plane (all paths control-capable),
+// as in the peer path the handshake runs on a dedicated control smux session
+// and signals readiness via sessionReady (acceptBondHandshake); otherwise it is
+// driven inline on the data session by serveBond (acceptBondHandshakeInline).
+//
+// ai-generated: per-bond sessions for non-peer bonds (issue A). Rewritten from
+// the singleton-session variant (which overwrote s.conn/s.session per bond and
+// orphaned every earlier bond's smux) to mirror startPeerBondSession: the
+// session lives on the bondEntry and each bond runs its own
+// acceptBondHandshake + serveBond goroutines.
+func (s *Server) startBondSession(be *bondEntry, peer bool) {
 	carrier := multipath.AsCarrier(be.bond)
 
 	conn := muxconn.New(carrier, s.cipher)
@@ -248,66 +269,8 @@ func (s *Server) startBondSession(be *bondEntry) {
 	}
 	be.bond.SetOnData(conn.Push)
 	be.bond.SetEndedCallback(func(reason string) {
-		logger.Infof("multipath: bond %x ended (%s) - tearing down session", be.id, reason)
-		s.removeBond(be.id)
-		if s.bondCancel != nil {
-			s.bondCancel()
-		}
-	})
-
-	// When the bond exposes an isolated control plane, build a dedicated
-	// control smux session over it and launch the handshake acceptor - mirror
-	// of installSession (server.go). serveSingle then sees s.controlConn != nil
-	// and spin-waits for this goroutine instead of driving the handshake on the
-	// data session, so handshake+liveness ride the priority control channel and
-	// do not head-of-line block behind bulk data.
-	controlConn := muxconn.NewControl(carrier, s.cipher)
-	var ctrlSess *smux.Session
-	if controlConn != nil {
-		controlSess, cerr := smux.Server(controlConn, controlSmuxConfig(linkMaxPayload(carrier)))
-		if cerr != nil {
-			logger.Warnf("multipath: control smux server init failed for bond %x: %v", be.id, cerr)
-			_ = controlConn.Close()
-			controlConn = nil
-		} else {
-			ctrlSess = controlSess
-			go s.acceptHandshake(s.baseCtx, controlSess)
-		}
-	}
-
-	s.bondMu.Lock()
-	be.started = true
-	s.bondMu.Unlock()
-
-	s.sessMu.Lock()
-	s.conn = conn
-	s.controlConn = controlConn
-	s.controlSess = ctrlSess
-	s.session = sess
-	s.sessMu.Unlock()
-	logger.Infof("multipath: bond %x session started (control=%t)", be.id, ctrlSess != nil)
-}
-
-// startPeerBondSession brings up the dedicated muxconn+smux session for one
-// peer-routed bond (Phase 5b). Unlike startBondSession it stores the session in
-// the bondEntry (not the singleton s.session) and launches per-bond accept /
-// handshake goroutines, so several clients sharing the SFU-room carriers each
-// get an isolated session. The bond's ended callback only tears down this bond,
-// never the whole server (the carriers outlive any one client).
-func (s *Server) startPeerBondSession(be *bondEntry) {
-	carrier := multipath.AsCarrier(be.bond)
-
-	conn := muxconn.New(carrier, s.cipher)
-	sess, err := smux.Server(conn, dataSmuxConfig(carrier))
-	if err != nil {
-		logger.Warnf("multipath: smux server init failed for peer bond %x: %v", be.id, err)
-		_ = conn.Close()
-		return
-	}
-	be.bond.SetOnData(conn.Push)
-	be.bond.SetEndedCallback(func(reason string) {
-		logger.Infof("multipath: peer bond %x ended (%s) - tearing down its session", be.id, reason)
-		s.removeBond(be.id)
+		logger.Infof("multipath: bond %x ended (%s) - tearing down its session", be.id, reason)
+		s.bondEnded(be, peer)
 	})
 
 	controlConn := muxconn.NewControl(carrier, s.cipher)
@@ -315,7 +278,7 @@ func (s *Server) startPeerBondSession(be *bondEntry) {
 	if controlConn != nil {
 		cs, cerr := smux.Server(controlConn, controlSmuxConfig(linkMaxPayload(carrier)))
 		if cerr != nil {
-			logger.Warnf("multipath: control smux server init failed for peer bond %x: %v", be.id, cerr)
+			logger.Warnf("multipath: control smux server init failed for bond %x: %v", be.id, cerr)
 			_ = controlConn.Close()
 			controlConn = nil
 		} else {
@@ -332,7 +295,7 @@ func (s *Server) startPeerBondSession(be *bondEntry) {
 	}
 	if ctrlSess != nil {
 		// Isolated control plane: the handshake runs on the control session and
-		// signals readiness via sessionReady, exactly like acceptPeerHandshake.
+		// signals readiness via sessionReady, exactly like the peer path.
 		ps.sessionReady = make(chan struct{})
 	}
 
@@ -342,7 +305,13 @@ func (s *Server) startPeerBondSession(be *bondEntry) {
 	be.sess = ps
 	s.bondMu.Unlock()
 
-	logger.Infof("multipath: peer bond %x session started (control=%t)", be.id, ctrlSess != nil)
+	s.signalBondMode()
+
+	tag := "bond"
+	if peer {
+		tag = "peer bond"
+	}
+	logger.Infof("multipath: %s %x session started (control=%t)", tag, be.id, ctrlSess != nil)
 
 	if ctrlSess != nil {
 		s.wg.Add(1)
@@ -356,6 +325,38 @@ func (s *Server) startPeerBondSession(be *bondEntry) {
 		defer s.wg.Done()
 		s.serveBond(be)
 	}()
+}
+
+// startPeerBondSession brings up the dedicated session for one peer-routed bond
+// (Phase 5b). It is startBondSession with the peer flag set: peer bonds never
+// cancel the whole run when they end (the shared carriers outlive any one
+// client) and their paths were registered peer-style without carrier callbacks.
+//
+// ai-generated: thin wrapper over the unified per-bond session builder (issue A).
+func (s *Server) startPeerBondSession(be *bondEntry) {
+	s.startBondSession(be, true)
+}
+
+// bondEnded is the ended callback for one bond: it drops the bond (closing its
+// session) and, for a non-peer bond, cancels the whole run only when this was
+// the LAST live bond. With several concurrent non-peer bonds, one dying client
+// must not kill the others; the single-bond case keeps the old "the only bond
+// died, tear down" semantics.
+//
+// ai-generated: live-bond-count teardown (issue A). Added the registry-size
+// check so a non-peer bond cancels the run only when it was the last live bond.
+func (s *Server) bondEnded(be *bondEntry, peer bool) {
+	s.removeBond(be.id)
+	if peer || s.bondCancel == nil {
+		return
+	}
+	s.bondMu.Lock()
+	last := len(s.bonds) == 0
+	s.bondMu.Unlock()
+	if last {
+		logger.Infof("multipath: last bond %x ended - tearing down", be.id)
+		s.bondCancel()
+	}
 }
 
 // acceptBondHandshake runs the handshake on a peer bond's control session and
@@ -550,6 +551,9 @@ func (s *Server) acceptBondHandshakeInline(be *bondEntry) bool {
 		ps.deviceID = hello.DeviceID
 		ps.sessionID = sid
 		s.sessMu.Unlock()
+		if ps.sessionReady != nil {
+			close(ps.sessionReady)
+		}
 		s.recordSession(sid)
 		s.onOpen(sid, hello.DeviceID, hello.Claims)
 		s.trackPeerOpen(sid, hello.DeviceID)
@@ -592,7 +596,10 @@ func (s *Server) routeBondFrame(
 	be, created := s.getOrCreateBond(id)
 	s.addBondPath(be, tr, idx)
 	if created {
-		s.startBondSession(be)
+		// The bond's session (handshake + accept loop) runs in its own
+		// goroutines - per-bond, exactly like peer bonds - so a second client
+		// bond on another carrier never disturbs this one.
+		s.startBondSession(be, false)
 	}
 	sink := be.bond.PathOnData(idx)
 	router.Store(&sink)

@@ -133,6 +133,13 @@ type Server struct {
 	// that every frame is forwarded through it. onData for a given carrier is
 	// single-producer, so the first-frame classification needs no extra lock.
 	bondRouter atomic.Pointer[func([]byte)]
+	// bondMode is closed once the first bond session starts (see
+	// signalBondMode). serve/serveSingle use it to hand the link over to the
+	// per-bond loops and stand the singleton serveSingle down. In the
+	// single-carrier EnableMultipath case a legacy (non-bond) first frame never
+	// closes it, so serveSingle keeps serving the legacy fallback session.
+	bondMode     chan struct{}
+	bondModeOnce sync.Once
 	// carriers holds every carrier brought up by bringUpMultipath so shutdown
 	// can close them all. Carriers that joined a bond are also closed via
 	// bond.Close (Close is idempotent); this covers any that never did.
@@ -294,6 +301,7 @@ func Run(ctx context.Context, cfg Config) error {
 		peerSessions:   make(map[string]*peerSession),
 		peerStats:      make(map[string]peerStat),
 		done:           make(chan struct{}),
+		bondMode:       make(chan struct{}),
 	}
 	s.setupResolver()
 
@@ -1614,6 +1622,10 @@ func (s *Server) getPeerSession(peerID string) *peerSession {
 // serve drives the smux Accept loop. The first accepted stream on a given
 // smux session is the control stream - the handshake runs there. Subsequent
 // streams are tunnel streams and proxy traffic.
+//
+// ai-generated: serveSingle hand-off (issue A). serve/serveSingle now exit
+// once the first bond session starts (per-bond loops own the link), instead of
+// driving the singleton s.session that 5a bonds used to overwrite.
 func (s *Server) serve(ctx context.Context) {
 	if s.mpqListener != nil {
 		s.serveMPQ(ctx)
@@ -1629,12 +1641,49 @@ func (s *Server) serve(ctx context.Context) {
 		<-ctx.Done()
 		return
 	}
+	if s.bondModeActive() {
+		// A bond session already started (per-bond loops own the link), so
+		// serveSingle has nothing to drive either.
+		<-ctx.Done()
+		return
+	}
 	s.serveSingle(ctx)
+}
+
+// signalBondMode records that the link has entered per-bond mode (the first
+// bond session started). Idempotent across all later bond starts.
+//
+// ai-generated: bond-mode signal (issue A). Lets serve/serveSingle hand the
+// link over to the per-bond loops once the first bond starts.
+func (s *Server) signalBondMode() {
+	s.bondModeOnce.Do(func() {
+		if s.bondMode != nil {
+			close(s.bondMode)
+		}
+	})
+}
+
+// bondModeActive reports whether at least one bond session has started.
+func (s *Server) bondModeActive() bool {
+	if s.bondMode == nil {
+		return false
+	}
+	select {
+	case <-s.bondMode:
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *Server) serveSingle(ctx context.Context) {
 	for {
 		if contextDone(ctx) {
+			return
+		}
+		if s.bondModeActive() {
+			// The first frame classified this link as bonded and the per-bond
+			// loops took over; nothing left for serveSingle to drive.
 			return
 		}
 
