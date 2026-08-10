@@ -75,7 +75,7 @@ cd olcrtc
 On the machine the traffic should go through (VPS, server abroad, home PC):
 
 ```sh
-./script/srv.sh
+./scripts/srv.sh
 ```
 
 The script installs podman if needed, clones the current code, builds the binary in a container and starts the server. Then it asks a few questions.
@@ -88,8 +88,8 @@ The script installs podman if needed, clones the current code, builds the binary
 | `--no-cache` | Purge the Go cache (`~/.cache/olcrtc`) before building - rebuild from scratch |
 
 ```sh
-./script/srv.sh --no-cache               # build from scratch
-./script/srv.sh --branch=dev --no-cache  # branch dev, no cache
+./scripts/srv.sh --no-cache               # build from scratch
+./scripts/srv.sh --branch=dev --no-cache  # branch dev, no cache
 ```
 
 ### Carrier (which service carries the traffic)
@@ -233,7 +233,7 @@ On your machine (home PC, laptop):
 ```sh
 git clone https://github.com/openlibrecommunity/olcrtc --recurse-submodules
 cd olcrtc
-./script/cnc.sh
+./scripts/cnc.sh
 ```
 
 Answer the same questions as on the server - **auth, transport and room ID must match**. For jitsi the script asks for the same server choice and room name/URL.
@@ -320,7 +320,7 @@ A running container does not update itself: it keeps the binary built at start t
 cd olcrtc
 git pull --recurse-submodules          # update local scripts
 podman stop olcrtc-server-xxxxxxxx     # stop the old container
-./script/srv.sh --no-cache             # start again with fresh code
+./scripts/srv.sh --no-cache             # start again with fresh code
 ```
 
 `--no-cache` is optional but guarantees a clean rebuild. On the rerun use the same `auth`, `transport`, `room ID` and key. The server key lives in `~/.olcrtc_key` and is reused automatically.
@@ -332,15 +332,15 @@ podman stop olcrtc-server-xxxxxxxx     # stop the old container
 You can run several servers or clients on one machine - each run creates a container with a unique name (`olcrtc-server-<random>`), they do not conflict.
 
 ```sh
-./script/srv.sh   # first instance - e.g. jitsi + datachannel
-./script/srv.sh   # second instance - e.g. wbstream + vp8channel
+./scripts/srv.sh   # first instance - e.g. jitsi + datachannel
+./scripts/srv.sh   # second instance - e.g. wbstream + vp8channel
 ```
 
 On the client run a separate `cnc.sh` for each instance with **different SOCKS5 ports** to switch between them:
 
 ```sh
-./script/cnc.sh   # first client - port 8808 (default)
-./script/cnc.sh   # second client - set port 8809
+./scripts/cnc.sh   # first client - port 8808 (default)
+./scripts/cnc.sh   # second client - set port 8809
 ```
 
 ---

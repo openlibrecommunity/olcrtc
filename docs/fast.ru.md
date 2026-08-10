@@ -75,7 +75,7 @@ cd olcrtc
 На машине, через которую должен идти трафик (VPS, сервер за рубежом, домашний ПК):
 
 ```sh
-./script/srv.sh
+./scripts/srv.sh
 ```
 
 Скрипт сам поставит podman при необходимости, склонирует актуальный код, соберёт бинарник в контейнере и запустит сервер. Дальше он задаст вопросы.
@@ -88,8 +88,8 @@ cd olcrtc
 | `--no-cache` | Очистить Go-кеш (`~/.cache/olcrtc`) перед сборкой - пересобрать с нуля |
 
 ```sh
-./script/srv.sh --no-cache               # сборка с нуля
-./script/srv.sh --branch=dev --no-cache  # ветка dev, без кеша
+./scripts/srv.sh --no-cache               # сборка с нуля
+./scripts/srv.sh --branch=dev --no-cache  # ветка dev, без кеша
 ```
 
 ### Carrier (на каком сервисе передавать трафик)
@@ -233,7 +233,7 @@ uri: olcrtc://jitsi?datachannel@https://meet.example.org/olcrtc-xxxxxxxx#<key>$o
 ```sh
 git clone https://github.com/openlibrecommunity/olcrtc --recurse-submodules
 cd olcrtc
-./script/cnc.sh
+./scripts/cnc.sh
 ```
 
 Отвечай на те же вопросы, что и на сервере - **auth, transport и room ID должны совпадать**. Для jitsi скрипт спросит тот же выбор сервера и имя/URL комнаты.
@@ -320,7 +320,7 @@ podman stop $(podman ps -q --filter name=olcrtc)
 cd olcrtc
 git pull --recurse-submodules          # обновить локальные скрипты
 podman stop olcrtc-server-xxxxxxxx     # остановить старый контейнер
-./script/srv.sh --no-cache             # запустить заново со свежим кодом
+./scripts/srv.sh --no-cache             # запустить заново со свежим кодом
 ```
 
 `--no-cache` не обязателен, но гарантирует пересборку с нуля. При повторном запуске укажи те же `auth`, `transport`, `room ID` и ключ. Серверный ключ хранится в `~/.olcrtc_key` и переиспользуется автоматически.
@@ -332,15 +332,15 @@ podman stop olcrtc-server-xxxxxxxx     # остановить старый ко�
 Можно запустить несколько серверов или клиентов на одной машине - каждый запуск создаёт контейнер с уникальным именем (`olcrtc-server-<random>`), они не конфликтуют.
 
 ```sh
-./script/srv.sh   # первый инстанс - например jitsi + datachannel
-./script/srv.sh   # второй инстанс - например wbstream + vp8channel
+./scripts/srv.sh   # первый инстанс - например jitsi + datachannel
+./scripts/srv.sh   # второй инстанс - например wbstream + vp8channel
 ```
 
 На клиенте для каждого инстанса запускай отдельный `cnc.sh` с **разными SOCKS5-портами**, чтобы переключаться между ними:
 
 ```sh
-./script/cnc.sh   # первый клиент - порт 8808 (по умолчанию)
-./script/cnc.sh   # второй клиент - укажи порт 8809
+./scripts/cnc.sh   # первый клиент - порт 8808 (по умолчанию)
+./scripts/cnc.sh   # второй клиент - укажи порт 8809
 ```
 
 ---
