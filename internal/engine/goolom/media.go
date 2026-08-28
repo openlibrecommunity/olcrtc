@@ -207,7 +207,16 @@ func (s *Session) handleSdpAnswer(answer map[string]any, uid string) {
 		Type: webrtc.SDPTypeAnswer,
 		SDP:  sdp,
 	}); err != nil {
-		logger.Debugf("SetRemoteDescription error: %v", err)
+		// ai-generated: a failed SetRemoteDescription leaves the publisher
+		// PC's ICE agent without a remote ufrag/pwd, so it silently stays in
+		// "new" and never reaches Connecting - nothing noticed until the
+		// outer readiness timeout (tens of seconds) finally gave up. Closing
+		// it here (off this goroutine, since Close can block on TURN
+		// deallocation) routes through onPublisherConnectionStateChange's
+		// existing Closed handling, which already triggers a fast,
+		// well-tested reconnect instead of a silent multi-second hang.
+		logger.Warnf("goolom publisher SetRemoteDescription failed: %v", err)
+		s.goLaunch(func() { _ = pub.Close() })
 	}
 	s.sendAck(uid)
 }

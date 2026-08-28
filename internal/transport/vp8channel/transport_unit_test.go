@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"reflect"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -751,6 +752,66 @@ func TestReorderBufferReusesPacketStorage(t *testing.T) {
 			t.Fatalf("second payload = %q", packet.Payload)
 		}
 	})
+}
+
+// TestPeerSessionForConcurrentFirstContactConverges guards olcrtc#142: two
+// goroutines racing to create the session for a brand-new peer epoch (which
+// happens for real when independent RTP reader goroutines deliver that
+// peer's first data and control frames back to back) must converge on
+// exactly one *peerSession instead of each minting its own KCP runtime and
+// clobbering the other in the table.
+func TestPeerSessionForConcurrentFirstContactConverges(t *testing.T) {
+	tr := &streamTransport{
+		stream:        &fakeVideoStream{canSend: true},
+		closeCh:       make(chan struct{}),
+		writerDone:    make(chan struct{}),
+		bindingToken:  bindingToken("room-142"),
+		localEpoch:    0x100,
+		serverMode:    true,
+		frameInterval: time.Millisecond,
+		onPeerData:    func(string, []byte) {},
+	}
+	defer func() {
+		close(tr.closeCh)
+		tr.peers.closeAll()
+	}()
+
+	const goroutines = 32
+	const epoch = 0x9a301844
+
+	results := make(chan *peerSession, goroutines)
+	var start sync.WaitGroup
+	start.Add(1)
+	var done sync.WaitGroup
+	for range goroutines {
+		done.Add(1)
+		go func() {
+			defer done.Done()
+			start.Wait()
+			results <- tr.peerSessionFor(epoch)
+		}()
+	}
+	start.Done()
+	done.Wait()
+	close(results)
+
+	var first *peerSession
+	for sess := range results {
+		if sess == nil {
+			t.Fatal("peerSessionFor returned nil under contention")
+		}
+		if first == nil {
+			first = sess
+			continue
+		}
+		if sess != first {
+			t.Fatalf("peerSessionFor returned distinct sessions for the same epoch: %p != %p", sess, first)
+		}
+	}
+
+	if got := tr.peers.len(); got != 1 {
+		t.Fatalf("peer table has %d sessions for one epoch, want 1", got)
+	}
 }
 
 func TestSeqLessWrapAround(t *testing.T) {

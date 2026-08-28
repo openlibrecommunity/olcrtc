@@ -45,8 +45,12 @@ func (s *Session) sendHello() error {
 				"userAgent":      "Mozilla/5.0 (X11; Linux x86_64; rv:149.0) Gecko/20100101 Firefox/149.0",
 				"hwConcurrency":  runtime.NumCPU(),
 			},
-			"sdkInitializationId":    uuid.New().String(),
-			"disablePublisher":       !s.hasLocalVideoTracks(),
+			"sdkInitializationId": uuid.New().String(),
+			// ai-generated: changed condition from !s.hasLocalVideoTracks() to
+			// account for datachannel-only sessions, plus this comment.
+			// A datachannel-only session has no video track but still opens a
+			// DataChannel on the publisher PC, so it must not claim disablePublisher.
+			"disablePublisher":       !s.hasLocalVideoTracks() && s.onData == nil,
 			"disableSubscriber":      false,
 			"disableSubscriberAudio": true,
 		},

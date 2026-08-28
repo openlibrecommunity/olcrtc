@@ -99,6 +99,19 @@ type peerTable struct {
 	mu       sync.RWMutex
 	sessions map[uint32]*peerSession
 	closed   bool
+
+	// createMu serializes the get-or-create path in peerSessionFor. Frames
+	// for the same brand-new epoch can arrive on different goroutines (each
+	// RTP/track reader drives its own handleIncomingFrame loop), so two
+	// callers can both miss in get() before either has installed a session
+	// via add(). Without serializing the check-then-create sequence, both
+	// build an independent KCP runtime for the same epoch; add() just
+	// overwrites the map entry with the second one, but peerSessionFor still
+	// hands each caller its own (possibly orphaned) session object. That
+	// silently splits one peer's reliable byte stream across two unrelated
+	// KCP state machines, which reassemble garbage that fails AEAD
+	// authentication one layer up in muxconn - see olcrtc#142.
+	createMu sync.Mutex
 }
 
 // get returns the session for epoch, refreshing its idle timer.
@@ -115,13 +128,23 @@ func (t *peerTable) get(epoch uint32) *peerSession {
 }
 
 // add installs a freshly created session, evicting the oldest peer when the
-// table is full. It returns false when the table is already closed, in which
-// case the caller must release the session it built.
+// table is full. It returns false when the table is already closed or a
+// session for this epoch is already installed, in which case the caller must
+// release the session it built instead of using it. The latter should never
+// happen in practice - peerSessionFor serializes creation via createMu - but
+// refusing a silent overwrite here is a cheap backstop: without it, a second
+// session for the same epoch would clobber the map entry while some other
+// caller keeps using the orphaned first one, splitting that peer's KCP
+// stream across two state machines. See olcrtc#142.
 func (t *peerTable) add(sess *peerSession) bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
 	if t.closed {
+		return false
+	}
+
+	if _, exists := t.sessions[sess.epoch]; exists {
 		return false
 	}
 
@@ -222,7 +245,20 @@ func parsePeerID(peerID string) (uint32, error) {
 // peerSessionFor returns the session for epoch, creating it on demand. It
 // returns nil when the KCP session cannot be started or the transport is
 // shutting down.
+//
+// The whole check-then-create sequence is serialized by peers.createMu so
+// concurrent first-contact frames for the same new epoch (arriving on
+// different reader goroutines) always converge on exactly one session
+// instead of racing to install two independent KCP runtimes for it. See
+// olcrtc#142.
 func (p *streamTransport) peerSessionFor(epoch uint32) *peerSession {
+	if sess := p.peers.get(epoch); sess != nil {
+		return sess
+	}
+
+	p.peers.createMu.Lock()
+	defer p.peers.createMu.Unlock()
+
 	if sess := p.peers.get(epoch); sess != nil {
 		return sess
 	}

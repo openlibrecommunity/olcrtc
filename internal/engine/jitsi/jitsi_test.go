@@ -2,6 +2,7 @@ package jitsi
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 
@@ -56,6 +57,53 @@ func TestDecodeRaw(t *testing.T) {
 	}
 	if got := decodeRaw(makeBridgeMessage(classEndpoint, map[string]any{rawFieldKey: "not-base64!!!"})); got != nil {
 		t.Fatalf("decodeRaw(bad base64) = %q, want nil", got)
+	}
+}
+
+// TestDecodeRawAcceptsMsgPayload guards olcrtc#143: sendEndpointRaw now emits
+// the payload under msgPayload.raw (the shape JVB actually documents for
+// EndpointMessage) instead of a nonstandard top-level "raw" field. decodeRaw
+// must read that shape so our own traffic round-trips.
+func TestDecodeRawAcceptsMsgPayload(t *testing.T) {
+	const payload = "hello msgPayload"
+	encoded := encodeForTest(t, []byte(payload))
+
+	got := decodeRaw(makeBridgeMessage(classEndpoint, map[string]any{
+		"msgPayload": map[string]any{rawFieldKey: encoded},
+	}))
+	if string(got) != payload {
+		t.Fatalf("decodeRaw(msgPayload.raw) = %q, want %q", got, payload)
+	}
+
+	// A msgPayload without a raw sub-field falls through to nil, not a panic.
+	if got := decodeRaw(makeBridgeMessage(classEndpoint, map[string]any{
+		"msgPayload": map[string]any{"other": "field"},
+	})); got != nil {
+		t.Fatalf("decodeRaw(msgPayload without raw) = %q, want nil", got)
+	}
+}
+
+// TestSendEndpointRawFieldOrderAndShape guards olcrtc#143: the wire JSON must
+// carry the payload as msgPayload.raw with fields declared in the order
+// colibriClass, to, msgPayload. Some Jackson versions on the bridge side drop
+// the payload if a custom field precedes "to"
+// (https://github.com/jitsi/jitsi-videobridge/pull/2424), so this is
+// asserted at the byte level, not just via a round-trip through
+// encoding/json's map-based unmarshalling which would hide a regression to
+// an unordered map[string]any payload.
+func TestSendEndpointRawFieldOrderAndShape(t *testing.T) {
+	msg := endpointMessage{
+		ColibriClass: "EndpointMessage",
+		To:           "abc123",
+		MsgPayload:   endpointRawPayload{Raw: "cGF5bG9hZA=="},
+	}
+	data, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+	want := `{"colibriClass":"EndpointMessage","to":"abc123","msgPayload":{"raw":"cGF5bG9hZA=="}}`
+	if string(data) != want {
+		t.Fatalf("Marshal() = %s, want %s", data, want)
 	}
 }
 

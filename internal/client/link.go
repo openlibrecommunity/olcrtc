@@ -44,6 +44,15 @@ func (c *Client) bringUpLink(ctx context.Context, cfg Config, cancel context.Can
 	if connectErr := link.Connect(ctx); connectErr != nil {
 		return fmt.Errorf("failed to connect link: %w", connectErr)
 	}
+	// ai-generated: moved this call earlier in the function (was after the
+	// handshake block below) and added this comment explaining why.
+	// Start watching for reconnect requests now, not after the handshake
+	// below succeeds: goolom's DataChannel can close mid-handshake (its
+	// publisher-side connection is not as stable as Jitsi's), and
+	// onDataChannelClose's queueReconnect() would otherwise queue a request
+	// with nobody consuming it yet - a deadlock where the fix (reconnect)
+	// waits on the very handshake it needs to unstick.
+	c.goTracked(func() { link.WatchConnection(ctx) })
 	c.conn = muxconn.New(link, c.keys)
 	c.controlConn = muxconn.NewControl(link, c.keys)
 	pair, err := tunnelcore.NewSessionPairWithConns(
@@ -77,7 +86,6 @@ func (c *Client) bringUpLink(ctx context.Context, cfg Config, cancel context.Can
 	c.signalSessionReady()
 	c.health.RecordSession(sessionID)
 	c.startControlLoop(ctx, cfg, cancel, control)
-	c.goTracked(func() { link.WatchConnection(ctx) })
 	return nil
 }
 

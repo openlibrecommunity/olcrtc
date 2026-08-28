@@ -117,7 +117,15 @@ func (s *Server) reinstallSession(ctx context.Context, dead *smux.Session) {
 	defer s.reinstallMu.Unlock()
 	s.sessMu.RLock()
 	if s.pair != nil {
-		_ = s.pair.CloseConns()
+		// ai-generated: changed s.pair.CloseConns() to s.pair.Close() and
+		// added this comment explaining why.
+		// Close (not CloseConns): the stale pair's smux Sessions must be
+		// closed too, not just their muxconns - otherwise a recvLoop
+		// currently parked on its flow-control bucket (waiting on
+		// bucketNotify/die, not reading conn) never notices the conn died
+		// and AcceptStream on it stays blocked until something else
+		// eventually pokes it.
+		_ = s.pair.Close()
 	} else {
 		if s.conn != nil {
 			_ = s.conn.Close()
