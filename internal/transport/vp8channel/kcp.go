@@ -56,7 +56,8 @@ type kcpRuntime struct {
 	conn      *kcpConn
 	sess      *kcp.UDPSession
 	readDone  chan struct{}
-	writeMu   sync.Mutex // serializes length-prefix + payload writes
+	writeMu   sync.Mutex // serializes framed writes; also guards writeBuf
+	writeBuf  []byte     // ai-generated: framing scratch, reused under writeMu
 	closeOnce sync.Once
 }
 
@@ -133,24 +134,32 @@ func (r *kcpRuntime) setHeader(hdr [epochHdrLen]byte) {
 	r.conn.setHeader(hdr)
 }
 
-// send queues an application message for reliable delivery. The length
-// prefix + payload pair is written under a mutex so that interleaved
-// concurrent senders cannot tear the framing.
+// send queues an application message for reliable delivery. Length prefix and
+// payload go out in one Write: two writes under a mutex stop concurrent senders
+// interleaving, but do not make the pair atomic against failure. If the header
+// lands and the payload does not, the stream carries a prefix for bytes that
+// were never sent and the reader cannot resynchronise.
+//
+// ai-generated: replaced the two Write calls with a single framed write into a
+// reused buffer; added writeBuf and the cap check.
 func (r *kcpRuntime) send(msg []byte) error {
 	if len(msg) > kcpMaxMessage {
 		return ErrKCPMessageTooLarge
 	}
-	var hdr [kcpLenPrefix]byte
-	binary.BigEndian.PutUint32(hdr[:], uint32(len(msg))) //nolint:gosec,lll // G115: bounded conversion verified by surrounding logic
 
 	r.writeMu.Lock()
 	defer r.writeMu.Unlock()
 
-	if _, err := r.sess.Write(hdr[:]); err != nil {
-		return fmt.Errorf("kcp write header: %w", err)
+	need := kcpLenPrefix + len(msg)
+	if cap(r.writeBuf) < need {
+		r.writeBuf = make([]byte, need)
 	}
-	if _, err := r.sess.Write(msg); err != nil {
-		return fmt.Errorf("kcp write payload: %w", err)
+	buf := r.writeBuf[:need]
+	binary.BigEndian.PutUint32(buf[:kcpLenPrefix], uint32(len(msg))) //nolint:gosec,lll // G115: bounded conversion verified by surrounding logic
+	copy(buf[kcpLenPrefix:], msg)
+
+	if _, err := r.sess.Write(buf); err != nil {
+		return fmt.Errorf("kcp write framed message: %w", err)
 	}
 	return nil
 }
