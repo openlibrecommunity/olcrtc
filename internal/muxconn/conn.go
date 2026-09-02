@@ -26,7 +26,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/openlibrecommunity/olcrtc/internal/crypto"
 	"github.com/openlibrecommunity/olcrtc/internal/logger"
 	"github.com/openlibrecommunity/olcrtc/internal/transport"
 )
@@ -146,8 +145,11 @@ type Conn struct {
 	ln      transport.Transport
 	send    func([]byte) error
 	canSend func() bool // if nil, uses ln.CanSend
-	keys    *crypto.KeySet
-	aad     []byte
+	keys    interface {
+		SealInto([]byte, []byte, []byte) ([]byte, error)
+		OpenInto([]byte, []byte, []byte) ([]byte, error)
+	}
+	aad []byte
 
 	in        chan *[]byte
 	closeOnce sync.Once
@@ -179,7 +181,10 @@ func (c *Conn) sendDeadline() time.Duration {
 
 // New wires a Conn over the given transport. Push must be set as the
 // transport's OnData callback before this conn is used.
-func New(ln transport.Transport, keys *crypto.KeySet) *Conn {
+func New(ln transport.Transport, keys interface {
+	SealInto([]byte, []byte, []byte) ([]byte, error)
+	OpenInto([]byte, []byte, []byte) ([]byte, error)
+}) *Conn {
 	return &Conn{
 		ln:      ln,
 		send:    ln.Send,
@@ -193,7 +198,10 @@ func New(ln transport.Transport, keys *crypto.KeySet) *Conn {
 // NewControl wires a Conn that routes through the transport's isolated
 // control-plane channel (transport.ControlPlane). Returns nil if the
 // transport does not implement ControlPlane.
-func NewControl(ln transport.Transport, keys *crypto.KeySet) *Conn {
+func NewControl(ln transport.Transport, keys interface {
+	SealInto([]byte, []byte, []byte) ([]byte, error)
+	OpenInto([]byte, []byte, []byte) ([]byte, error)
+}) *Conn {
 	cp, ok := ln.(transport.ControlPlane)
 	if !ok {
 		return nil
@@ -212,7 +220,10 @@ func NewControl(ln transport.Transport, keys *crypto.KeySet) *Conn {
 }
 
 // NewPeer wires a Conn whose writes are addressed to a specific transport peer.
-func NewPeer(ln transport.PeerTransport, keys *crypto.KeySet, peerID string) *Conn {
+func NewPeer(ln transport.PeerTransport, keys interface {
+	SealInto([]byte, []byte, []byte) ([]byte, error)
+	OpenInto([]byte, []byte, []byte) ([]byte, error)
+}, peerID string) *Conn {
 	return &Conn{
 		ln: ln,
 		send: func(data []byte) error {
@@ -233,7 +244,10 @@ func NewPeer(ln transport.PeerTransport, keys *crypto.KeySet, peerID string) *Co
 // caller must feed it via Push. PeerControlPlane exposes a single
 // SetControlOnPeerData callback covering every peer, so registering here
 // would clobber the caller's demultiplexer - hence the name.
-func NewPeerControlUnbound(ln transport.Transport, keys *crypto.KeySet, peerID string) *Conn {
+func NewPeerControlUnbound(ln transport.Transport, keys interface {
+	SealInto([]byte, []byte, []byte) ([]byte, error)
+	OpenInto([]byte, []byte, []byte) ([]byte, error)
+}, peerID string) *Conn {
 	cp, ok := ln.(transport.PeerControlPlane)
 	if !ok {
 		return nil

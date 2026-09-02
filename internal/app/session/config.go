@@ -135,7 +135,8 @@ type Config struct {
 	Token                 string
 	RoomID                string
 	ChannelID             string
-	KeyHex                string
+	KeyHex                string   // deprecated, use KeysHex
+	KeysHex               []string // list of encryption keys
 	SOCKSHost             string
 	SOCKSPort             int
 	SOCKSUser             string

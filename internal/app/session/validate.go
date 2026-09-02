@@ -86,7 +86,14 @@ func validateCommon(cfg Config) error {
 	if cfg.RoomID == "" && cfg.Provider != providerNone {
 		return ErrRoomIDRequired
 	}
-	if err := validateKey(cfg.KeyHex); err != nil {
+	// Check new KeysHex format first, fall back to legacy KeyHex
+	if len(cfg.KeysHex) > 0 {
+		for i, keyHex := range cfg.KeysHex {
+			if err := validateKey(keyHex); err != nil {
+				return fmt.Errorf("keys[%d]: %w", i, err)
+			}
+		}
+	} else if err := validateKey(cfg.KeyHex); err != nil {
 		return err
 	}
 	if cfg.DNSServer == "" && cfg.Resolver == nil {

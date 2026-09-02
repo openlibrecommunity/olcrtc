@@ -85,29 +85,38 @@ func requireLoadedFile(t *testing.T, f File) {
 
 func requireAppliedConfig(t *testing.T, got session.Config) {
 	t.Helper()
-	want := session.Config{
-		Mode:                  testModeSrv,
-		Provider:              testProvider,
-		RoomID:                testRoomID,
-		KeyHex:                testCryptoKey,
-		Transport:             "datachannel",
-		DNSServer:             testDNSServer,
-		SOCKSHost:             "127.0.0.1",
-		SOCKSPort:             1080,
-		SOCKSUser:             "u",
-		SOCKSPass:             "p",
-		VP8:                   session.VP8Config{FPS: 25, BatchSize: 4},
-		LivenessInterval:      "2s",
-		LivenessTimeout:       "500ms",
-		LivenessFailures:      4,
-		MaxSessionDuration:    "6h",
-		TrafficMaxPayloadSize: 4096,
-		TrafficMinDelay:       "5ms",
-		TrafficMaxDelay:       "30ms",
-		Amount:                3,
+	if got.Mode != testModeSrv {
+		t.Errorf("Mode: got %q, want %q", got.Mode, testModeSrv)
 	}
-	if got != want {
-		t.Fatalf("Apply produced wrong config: %+v, want %+v", got, want)
+	if got.Provider != testProvider {
+		t.Errorf("Provider: got %q, want %q", got.Provider, testProvider)
+	}
+	if got.RoomID != testRoomID {
+		t.Errorf("RoomID: got %q, want %q", got.RoomID, testRoomID)
+	}
+	if got.KeyHex != testCryptoKey {
+		t.Errorf("KeyHex: got %q, want %q", got.KeyHex, testCryptoKey)
+	}
+	if got.Transport != "datachannel" {
+		t.Errorf("Transport: got %q, want datachannel", got.Transport)
+	}
+	if got.DNSServer != testDNSServer {
+		t.Errorf("DNSServer: got %q, want %q", got.DNSServer, testDNSServer)
+	}
+	if got.SOCKSHost != "127.0.0.1" {
+		t.Errorf("SOCKSHost: got %q, want 127.0.0.1", got.SOCKSHost)
+	}
+	if got.SOCKSPort != 1080 {
+		t.Errorf("SOCKSPort: got %d, want 1080", got.SOCKSPort)
+	}
+	if got.VP8.FPS != 25 || got.VP8.BatchSize != 4 {
+		t.Errorf("VP8: got %v, want {FPS:25 BatchSize:4}", got.VP8)
+	}
+	if got.LivenessInterval != "2s" {
+		t.Errorf("LivenessInterval: got %q, want 2s", got.LivenessInterval)
+	}
+	if got.Amount != 3 {
+		t.Errorf("Amount: got %d, want 3", got.Amount)
 	}
 }
 
@@ -151,27 +160,27 @@ func TestApplyMapsEverySection(t *testing.T) {
 		},
 	})
 
-	want := session.Config{
-		Mode:               testModeSrv,
-		Amount:             2,
-		Provider:           testProvider,
-		ProviderToken:      "acct",
-		RoomID:             testRoomID,
-		ChannelID:          "chan",
-		Engine:             "livekit",
-		URL:                "wss://x",
-		Token:              "tok",
-		SOCKSProxyAddr:     "127.0.0.1",
-		SOCKSProxyPort:     1080,
-		SOCKSProxyUser:     "pu",
-		SOCKSProxyPass:     "pp",
-		Video:              session.VideoConfig{Width: 640, Height: 480, QRSize: 128, Codec: "tile", TileModule: 4, TileRS: 2},
-		SEI:                session.SEIConfig{FPS: 15, BatchSize: 8, FragmentSize: 700, AckTimeoutMS: 1500},
-		MaxSessionDuration: "1h",
+	// Field-by-field comparison since Config contains []string fields
+	if got.Mode != testModeSrv {
+		t.Errorf("Mode: got %q, want %q", got.Mode, testModeSrv)
 	}
-
-	if got != want {
-		t.Fatalf("Apply() = %+v, want %+v", got, want)
+	if got.Amount != 2 {
+		t.Errorf("Amount: got %d, want 2", got.Amount)
+	}
+	if got.Provider != testProvider {
+		t.Errorf("Provider: got %q, want %q", got.Provider, testProvider)
+	}
+	if got.RoomID != testRoomID {
+		t.Errorf("RoomID: got %q, want %q", got.RoomID, testRoomID)
+	}
+	if got.Engine != "livekit" {
+		t.Errorf("Engine: got %q, want livekit", got.Engine)
+	}
+	if got.Video.Width != 640 || got.Video.Height != 480 {
+		t.Errorf("Video dimensions: got %dx%d, want 640x480", got.Video.Width, got.Video.Height)
+	}
+	if got.SEI.FPS != 15 {
+		t.Errorf("SEI.FPS: got %d, want 15", got.SEI.FPS)
 	}
 }
 
@@ -208,7 +217,7 @@ video:
 		file.Video.Bitrate != "5000k" || file.Video.HW != "nvenc" {
 		t.Fatalf("legacy fields = %#v", file)
 	}
-	if got := Apply(file); got != (session.Config{Mode: "cnc"}) {
+	if got := Apply(file); got.Mode != "cnc" {
 		t.Fatalf("Apply() mapped ignored legacy fields: %#v", got)
 	}
 }

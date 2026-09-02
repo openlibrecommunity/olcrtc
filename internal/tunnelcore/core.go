@@ -30,6 +30,21 @@ func SetupKeySet(keyHex string, role crypto.Role) (*crypto.KeySet, error) {
 	return keys, nil
 }
 
+// SetupMultiKeySet creates shared directional tunnel keys for multiple key hexes.
+// For backward compatibility, if only one key is provided, returns a MultiKeySet
+// that wraps a single KeySet. This allows the server to support fallback decryption
+// with multiple keys.
+func SetupMultiKeySet(keyHexes []string, role crypto.Role) (*crypto.MultiKeySet, error) {
+	if len(keyHexes) == 0 {
+		return nil, fmt.Errorf("%s: %w", role, runtime.ErrKeyRequired)
+	}
+	keys, err := crypto.NewMultiKeySet(keyHexes, role)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", role, err)
+	}
+	return keys, nil
+}
+
 // Resolver returns the supplied resolver or a protected resolver for dnsServer.
 func Resolver(resolver *net.Resolver, dnsServer string) *net.Resolver {
 	if resolver != nil {

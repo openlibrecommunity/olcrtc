@@ -51,8 +51,11 @@ const (
 
 // Client handles local SOCKS5 connections and tunnels them to the server.
 type Client struct {
-	ln          transport.Transport
-	keys        *crypto.KeySet
+	ln   transport.Transport
+	keys interface {
+		SealInto([]byte, []byte, []byte) ([]byte, error)
+		OpenInto([]byte, []byte, []byte) ([]byte, error)
+	}
 	pair        *tunnelcore.SessionPair
 	conn        *muxconn.Conn
 	controlConn *muxconn.Conn
@@ -92,7 +95,8 @@ type Config struct {
 	Provider         string
 	RoomURL          string
 	ChannelID        string
-	KeyHex           string
+	KeyHex           string   // deprecated, use KeysHex
+	KeysHex          []string // list of encryption keys
 	LocalAddr        string
 	DNSServer        string
 	Resolver         *net.Resolver
@@ -128,7 +132,14 @@ func RunWithReady(ctx context.Context, cfg Config, onReady func()) error {
 func RunWithAddress(ctx context.Context, cfg Config, onReady func(actualAddr string)) error {
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	keys, err := tunnelcore.SetupKeySet(cfg.KeyHex, crypto.Client)
+
+	// Build list of keys: prefer KeysHex if provided, fall back to KeyHex for backward compatibility
+	keyHexes := cfg.KeysHex
+	if len(keyHexes) == 0 && cfg.KeyHex != "" {
+		keyHexes = []string{cfg.KeyHex}
+	}
+
+	keys, err := tunnelcore.SetupMultiKeySet(keyHexes, crypto.Client)
 	if err != nil {
 		return fmt.Errorf("setup key set: %w", err)
 	}

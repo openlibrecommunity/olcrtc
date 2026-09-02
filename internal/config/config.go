@@ -93,10 +93,12 @@ type Room struct {
 	Channel string `yaml:"channel"`
 }
 
-// Crypto holds the shared secret used to authenticate and encrypt the tunnel.
+// Crypto holds the shared secret(s) used to authenticate and encrypt the tunnel.
 type Crypto struct {
-	Key     string `yaml:"key"`      // 64-char hex (32 bytes)
-	KeyFile string `yaml:"key_file"` // path to a file containing crypto.key
+	Key      string   `yaml:"key"`       // 64-char hex (32 bytes) - deprecated, use keys
+	KeyFile  string   `yaml:"key_file"`  // path to a file containing crypto.key - deprecated, use keys_file
+	Keys     []string `yaml:"keys"`      // list of 64-char hex keys (32 bytes each)
+	KeysFile string   `yaml:"keys_file"` // path to a file containing multiple keys (one per line)
 }
 
 // Net groups network and transport selection.
@@ -216,35 +218,88 @@ func Load(path string) (File, error) {
 }
 
 func loadExternalSecrets(configPath string, file *File) error {
-	key, err := resolveKey(configPath, file.Crypto)
+	keys, err := resolveKeys(configPath, file.Crypto)
 	if err != nil {
 		return err
 	}
 
-	file.Crypto.Key = key
+	file.Crypto.Keys = keys
 
 	for i := range file.Profiles {
-		key, err := resolveKey(configPath, file.Profiles[i].Crypto)
+		keys, err := resolveKeys(configPath, file.Profiles[i].Crypto)
 		if err != nil {
 			return fmt.Errorf("profiles[%d]: %w", i, err)
 		}
 
-		file.Profiles[i].Crypto.Key = key
+		file.Profiles[i].Crypto.Keys = keys
 	}
 
 	return nil
 }
 
-func resolveKey(configPath string, crypto Crypto) (string, error) {
-	if crypto.KeyFile == "" {
-		return crypto.Key, nil
+func resolveKeys(configPath string, crypto Crypto) ([]string, error) {
+	// Handle new keys/keys_file
+	if len(crypto.Keys) > 0 {
+		if crypto.KeysFile != "" {
+			return nil, errors.New("crypto.keys and crypto.keys_file cannot both be set")
+		}
+		return crypto.Keys, nil
+	}
+
+	if crypto.KeysFile != "" {
+		return readKeysFile(configPath, crypto.KeysFile)
+	}
+
+	// Handle legacy key/key_file for backward compatibility
+	if crypto.KeyFile != "" && crypto.Key != "" {
+		return nil, ErrCryptoKeyConflict
+	}
+
+	if crypto.KeyFile != "" {
+		key, err := readKeyFile(configPath, crypto.KeyFile)
+		if err != nil {
+			return nil, err
+		}
+		return []string{key}, nil
 	}
 
 	if crypto.Key != "" {
-		return "", ErrCryptoKeyConflict
+		return []string{crypto.Key}, nil
 	}
 
-	return readKeyFile(configPath, crypto.KeyFile)
+	return []string{}, nil
+}
+
+func readKeysFile(configPath, keysFile string) ([]string, error) {
+	keysPath := keysFile
+	if !filepath.IsAbs(keysPath) {
+		keysPath = filepath.Join(filepath.Dir(configPath), keysPath)
+	}
+
+	// #nosec G304 -- keys_file is an explicit path in the user's config file.
+	data, err := os.ReadFile(keysPath)
+	if err != nil {
+		return nil, fmt.Errorf("read crypto keys file %s: %w", keysPath, err)
+	}
+
+	if len(data) == 0 {
+		return nil, ErrCryptoKeyFileEmpty
+	}
+
+	var keys []string
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		keys = append(keys, line)
+	}
+
+	if len(keys) == 0 {
+		return nil, ErrCryptoKeyFileEmpty
+	}
+
+	return keys, nil
 }
 
 func readKeyFile(configPath, keyFile string) (string, error) {
@@ -296,7 +351,17 @@ func ApplySettings(dst session.Config, s Settings) session.Config {
 
 	dst.RoomID = overlay(dst.RoomID, s.Room.ID)
 	dst.ChannelID = overlay(dst.ChannelID, s.Room.Channel)
-	dst.KeyHex = overlay(dst.KeyHex, s.Crypto.Key)
+
+	// Handle new Keys list, fall back to single Key for backward compatibility
+	if len(s.Crypto.Keys) > 0 {
+		dst.KeysHex = s.Crypto.Keys
+	} else if s.Crypto.Key != "" {
+		dst.KeysHex = []string{s.Crypto.Key}
+	}
+	// Also populate legacy KeyHex field with the first key for backward compatibility
+	if len(dst.KeysHex) > 0 {
+		dst.KeyHex = dst.KeysHex[0]
+	}
 
 	dst.SOCKSHost = overlay(dst.SOCKSHost, s.SOCKS.Host)
 	dst.SOCKSPort = overlay(dst.SOCKSPort, s.SOCKS.Port)

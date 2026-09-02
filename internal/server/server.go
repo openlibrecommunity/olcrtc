@@ -47,9 +47,12 @@ type Server struct {
 	baseCtx context.Context //nolint:containedctx // server-lifetime context for reconnect goroutines
 	ln      transport.Transport
 	peerLn  transport.PeerTransport
-	keys    *crypto.KeySet
-	pair    *tunnelcore.SessionPair
-	conn    *muxconn.Conn
+	keys    interface {
+		SealInto([]byte, []byte, []byte) ([]byte, error)
+		OpenInto([]byte, []byte, []byte) ([]byte, error)
+	}
+	pair *tunnelcore.SessionPair
+	conn *muxconn.Conn
 
 	controlConn *muxconn.Conn
 	session     *smux.Session
@@ -91,7 +94,8 @@ type Config struct {
 	Provider         string
 	RoomURL          string
 	ChannelID        string
-	KeyHex           string
+	KeyHex           string   // deprecated, use KeysHex
+	KeysHex          []string // list of encryption keys
 	DNSServer        string
 	Resolver         *net.Resolver
 	SOCKSProxyAddr   string
@@ -116,7 +120,14 @@ type Config struct {
 func Run(ctx context.Context, cfg Config) error {
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	keys, err := tunnelcore.SetupKeySet(cfg.KeyHex, crypto.Server)
+
+	// Build list of keys: prefer KeysHex if provided, fall back to KeyHex for backward compatibility
+	keyHexes := cfg.KeysHex
+	if len(keyHexes) == 0 && cfg.KeyHex != "" {
+		keyHexes = []string{cfg.KeyHex}
+	}
+
+	keys, err := tunnelcore.SetupMultiKeySet(keyHexes, crypto.Server)
 	if err != nil {
 		return fmt.Errorf("setup key set: %w", err)
 	}
