@@ -60,6 +60,8 @@ var (
 	errServerExitedBeforeClientStart = errors.New("server exited cleanly before client start")
 	errClientExitedBeforeReady       = errors.New("client exited cleanly before ready")
 	errServerExitedBeforeClientReady = errors.New("server exited cleanly before client ready")
+
+	errRealE2ENotEstablished = errors.New("tunnel not established")
 )
 
 var (
@@ -119,6 +121,21 @@ const (
 	// not fail the test either way. Use this sparingly - prefer
 	// ExpectPass / ExpectFail when the behaviour is deterministic.
 	realE2EExpectUnstable
+)
+
+// ai-generated: this whole const block, the retry bounds.
+const (
+	// realE2ECaseAttempts bounds attempts for one provider×transport case.
+	realE2ECaseAttempts = 3
+	// realE2ERetryBudget bounds retries across the whole matrix. Retries
+	// are meant for an isolated flap; when a provider is simply down every
+	// case fails the same way, and retrying each one only multiplies the
+	// job's runtime before it reports the same result.
+	realE2ERetryBudget = 4
+	// realE2ERetryDelay is multiplied by the attempt number. An SFU that is
+	// shedding load stays that way for tens of seconds, so a fixed short
+	// pause tends to buy a second attempt into the same bad window.
+	realE2ERetryDelay = 5 * time.Second
 )
 
 // memoryStream is registered as an engine.Session directly: it implements
@@ -746,6 +763,75 @@ func logUnstableOutcome(t *testing.T, label, providerName, transportName string,
 		return
 	}
 	t.Logf("%s FAIL %s/%s: %v", label, providerName, transportName, err)
+}
+
+// ai-generated: new table test for shouldRetryRealE2ECase.
+func TestShouldRetryRealE2ECase(t *testing.T) {
+	preReady := fmt.Errorf("%w: %w", errRealE2ENotEstablished,
+		errors.New("client exited before ready: handshake: read hdr: timeout"))
+	postReady := fmt.Errorf("read real e2e echo: %w", errRealE2EEchoMismatch)
+
+	tests := []struct {
+		name        string
+		err         error
+		expectation realE2EExpectation
+		want        bool
+	}{
+		{
+			name:        "provider setup timeout on a case that must pass is retried",
+			err:         preReady,
+			expectation: realE2EExpectPass,
+			want:        true,
+		},
+		{
+			name:        "success is not retried",
+			err:         nil,
+			expectation: realE2EExpectPass,
+			want:        false,
+		},
+		{
+			name:        "failure after the tunnel is up is ours, not retried",
+			err:         postReady,
+			expectation: realE2EExpectPass,
+			want:        false,
+		},
+		{
+			// Providers report an auth API timeout as ErrAuthFailed, and
+			// the matrix skips the provider on it, so this is worth a
+			// second attempt rather than a silent skip.
+			name:        "auth failure before ready is retried",
+			err:         fmt.Errorf("%w: %w", errRealE2ENotEstablished, enginebuiltin.ErrAuthFailed),
+			expectation: realE2EExpectPass,
+			want:        true,
+		},
+		{
+			name:        "auth failure on a case expected to fail is not retried",
+			err:         fmt.Errorf("%w: %w", errRealE2ENotEstablished, enginebuiltin.ErrAuthFailed),
+			expectation: realE2EExpectFail,
+			want:        false,
+		},
+		{
+			name:        "expected failure is the point of the case, not retried",
+			err:         preReady,
+			expectation: realE2EExpectFail,
+			want:        false,
+		},
+		{
+			name:        "unstable combos are recorded either way, not retried",
+			err:         preReady,
+			expectation: realE2EExpectUnstable,
+			want:        false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := shouldRetryRealE2ECase(tt.err, tt.expectation); got != tt.want {
+				t.Fatalf("shouldRetryRealE2ECase(%v, %v) = %v, want %v",
+					tt.err, tt.expectation, got, tt.want)
+			}
+		})
+	}
 }
 
 func TestRealE2ECaseExpectation(t *testing.T) {
@@ -1385,6 +1471,9 @@ func TestRealProviderTransportMatrix(t *testing.T) {
 	}
 
 	echoAddr := startEchoServer(t)
+	// ai-generated: added retryBudget and switched the call below to
+	// runRealE2ECaseWithRetry.
+	retryBudget := realE2ERetryBudget
 	for _, providerName := range providers {
 		t.Run(providerName, func(t *testing.T) {
 			roomCtx, cancelRoom := context.WithTimeout(context.Background(), *realE2ETimeout)
@@ -1398,7 +1487,9 @@ func TestRealProviderTransportMatrix(t *testing.T) {
 					}
 					expectation := realE2ECaseExpectation(providerName, transportName)
 					label := realE2EExpectationLabel(expectation)
-					err := runRealE2ECase(t, providerName, transportName, roomURL, echoAddr)
+					err := runRealE2ECaseWithRetry(
+						t, providerName, transportName, roomURL, echoAddr, expectation, &retryBudget,
+					)
 					if err != nil && errors.Is(err, enginebuiltin.ErrAuthFailed) {
 						authFailed = true
 						t.Skipf("skip %s real e2e: auth failed: %v", providerName, err)
@@ -1421,6 +1512,52 @@ func TestRealProviderTransportMatrix(t *testing.T) {
 	}
 }
 
+// shouldRetryRealE2ECase reports whether a failed case deserves another
+// attempt. Only the phase before the tunnel is ready goes through the live
+// provider, so only that phase is retried, and only where the case is meant
+// to pass: elsewhere a failure is either the point of the case or a defect of
+// ours, and repeating it would just cost time and hide the result.
+//
+// ai-generated: new function, the whole predicate.
+// Auth failures are retried along with the rest. They are not the
+// credential errors the name suggests: the providers reach their auth API
+// over the network, and a plain HTTP timeout there surfaces as
+// ErrAuthFailed, which the matrix turns into a skip of the whole provider.
+// Retrying gives such a case a chance to report a real result instead.
+func shouldRetryRealE2ECase(err error, expectation realE2EExpectation) bool {
+	if err == nil || expectation != realE2EExpectPass {
+		return false
+	}
+	return errors.Is(err, errRealE2ENotEstablished)
+}
+
+// runRealE2ECaseWithRetry runs a case, retrying only provider-side setup
+// failures. budget is shared across the matrix; see realE2ERetryBudget.
+//
+// ai-generated: new function; it wraps the existing runRealE2ECase call site.
+func runRealE2ECaseWithRetry(
+	t *testing.T,
+	providerName, transportName, roomURL, echoAddr string,
+	expectation realE2EExpectation,
+	budget *int,
+) error {
+	t.Helper()
+
+	err := runRealE2ECase(t, providerName, transportName, roomURL, echoAddr)
+	for attempt := 2; attempt <= realE2ECaseAttempts; attempt++ {
+		if !shouldRetryRealE2ECase(err, expectation) || *budget <= 0 {
+			return err
+		}
+		*budget--
+		delay := time.Duration(attempt-1) * realE2ERetryDelay
+		t.Logf("RETRY %d/%d %s/%s in %s, %d left in budget: %v",
+			attempt, realE2ECaseAttempts, providerName, transportName, delay, *budget, err)
+		time.Sleep(delay)
+		err = runRealE2ECase(t, providerName, transportName, roomURL, echoAddr)
+	}
+	return err
+}
+
 func runRealE2ECase(t *testing.T, providerName, transportName, roomURL, echoAddr string) (err error) {
 	t.Helper()
 
@@ -1429,7 +1566,7 @@ func runRealE2ECase(t *testing.T, providerName, transportName, roomURL, echoAddr
 
 	rt, err := startRealTunnel(ctx, t, providerName, transportName, roomURL, testClientDeviceID, testClientDeviceID)
 	if err != nil {
-		return err
+		return fmt.Errorf("%w: %w", errRealE2ENotEstablished, err)
 	}
 	defer func() {
 		if stopErr := rt.stopErr(); err == nil && stopErr != nil {
