@@ -431,6 +431,8 @@ echo ""
 echo "[*] Cleaning workspace..."
 rm -rf "$WORK_DIR"
 mkdir -p "$WORK_DIR"
+# ai-generated: resolve workspace symlinks for Podman mounts on macOS.
+WORK_DIR=$(cd "$WORK_DIR" && pwd -P)
 
 CACHE_DIR="${OLCRTC_CACHE_DIR:-$HOME/.cache/olcrtc}"
 GOMOD_CACHE="$CACHE_DIR/gomod"
