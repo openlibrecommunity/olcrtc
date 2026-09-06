@@ -8,12 +8,14 @@ import (
 	"net"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/xtaci/smux"
 
 	"github.com/openlibrecommunity/olcrtc/internal/control"
 	"github.com/openlibrecommunity/olcrtc/internal/crypto"
 	"github.com/openlibrecommunity/olcrtc/internal/handshake"
+	"github.com/openlibrecommunity/olcrtc/internal/logger"
 	"github.com/openlibrecommunity/olcrtc/internal/muxconn"
 	"github.com/openlibrecommunity/olcrtc/internal/runtime"
 	"github.com/openlibrecommunity/olcrtc/internal/transport"
@@ -21,6 +23,13 @@ import (
 )
 
 const connectCommand = "connect"
+
+// gracefulCloseTimeout bounds how long shutdown waits for the peer close
+// notifications to reach the wire before it tears the transport down anyway.
+// One peer costs a write plus a short flush wait, so this only has to cover a
+// handful of them; a link too congested to drain in that time was not going to
+// deliver the notification at all.
+const gracefulCloseTimeout = 3 * time.Second
 
 var (
 	ErrKeyRequired         = runtime.ErrKeyRequired
@@ -116,6 +125,15 @@ type Config struct {
 func Run(ctx context.Context, cfg Config) error {
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	// The link and the control loops run on their own context, cancelled only
+	// once the goodbyes are out. control.Run closes its stream as soon as its
+	// context is done, so hanging the control loops off runCtx meant the signal
+	// that starts a graceful shutdown also slammed shut the very stream the
+	// closing notification has to be written to - the write failed with
+	// io.ErrClosedPipe every time and peers were left to discover the retired
+	// room through missed liveness pongs instead of switching immediately.
+	sessCtx, sessCancel := context.WithCancel(context.WithoutCancel(ctx))
+	defer sessCancel()
 	keys, err := tunnelcore.SetupKeySet(cfg.KeyHex, crypto.Server)
 	if err != nil {
 		return fmt.Errorf("setup key set: %w", err)
@@ -149,13 +167,33 @@ func Run(ctx context.Context, cfg Config) error {
 		s.shutdown()
 		s.wg.Wait()
 	}()
-	if err := s.bringUpLink(runCtx, cfg, cancel); err != nil {
+	if err := s.bringUpLink(sessCtx, cfg, cancel); err != nil {
 		return err
 	}
+	// closeSession tells every peer we are leaving, and that notification is a
+	// frame written INTO the tunnel: NotifyControlClose writes it and waits for
+	// the link to drain. The deferred shutdown above closes the transport, so
+	// letting it run concurrently drops exactly the frame that lets a client
+	// fail over to its warm standby immediately - it is left to discover the
+	// retired room the slow way, through missed liveness pongs. Wait for the
+	// notifications to reach the wire first, bounded so a wedged link cannot
+	// hang shutdown.
+	notified := make(chan struct{})
 	go func() {
+		defer close(notified)
 		<-runCtx.Done()
 		s.closeSession()
 	}()
 	s.serve(runCtx)
+	// serve can also return without the context being cancelled (a dead link);
+	// cancel so the notifier is always released.
+	cancel()
+	select {
+	case <-notified:
+	case <-time.After(gracefulCloseTimeout):
+		logger.Warnf("server shutdown: peer close notifications still pending after %s", gracefulCloseTimeout)
+	}
+	// Goodbyes are out (or timed out): the control loops may go now.
+	sessCancel()
 	return nil
 }
