@@ -61,6 +61,11 @@ type HealthStatus = control.Status
 // HealthFunc is called when the control-stream health snapshot changes.
 type HealthFunc func(HealthStatus)
 
+// SessionOpenFunc is called each time a tunnel session is established - on the
+// initial connect and after every reconnect - with the server-assigned session
+// id. It runs on the connect path and must return promptly.
+type SessionOpenFunc func(sessionID string)
+
 // LivenessConfig controls control-stream ping and pong checks.
 type LivenessConfig struct {
 	Interval time.Duration
@@ -98,6 +103,7 @@ type Config struct {
 	DeviceIDPath     string
 	Claims           map[string]any
 	OnHealth         HealthFunc
+	OnSessionOpen    SessionOpenFunc
 }
 
 type runner func(context.Context, internalclient.Config, func(string)) error
@@ -150,7 +156,8 @@ func toClientConfig(cfg Config) internalclient.Config {
 			MinDelay:       cfg.Traffic.MinDelay, MaxDelay: cfg.Traffic.MaxDelay,
 		},
 		DeviceID: cfg.DeviceID, DeviceIDPath: cfg.DeviceIDPath, Claims: cfg.Claims,
-		OnHealth: internalclient.HealthFunc(cfg.OnHealth),
+		OnHealth:      internalclient.HealthFunc(cfg.OnHealth),
+		OnSessionOpen: internalclient.SessionOpenFunc(cfg.OnSessionOpen),
 	}
 }
 
