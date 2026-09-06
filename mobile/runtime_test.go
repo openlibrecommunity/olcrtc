@@ -104,13 +104,19 @@ func TestTimeoutConversionDoesNotOverflow(t *testing.T) {
 
 func TestStopTimeoutKeepsStoppingState(t *testing.T) {
 	release := make(chan struct{})
+	started := make(chan struct{})
 	runtime := configuredRuntime(t, func(context.Context, client.Config, func(string)) error {
+		close(started)
 		<-release
 		return nil
 	})
 	if err := runtime.Start(); err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
+	// Stop has to find the runner ALIVE for this test to mean anything. A stop
+	// that lands before the session starts is honoured without running it at
+	// all - and then there is nothing to time out on.
+	<-started
 	if err := runtime.Stop(1); !errors.Is(err, ErrStopTimeout) {
 		t.Fatalf("Stop() error = %v, want %v", err, ErrStopTimeout)
 	}
@@ -145,11 +151,15 @@ func TestRapidRestartUsesNewGenerations(t *testing.T) {
 func TestStaleWaiterCannotObserveRestart(t *testing.T) {
 	var calls int
 	var callsMu sync.Mutex
+	firstStarted := make(chan struct{})
 	runtime := configuredRuntime(t, func(ctx context.Context, _ client.Config, onReady func(string)) error {
 		callsMu.Lock()
 		calls++
 		call := calls
 		callsMu.Unlock()
+		if call == 1 {
+			close(firstStarted)
+		}
 		if call > 1 {
 			onReady("127.0.0.1:1080")
 		}
@@ -159,6 +169,10 @@ func TestStaleWaiterCannotObserveRestart(t *testing.T) {
 	if err := runtime.Start(); err != nil {
 		t.Fatalf("first Start() error = %v", err)
 	}
+	// The first session must actually be running before it is stopped. A stop
+	// that lands first is honoured without a run, and the call count the runner
+	// keys its behaviour on would then be off by one.
+	<-firstStarted
 	runtime.mu.Lock()
 	first := runtime.current
 	runtime.mu.Unlock()
@@ -251,5 +265,116 @@ func TestWaitReadyAfterStop(t *testing.T) {
 	}
 	if state := runtime.State(); state != "stopped" {
 		t.Fatalf("State() = %q, want stopped", state)
+	}
+}
+
+// A retired primary must not strand the client: the standby delivered
+// alongside it is tried next. This is the whole point of the failover list.
+func TestFailoverAdvancesToNextRoomWhenTheFirstEnds(t *testing.T) {
+	prev := failoverRetryDelay
+	failoverRetryDelay = 10 * time.Millisecond
+	t.Cleanup(func() { failoverRetryDelay = prev })
+
+	const standby = "https://meet.example.org/standby"
+	var seenMu sync.Mutex
+	var seen []string
+	runtime := configuredRuntime(t, func(ctx context.Context, cfg client.Config, onReady func(string)) error {
+		seenMu.Lock()
+		seen = append(seen, cfg.RoomURL)
+		seenMu.Unlock()
+		if cfg.RoomURL == testRoom {
+			return errTestRun // the primary is gone - what a retired room looks like
+		}
+		onReady("127.0.0.1:1080")
+		<-ctx.Done()
+		return ctx.Err()
+	})
+	if err := runtime.AddFailoverRoom(standby); err != nil {
+		t.Fatalf("AddFailoverRoom() error = %v", err)
+	}
+	if err := runtime.Start(); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	if err := runtime.WaitReady(2000); err != nil {
+		t.Fatalf("WaitReady() error = %v, want the standby to come up", err)
+	}
+	seenMu.Lock()
+	got := append([]string(nil), seen...)
+	seenMu.Unlock()
+	if len(got) != 2 || got[0] != testRoom || got[1] != standby {
+		t.Fatalf("rooms tried = %v, want [%s %s]", got, testRoom, standby)
+	}
+	if err := runtime.Stop(100); err != nil {
+		t.Fatalf("Stop() error = %v", err)
+	}
+}
+
+// A room delivered while a session is live - as a subscription refresh does -
+// is used at the next hop, without a restart. Without this the list a client
+// starts with is the only list it ever has.
+func TestRoomsAddedDuringASessionAreUsedAtTheNextHop(t *testing.T) {
+	prev := failoverRetryDelay
+	failoverRetryDelay = 10 * time.Millisecond
+	t.Cleanup(func() { failoverRetryDelay = prev })
+
+	const standby = "https://meet.example.org/standby"
+	retirePrimary := make(chan struct{})
+	standbyRunning := make(chan struct{})
+	runtime := configuredRuntime(t, func(ctx context.Context, cfg client.Config, onReady func(string)) error {
+		onReady("127.0.0.1:1080")
+		if cfg.RoomURL == testRoom {
+			<-retirePrimary // the server retires it while we sit in it
+			return nil
+		}
+		close(standbyRunning)
+		<-ctx.Done()
+		return ctx.Err()
+	})
+	if err := runtime.Start(); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	if err := runtime.WaitReady(100); err != nil {
+		t.Fatalf("WaitReady() error = %v", err)
+	}
+	if err := runtime.AddFailoverRoom(standby); err != nil {
+		t.Fatalf("AddFailoverRoom() error = %v", err)
+	}
+	close(retirePrimary)
+	select {
+	case <-standbyRunning:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the room added mid-session was never tried")
+	}
+	if runtime.State() != "running" {
+		t.Fatalf("State() = %q after the hop, want running", runtime.State())
+	}
+	if err := runtime.Stop(100); err != nil {
+		t.Fatalf("Stop() error = %v", err)
+	}
+}
+
+func TestFailoverRoomListIsOrderedAndDeduplicated(t *testing.T) {
+	runtime := configuredRuntime(t, blockingReadyRunner)
+	if err := runtime.AddFailoverRoom("  "); !errors.Is(err, ErrInvalidConfig) {
+		t.Fatalf("blank AddFailoverRoom() error = %v, want %v", err, ErrInvalidConfig)
+	}
+	for _, room := range []string{"b", testRoom, "a", "b"} {
+		if err := runtime.AddFailoverRoom(room); err != nil {
+			t.Fatalf("AddFailoverRoom(%q) error = %v", room, err)
+		}
+	}
+	want := []string{testRoom, "b", "a"}
+	got := runtime.defaults.rooms()
+	if len(got) != len(want) {
+		t.Fatalf("rooms() = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("rooms() = %v, want %v", got, want)
+		}
+	}
+	runtime.ClearFailoverRooms()
+	if got := runtime.defaults.rooms(); len(got) != 1 || got[0] != testRoom {
+		t.Fatalf("rooms() after clear = %v, want [%s]", got, testRoom)
 	}
 }
