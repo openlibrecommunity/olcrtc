@@ -286,7 +286,14 @@ func (c *Client) retryHandshake(ctx context.Context, cfg Config, cancel context.
 			return
 		}
 		if maxAttempts > 0 && attempt >= maxAttempts {
-			logger.Warnf("client reconnect: exhausted %d handshake attempts (reason=%s) - keeping listener up", attempt, reason)
+			// The current room is unreachable (its srv was torn down by a rotation).
+			// A killed-srv rotation looks like a peer-gone / liveness death, NOT a
+			// "conference ended", so SetEndedCallback never fires and the session
+			// would otherwise sit here forever with the listener up. End the session
+			// ourselves - exactly what EndedCallback does - so the supervisor
+			// advances to the next failover room (re-reading the dynamic room list).
+			logger.Warnf("client reconnect: exhausted %d handshake attempts (reason=%s) - ending session so supervisor fails over", attempt, reason)
+			cancel()
 			return
 		}
 		select {
@@ -373,6 +380,8 @@ func (c *Client) tryReopenSession(
 }
 
 func (c *Client) installPairLocked(pair *tunnelcore.SessionPair) {
+	// A new session may be a different exit, so re-probe its IPv6 support.
+	c.peerNoIPv6.Store(false)
 	c.pair = pair
 	c.conn = pair.DataConn
 	c.controlConn = pair.ControlConn
