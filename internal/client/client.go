@@ -80,11 +80,27 @@ type Client struct {
 	socksClosed      bool
 	livenessFallback time.Duration
 	shutdownGrace    time.Duration
+	onSessionOpen    SessionOpenFunc
 	fallbackPending  atomic.Bool
+
+	// peerNoIPv6 latches once the exit answers "host unreachable" for an IPv6
+	// literal. On a dual-stack machine the OS fires IPv6 first for nearly every
+	// connection, so against an IPv4-only exit that is the bulk of all traffic:
+	// each attempt otherwise costs a stream open plus a full round trip over a
+	// tunnel whose capacity is orders of magnitude below a local socket, and it
+	// can never succeed. Latched, the same connections are refused locally and
+	// Happy Eyeballs falls back to IPv4 immediately. Cleared per session because
+	// a different exit may have IPv6.
+	peerNoIPv6 atomic.Bool
 }
 
 // HealthFunc is called when the client control health snapshot changes.
 type HealthFunc func(control.Status)
+
+// SessionOpenFunc is called each time a tunnel session is established - on the
+// initial connect and after every reconnect - with the server-assigned session
+// id. It runs on the connect path, so it must return promptly.
+type SessionOpenFunc func(sessionID string)
 
 // Config holds runtime configuration for [Run], [RunWithReady], and [RunWithAddress].
 type Config struct {
@@ -109,6 +125,7 @@ type Config struct {
 	DeviceIDPath     string
 	Claims           map[string]any
 	OnHealth         HealthFunc
+	OnSessionOpen    SessionOpenFunc
 }
 
 // Run starts the client with the given configuration.
@@ -140,6 +157,7 @@ func RunWithAddress(ctx context.Context, cfg Config, onReady func(actualAddr str
 		keys: keys, deviceID: deviceID, claims: cfg.Claims, dnsServer: cfg.DNSServer,
 		socksUser: cfg.SOCKSUser, socksPass: cfg.SOCKSPass,
 		health: runtime.NewHealthTracker(cfg.OnHealth), sessionReady: make(chan struct{}),
+		onSessionOpen: cfg.OnSessionOpen,
 	}
 	defer func() {
 		cancel()

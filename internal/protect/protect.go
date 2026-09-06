@@ -60,6 +60,15 @@ func HasProtector() bool {
 }
 
 func controlFunc(network, _ string, c syscall.RawConn) error {
+	// Keeping our own traffic off the tunnel is per-platform. Android hands the
+	// socket to VpnService.protect below; desktop platforms pin the outgoing
+	// interface instead. Without one of the two, "protected" sockets follow the
+	// default route straight into the TUN we just installed - which is how a
+	// client that had to re-join a room ended up asking the provider's API for
+	// the new room THROUGH the tunnel it no longer had.
+	if err := bindOutgoingInterface(network, c); err != nil {
+		return err
+	}
 	current := protector.Load()
 	if current == nil {
 		return nil

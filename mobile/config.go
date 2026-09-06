@@ -49,6 +49,10 @@ type runtimeConfig struct {
 	provider      string
 	transport     string
 	roomURL       string
+	// Extra rooms the client may move to when the one it is in ends; the
+	// primary in roomURL always comes first. Mirrors the desktop client's
+	// failover profile list, and may grow while a session is live.
+	failoverRooms []string
 	channelID     string
 	keyHex        string
 	dnsServer     string
@@ -127,6 +131,57 @@ func (r *Runtime) SetRoom(roomURL string) error {
 	r.defaults.roomURL = roomURL
 	r.mu.Unlock()
 	return nil
+}
+
+// AddFailoverRoom appends a room the client may move to when the one it is in
+// ends. The primary set with SetRoom always comes first; extras follow in the
+// order added, which is the same shape the desktop client derives from its
+// `##rooms` subscription header. Safe to call while running: the supervisor
+// re-reads the list at every hop, which is how a server hands a connected
+// client its next room without a restart.
+func (r *Runtime) AddFailoverRoom(roomURL string) error {
+	roomURL = strings.TrimSpace(roomURL)
+	if roomURL == "" {
+		return fmt.Errorf("%w: failover room is required", ErrInvalidConfig)
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if roomURL == r.defaults.roomURL || containsRoom(r.defaults.failoverRooms, roomURL) {
+		return nil
+	}
+	r.defaults.failoverRooms = append(r.defaults.failoverRooms, roomURL)
+	return nil
+}
+
+// ClearFailoverRooms drops every extra room, keeping the primary.
+func (r *Runtime) ClearFailoverRooms() {
+	r.mu.Lock()
+	r.defaults.failoverRooms = nil
+	r.mu.Unlock()
+}
+
+// rooms is the ordered, de-duplicated room list: the primary, then the extras.
+// The primary is always present, so a configuration with no room at all (the
+// "none" provider) still yields exactly one profile, as it did before failover.
+func (cfg runtimeConfig) rooms() []string {
+	out := make([]string, 0, 1+len(cfg.failoverRooms))
+	out = append(out, cfg.roomURL)
+	for _, room := range cfg.failoverRooms {
+		if room == "" || containsRoom(out, room) {
+			continue
+		}
+		out = append(out, room)
+	}
+	return out
+}
+
+func containsRoom(rooms []string, room string) bool {
+	for _, candidate := range rooms {
+		if candidate == room {
+			return true
+		}
+	}
+	return false
 }
 
 // SetChannel sets the optional peer-routing channel ID.

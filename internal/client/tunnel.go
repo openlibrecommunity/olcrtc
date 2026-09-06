@@ -33,6 +33,7 @@ func (c *Client) tunnel(
 	logger.Infof("sid=%d tunnel to %s:%d", stream.ID(), targetAddr, targetPort)
 	if err := c.sendConnectRequest(stream, targetAddr, targetPort); err != nil {
 		logger.Warnf("sid=%d connect failed: %v", stream.ID(), err)
+		c.noteConnectFailure(err, targetAddr)
 		_, _ = conn.Write(replyForConnectError(err, targetAddr))
 		return
 	}
@@ -64,6 +65,22 @@ func (c *Client) sendConnectRequest(stream *smux.Stream, targetAddr string, targ
 		return &connectAckError{code: ack[0], streamID: stream.ID()}
 	}
 	return nil
+}
+
+// noteConnectFailure latches the exit's lack of IPv6 the first time it refuses
+// an IPv6 literal as unreachable, so the rest of the session stops spending
+// tunnel streams on address family the exit cannot route at all.
+func (c *Client) noteConnectFailure(err error, targetAddr string) {
+	var ackErr *connectAckError
+	if !errors.As(err, &ackErr) || ackErr.code != socksRepHostUnreachable {
+		return
+	}
+	if !isIPv6Literal(targetAddr) {
+		return
+	}
+	if c.peerNoIPv6.CompareAndSwap(false, true) {
+		logger.Infof("exit reports no IPv6 route (%s unreachable) - refusing further IPv6 targets locally", targetAddr)
+	}
 }
 
 type connectAckError struct {

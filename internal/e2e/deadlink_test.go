@@ -68,6 +68,11 @@ func TestDeadLinkDetectionWindow(t *testing.T) {
 		}
 	}
 
+	// The session-open callback is the mobile host's view of this same event: it
+	// must fire for the initial session and again for the reconnected one.
+	var sessionOpens atomic.Int32
+	onSessionOpen := func(string) { sessionOpens.Add(1) }
+
 	serverErr := make(chan error, 1)
 	go func() {
 		serverErr <- server.Run(ctx, server.Config{
@@ -84,14 +89,15 @@ func TestDeadLinkDetectionWindow(t *testing.T) {
 	clientErr := make(chan error, 1)
 	go func() {
 		clientErr <- client.RunWithReady(ctx, client.Config{
-			Transport: transportName,
-			Provider:  providerName,
-			RoomURL:   testRoom,
-			KeyHex:    testKeyHex,
-			DeviceID:  testClientDeviceID,
-			LocalAddr: socksAddr,
-			DNSServer: localDNSServer,
-			OnHealth:  onHealth,
+			Transport:     transportName,
+			Provider:      providerName,
+			RoomURL:       testRoom,
+			KeyHex:        testKeyHex,
+			DeviceID:      testClientDeviceID,
+			LocalAddr:     socksAddr,
+			DNSServer:     localDNSServer,
+			OnHealth:      onHealth,
+			OnSessionOpen: onSessionOpen,
 		}, func() { close(ready) })
 	}()
 	waitForReadyWithin(t, ready, setupBudget)
@@ -116,5 +122,13 @@ func TestDeadLinkDetectionWindow(t *testing.T) {
 	case <-time.After(detectionBudget):
 		t.Fatalf("dead link NOT detected within %s (regression: client treats dead provider as alive)",
 			detectionBudget)
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	for sessionOpens.Load() < 2 && time.Now().Before(deadline) {
+		time.Sleep(50 * time.Millisecond)
+	}
+	if got := sessionOpens.Load(); got < 2 {
+		t.Fatalf("session-open callbacks = %d, want >= 2 (initial + reconnect)", got)
 	}
 }

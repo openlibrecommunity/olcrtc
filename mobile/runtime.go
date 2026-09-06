@@ -8,6 +8,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/openlibrecommunity/olcrtc/internal/app/session"
+	"github.com/openlibrecommunity/olcrtc/internal/supervisor"
 	"github.com/openlibrecommunity/olcrtc/pkg/olcrtc/client"
 
 	_ "golang.org/x/mobile/bind"                       // keep gomobile binding dependencies reachable
@@ -64,6 +66,7 @@ type Runtime struct {
 	nextGeneration uint64
 	current        *runGeneration
 	runner         clientRunner
+	listener       SessionListener
 }
 
 // New returns an idle Runtime with documented mobile defaults.
@@ -115,10 +118,60 @@ func (r *Runtime) Start() error {
 	return nil
 }
 
+// Failover across rooms happens inside one generation, the way the desktop
+// client does it under its supervisor: when the room a session is in ends -
+// the server retired it, or it died - the next room in the list is tried, and
+// rooms added while a session was live are seen at that moment.
+//
+// What the mobile runtime deliberately does NOT do is retry forever on its own.
+// It makes one forward pass over the list, extended by whatever the host app
+// appends meanwhile, and then the generation ends with an error. The host app
+// already owns a retry loop, and it re-evaluates the upstream network between
+// attempts - on a phone that is the part that matters. A second, blind loop
+// underneath it would only hide failures from the one that can act on them.
+const failoverMaxCycles = 1
+
+// A variable rather than a constant only so tests can shorten the wait between
+// rooms; nothing in production changes it.
+//
+//nolint:gochecknoglobals // test-adjustable tunable
+var failoverRetryDelay = 2 * time.Second
+
 func (r *Runtime) run(ctx context.Context, gen *runGeneration) {
-	err := r.runner(ctx, gen.cfg, func(string) { r.markReady(gen) })
+	onReady := func(string) { r.markReady(gen) }
+	err := supervisor.Run(ctx, supervisor.Config{
+		Profiles:   r.profilesSnapshot(),
+		Reload:     func() ([]supervisor.Profile, error) { return r.profilesSnapshot(), nil },
+		RetryDelay: failoverRetryDelay,
+		MaxCycles:  failoverMaxCycles,
+	}, func(ctx context.Context, profile session.Config) error {
+		// Only the room varies between profiles. Everything else is the
+		// generation's configuration snapshot, exactly as before failover.
+		cfg := gen.cfg
+		cfg.RoomURL = profile.RoomID
+		cfg.OnSessionOpen = func(sessionID string) { r.notifySessionOpened(gen, profile.RoomID, sessionID) }
+		return r.runner(ctx, cfg, onReady)
+	})
 	gen.cancel()
 	r.finish(gen, err)
+}
+
+// profilesSnapshot is the supervisor's view of the room list: the primary
+// first, then the failover extras, each a profile carrying only its room. Read
+// under the lock, so a host app extending the list during a live session is
+// seen at the next hop rather than the next Start.
+func (r *Runtime) profilesSnapshot() []supervisor.Profile {
+	r.mu.Lock()
+	rooms := r.defaults.rooms()
+	r.mu.Unlock()
+	profiles := make([]supervisor.Profile, 0, len(rooms))
+	for _, room := range rooms {
+		profiles = append(profiles, supervisor.Profile{
+			Name:   room,
+			Config: session.Config{RoomID: room},
+		})
+	}
+	return profiles
 }
 
 func (r *Runtime) markReady(gen *runGeneration) {

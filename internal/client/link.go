@@ -99,6 +99,7 @@ func (c *Client) bringUpLink(ctx context.Context, cfg Config, cancel context.Can
 	c.sessMu.Unlock()
 	c.signalSessionReady()
 	c.health.RecordSession(sessionID)
+	c.notifySessionOpen(sessionID)
 	c.startControlLoop(ctx, cfg, cancel, control)
 	return nil
 }
@@ -286,7 +287,14 @@ func (c *Client) retryHandshake(ctx context.Context, cfg Config, cancel context.
 			return
 		}
 		if maxAttempts > 0 && attempt >= maxAttempts {
-			logger.Warnf("client reconnect: exhausted %d handshake attempts (reason=%s) - keeping listener up", attempt, reason)
+			// The current room is unreachable (its srv was torn down by a rotation).
+			// A killed-srv rotation looks like a peer-gone / liveness death, NOT a
+			// "conference ended", so SetEndedCallback never fires and the session
+			// would otherwise sit here forever with the listener up. End the session
+			// ourselves - exactly what EndedCallback does - so the supervisor
+			// advances to the next failover room (re-reading the dynamic room list).
+			logger.Warnf("client reconnect: exhausted %d handshake attempts (reason=%s) - ending session so supervisor fails over", attempt, reason)
+			cancel()
 			return
 		}
 		select {
@@ -368,11 +376,22 @@ func (c *Client) tryReopenSession(
 	c.sessMu.Unlock()
 	c.signalSessionReady()
 	c.health.RecordSession(sessionID)
+	c.notifySessionOpen(sessionID)
 	c.startControlLoop(ctx, cfg, cancel, control)
 	return true
 }
 
+// notifySessionOpen reports an established session to the host, when it asked
+// to hear about them. Both the initial connect and every reconnect land here.
+func (c *Client) notifySessionOpen(sessionID string) {
+	if c.onSessionOpen != nil {
+		c.onSessionOpen(sessionID)
+	}
+}
+
 func (c *Client) installPairLocked(pair *tunnelcore.SessionPair) {
+	// A new session may be a different exit, so re-probe its IPv6 support.
+	c.peerNoIPv6.Store(false)
 	c.pair = pair
 	c.conn = pair.DataConn
 	c.controlConn = pair.ControlConn
