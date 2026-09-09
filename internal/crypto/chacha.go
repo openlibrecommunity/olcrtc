@@ -30,7 +30,11 @@ const (
 	noncePrefixSize     = chacha20poly1305.NonceSizeX - 8
 	recordHeaderSize    = len(recordMagic) + 8 + noncePrefixSize
 	replayWindowSize    = 64
-	maxReplaySenders    = 256
+
+	// maxReplaySenders bounds the replay cache. It counts {prefix, AAD} pairs
+	// and every sender uses two AADs (data and control), so 512 entries keep
+	// the documented capacity of 256 sender prefixes.
+	maxReplaySenders = 512
 
 	// WireOverhead is magic, counter, sender prefix, and authentication tag.
 	WireOverhead = recordHeaderSize + chacha20poly1305.Overhead
