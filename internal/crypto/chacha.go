@@ -122,6 +122,8 @@ type replayCache struct {
 	lru     list.List
 }
 
+// aadTag is 64-bit FNV-1a, same parameters as hash/fnv. Written out because
+// hash/fnv allocates per call and this runs once per received record.
 func aadTag(aad []byte) uint64 {
 	const (
 		offsetBasis = 14695981039346656037
