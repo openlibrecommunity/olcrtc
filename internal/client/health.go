@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/xtaci/smux"
@@ -37,7 +38,19 @@ func (c *Client) startControlLoop(
 			c.controlLastPong.Store(time.Now())
 			c.notifyLinkHealth(false)
 		},
-		OnDeath: func(error) { c.handleReconnect(ctx, cfg, cancel, reconnectLiveness) },
+		OnDeath: func(err error) {
+			if errors.Is(err, control.ErrClosedByPeer) {
+				// The peer (srv) left ON PURPOSE: the server gracefully retired this
+				// room (a rotation). Don't hammer the now-dead room for the full
+				// liveness-fallback window - end the session immediately (same as a
+				// conference-end) so the supervisor fails over to the next room right
+				// away. A genuine drop (no graceful close) still goes the hammer path.
+				logger.Infof("control closed by peer (server retired this room) - failing over to next room now")
+				cancel()
+				return
+			}
+			c.handleReconnect(ctx, cfg, cancel, reconnectLiveness)
+		},
 	}
 	c.goTracked(func() { c.watchControlStaleness(controlCtx, pingInterval) })
 	c.goTracked(func() { runner.Run(controlCtx, stream) })

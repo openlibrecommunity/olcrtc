@@ -81,6 +81,16 @@ type Client struct {
 	livenessFallback time.Duration
 	shutdownGrace    time.Duration
 	fallbackPending  atomic.Bool
+
+	// peerNoIPv6 latches once the exit answers "host unreachable" for an IPv6
+	// literal. On a dual-stack machine the OS fires IPv6 first for nearly every
+	// connection, so against an IPv4-only exit that is the bulk of all traffic:
+	// each attempt otherwise costs a stream open plus a full round trip over a
+	// tunnel whose capacity is orders of magnitude below a local socket, and it
+	// can never succeed. Latched, the same connections are refused locally and
+	// Happy Eyeballs falls back to IPv4 immediately. Cleared per session because
+	// a different exit may have IPv6.
+	peerNoIPv6 atomic.Bool
 }
 
 // HealthFunc is called when the client control health snapshot changes.
