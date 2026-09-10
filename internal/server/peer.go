@@ -405,6 +405,7 @@ func (s *Server) startPeerControlLoop(ctx context.Context, peer *peerSession, st
 		OnDeath:   func(error) { s.removePeer(peer, "liveness") },
 	}
 	s.goTracked(func() {
+		// ai-generated: graceful close: notify the peer before teardown and surface send failures.
 		defer func() {
 			// A cancelled control context means teardown is already under way,
 			// and closePeerSession owns this stream from that point: it still
@@ -518,6 +519,7 @@ func (s *Server) closePeerSession(peer *peerSession, reason string) {
 	peer.closeOnce.Do(func() {
 		teardown := peer.closeSnapshot()
 		peer.signalReady()
+		// ai-generated: graceful close: notify the peer before teardown and surface send failures.
 		// Logged either way: on a rotation this frame is what moves the client
 		// onto its warm standby at once, and "was it even sent?" is otherwise
 		// invisible from the server side.

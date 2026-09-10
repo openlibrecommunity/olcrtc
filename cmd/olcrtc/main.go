@@ -50,6 +50,7 @@ type loadedConfig struct {
 	failover failoverConfig
 	dataDir  string
 	debug    bool
+	// ai-generated: wire supervisor.Config.Reload from the config file.
 	// reload re-reads the config file for the current failover profiles. It lets
 	// the supervisor pick up rooms added while a session was live (dynamic list).
 	reload func() ([]supervisor.Profile, error)
@@ -129,7 +130,8 @@ func loadConfig(path string) (loadedConfig, error) {
 		failover: failover,
 		dataDir:  resolveDataDir(path, file.Data),
 		debug:    file.Debug,
-		reload:   func() ([]supervisor.Profile, error) { return loadProfiles(path) },
+		// ai-generated: wire supervisor.Config.Reload from the config file.
+		reload: func() ([]supervisor.Profile, error) { return loadProfiles(path) },
 	}, nil
 }
 
@@ -138,6 +140,8 @@ func loadConfig(path string) (loadedConfig, error) {
 // bad entry does not stall a reload. Used as the supervisor's dynamic Reload
 // hook: rooms written to the config while a session was live are picked up the
 // instant that session ends, without restarting the process.
+//
+// ai-generated: this function and its doc comment.
 func loadProfiles(path string) ([]supervisor.Profile, error) {
 	file, err := configpkg.Load(path)
 	if err != nil {
@@ -196,6 +200,7 @@ func runWithConfig(cfg loadedConfig) error {
 
 	if len(cfg.profiles) > 0 {
 		profiles := prepareProfiles(cfg.profiles)
+		// ai-generated: wire supervisor.Config.Reload from the config file.
 		return runFailoverSessionMode(cfg.dataDir, profiles, cfg.failover, cfg.reload)
 	}
 
@@ -227,6 +232,7 @@ func runSessionMode(dataDir string, scfg session.Config) error {
 	})
 }
 
+// ai-generated: this function.
 func runFailoverSessionMode(
 	dataDir string,
 	profiles []supervisor.Profile,
@@ -245,7 +251,8 @@ func runFailoverSessionMode(
 
 	return runManaged(func(ctx context.Context) error {
 		return supervisor.Run(ctx, supervisor.Config{
-			Profiles:   profiles,
+			Profiles: profiles,
+			// ai-generated: wire supervisor.Config.Reload from the config file.
 			Reload:     reload,
 			RetryDelay: failover.retryDelay,
 			MaxCycles:  failover.maxCycles,

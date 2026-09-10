@@ -105,6 +105,7 @@ func TestTimeoutConversionDoesNotOverflow(t *testing.T) {
 
 func TestStopTimeoutKeepsStoppingState(t *testing.T) {
 	release := make(chan struct{})
+	// ai-generated: mobile failover room list, walked by the supervisor.
 	started := make(chan struct{})
 	runtime := configuredRuntime(t, func(context.Context, client.Config, func(string)) error {
 		close(started)
@@ -152,6 +153,7 @@ func TestRapidRestartUsesNewGenerations(t *testing.T) {
 func TestStaleWaiterCannotObserveRestart(t *testing.T) {
 	var calls int
 	var callsMu sync.Mutex
+	// ai-generated: mobile failover room list, walked by the supervisor.
 	firstStarted := make(chan struct{})
 	runtime := configuredRuntime(t, func(ctx context.Context, _ client.Config, onReady func(string)) error {
 		callsMu.Lock()
@@ -271,6 +273,8 @@ func TestWaitReadyAfterStop(t *testing.T) {
 
 // A retired primary must not strand the client: the standby delivered
 // alongside it is tried next. This is the whole point of the failover list.
+//
+// ai-generated: this function and its doc comment.
 func TestFailoverAdvancesToNextRoomWhenTheFirstEnds(t *testing.T) {
 	prev := failoverRetryDelay
 	failoverRetryDelay = 10 * time.Millisecond
@@ -313,6 +317,8 @@ func TestFailoverAdvancesToNextRoomWhenTheFirstEnds(t *testing.T) {
 // A room delivered while a session is live - as a subscription refresh does -
 // is used at the next hop, without a restart. Without this the list a client
 // starts with is the only list it ever has.
+//
+// ai-generated: this function and its doc comment.
 func TestRoomsAddedDuringASessionAreUsedAtTheNextHop(t *testing.T) {
 	prev := failoverRetryDelay
 	failoverRetryDelay = 10 * time.Millisecond
@@ -354,6 +360,7 @@ func TestRoomsAddedDuringASessionAreUsedAtTheNextHop(t *testing.T) {
 	}
 }
 
+// ai-generated: this function.
 func TestFailoverRoomListIsOrderedAndDeduplicated(t *testing.T) {
 	runtime := configuredRuntime(t, blockingReadyRunner)
 	if err := runtime.AddFailoverRoom("  "); !errors.Is(err, ErrInvalidConfig) {
@@ -384,6 +391,8 @@ func TestFailoverRoomListIsOrderedAndDeduplicated(t *testing.T) {
 // established - the desktop client's "session opened" line - reaches it
 // through a listener instead, naming the room. It fires for every session, so
 // a failover to another room is visible as exactly that.
+//
+// ai-generated: this function and its doc comment.
 func TestSessionListenerNamesTheRoomOfEachSession(t *testing.T) {
 	prev := failoverRetryDelay
 	failoverRetryDelay = 10 * time.Millisecond
@@ -425,6 +434,8 @@ func TestSessionListenerNamesTheRoomOfEachSession(t *testing.T) {
 // A runtime with no listener installed still lets the client report sessions;
 // the events simply go nowhere. A listener installed later hears the next one,
 // without a restart.
+//
+// ai-generated: this function and its doc comment.
 func TestSessionListenerIsOptionalAndReplaceable(t *testing.T) {
 	sessions := make(chan struct{}, 1)
 	runtime := configuredRuntime(t, func(ctx context.Context, cfg client.Config, onReady func(string)) error {
@@ -456,17 +467,20 @@ func TestSessionListenerIsOptionalAndReplaceable(t *testing.T) {
 	}
 }
 
+// ai-generated: this type.
 type recordingListener struct {
 	mu     sync.Mutex
 	opened []string
 }
 
+// ai-generated: this function.
 func (l *recordingListener) OnSessionOpened(room, sessionID string) {
 	l.mu.Lock()
 	l.opened = append(l.opened, room+" "+sessionID)
 	l.mu.Unlock()
 }
 
+// ai-generated: this function.
 func (l *recordingListener) events() []string {
 	l.mu.Lock()
 	defer l.mu.Unlock()

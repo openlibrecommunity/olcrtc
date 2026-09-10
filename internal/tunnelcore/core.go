@@ -64,6 +64,7 @@ func NotifyControlClose(stream *smux.Stream) {
 		return
 	}
 	_ = stream.SetWriteDeadline(time.Now().Add(2 * time.Second))
+	// ai-generated: graceful close: notify the peer before teardown and surface send failures.
 	if err := SendControlClose(stream); err != nil {
 		logger.Warnf("control close NOT delivered: %v", err)
 	} else {

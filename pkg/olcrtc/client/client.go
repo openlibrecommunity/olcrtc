@@ -64,6 +64,8 @@ type HealthFunc func(HealthStatus)
 // SessionOpenFunc is called each time a tunnel session is established - on the
 // initial connect and after every reconnect - with the server-assigned session
 // id. It runs on the connect path and must return promptly.
+//
+// ai-generated: this type and its doc comment.
 type SessionOpenFunc func(sessionID string)
 
 // LivenessConfig controls control-stream ping and pong checks.
@@ -103,7 +105,8 @@ type Config struct {
 	DeviceIDPath     string
 	Claims           map[string]any
 	OnHealth         HealthFunc
-	OnSessionOpen    SessionOpenFunc
+	// ai-generated: mobile session event: tell the host which room a session opened on.
+	OnSessionOpen SessionOpenFunc
 }
 
 type runner func(context.Context, internalclient.Config, func(string)) error
@@ -156,6 +159,7 @@ func toClientConfig(cfg Config) internalclient.Config {
 			MinDelay:       cfg.Traffic.MinDelay, MaxDelay: cfg.Traffic.MaxDelay,
 		},
 		DeviceID: cfg.DeviceID, DeviceIDPath: cfg.DeviceIDPath, Claims: cfg.Claims,
+		// ai-generated: mobile session event: tell the host which room a session opened on.
 		OnHealth:      internalclient.HealthFunc(cfg.OnHealth),
 		OnSessionOpen: internalclient.SessionOpenFunc(cfg.OnSessionOpen),
 	}

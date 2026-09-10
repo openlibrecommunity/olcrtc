@@ -60,6 +60,7 @@ func HasProtector() bool {
 }
 
 func controlFunc(network, _ string, c syscall.RawConn) error {
+	// ai-generated: windows outbound-interface pinning via OLCRTC_BIND_IFINDEX.
 	// Keeping our own traffic off the tunnel is per-platform. Android hands the
 	// socket to VpnService.protect below; desktop platforms pin the outgoing
 	// interface instead. Without one of the two, "protected" sockets follow the

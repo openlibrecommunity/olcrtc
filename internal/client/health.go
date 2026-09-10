@@ -38,6 +38,7 @@ func (c *Client) startControlLoop(
 			c.controlLastPong.Store(time.Now())
 			c.notifyLinkHealth(false)
 		},
+		// ai-generated: end the session on ErrClosedByPeer instead of waiting out the liveness window.
 		OnDeath: func(err error) {
 			if errors.Is(err, control.ErrClosedByPeer) {
 				// The peer (srv) left ON PURPOSE: the server gracefully retired this

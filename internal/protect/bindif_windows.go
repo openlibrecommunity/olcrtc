@@ -1,3 +1,4 @@
+// ai-generated: windows outbound-interface pinning via OLCRTC_BIND_IFINDEX.
 // SPDX-License-Identifier: WTFPL
 
 //go:build windows
@@ -38,11 +39,14 @@ const (
 //nolint:gochecknoglobals // the bound interface is a process-wide property, like the Android protector
 var bindIfIndex atomic.Uint32
 
+// ai-generated: this function and its doc comment.
+//
 //nolint:gochecknoinits // the host app passes the interface in the environment before we open any socket
 func init() {
 	SetBindInterfaceIndex(parseIfIndex(os.Getenv(BindInterfaceEnv)))
 }
 
+// ai-generated: this function.
 func parseIfIndex(raw string) uint32 {
 	value, err := strconv.ParseUint(strings.TrimSpace(raw), 10, 32)
 	if err != nil {
@@ -53,10 +57,13 @@ func parseIfIndex(raw string) uint32 {
 
 // SetBindInterfaceIndex pins every socket we open to this interface index.
 // Zero restores the default route-table behaviour.
+//
+// ai-generated: this function and its doc comment.
 func SetBindInterfaceIndex(index uint32) {
 	bindIfIndex.Store(index)
 }
 
+// ai-generated: this function.
 func bindOutgoingInterface(network string, c syscall.RawConn) error {
 	index := bindIfIndex.Load()
 	if index == 0 {
@@ -92,6 +99,7 @@ func bindOutgoingInterface(network string, c syscall.RawConn) error {
 	return nil
 }
 
+// ai-generated: this function.
 func isIPv6Network(network string) bool {
 	return strings.HasSuffix(network, "6")
 }

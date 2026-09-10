@@ -68,6 +68,7 @@ func TestDeadLinkDetectionWindow(t *testing.T) {
 		}
 	}
 
+	// ai-generated: mobile session event: tell the host which room a session opened on.
 	// The session-open callback is the mobile host's view of this same event: it
 	// must fire for the initial session and again for the reconnected one.
 	var sessionOpens atomic.Int32

@@ -1,3 +1,4 @@
+// ai-generated: mobile session event: tell the host which room a session opened on.
 package mobile
 
 // SessionListener receives tunnel session events from a Runtime.
@@ -8,6 +9,8 @@ package mobile
 // and it names the room - which is what lets the host tell a reconnect within
 // the room it was in from a failover to another one, and act on the latter
 // (refresh its room list through the new session, for instance).
+//
+// ai-generated: this type and its doc comment.
 type SessionListener interface {
 	// OnSessionOpened reports one established session: on the initial
 	// connect, after a reconnect within the same room, and after a failover.
@@ -20,6 +23,8 @@ type SessionListener interface {
 // SetSessionListener installs the listener for this Runtime, replacing any
 // previous one; nil removes it. Safe to call while a generation is live - the
 // next event goes to the new listener.
+//
+// ai-generated: this function and its doc comment.
 func (r *Runtime) SetSessionListener(l SessionListener) {
 	r.mu.Lock()
 	r.listener = l
@@ -29,6 +34,8 @@ func (r *Runtime) SetSessionListener(l SessionListener) {
 // notifySessionOpened forwards a session event to the listener, unless the
 // generation it came from is already on its way out: a session that opens
 // while its generation is being stopped is not one the host should act on.
+//
+// ai-generated: this function and its doc comment.
 func (r *Runtime) notifySessionOpened(gen *runGeneration, room, sessionID string) {
 	r.mu.Lock()
 	listener := r.listener

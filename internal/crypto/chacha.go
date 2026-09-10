@@ -30,6 +30,7 @@ const (
 	noncePrefixSize     = chacha20poly1305.NonceSizeX - 8
 	recordHeaderSize    = len(recordMagic) + 8 + noncePrefixSize
 	replayWindowSize    = 64
+	// ai-generated: maxReplaySenders raised: every sealing connection now holds its own replay state.
 
 	// maxReplaySenders bounds the per-prefix replay states kept alive. Every
 	// connection seals under its own prefix (see SenderStream), so one peer
@@ -124,7 +125,8 @@ type replayCache struct {
 type KeySet struct {
 	send    sealState
 	receive cipher.AEAD
-	replay  *replayCache
+	// ai-generated: replay cache held by pointer so sender streams can share it.
+	replay *replayCache
 }
 
 // NewKeySet derives directional v2 keys from a 32-byte PSK and selects them by role.
@@ -172,7 +174,8 @@ func newKeySetForRole(clientKey, serverKey [chacha20poly1305.KeySize]byte, role 
 	keys := &KeySet{
 		send:    sealState{aead: sendAEAD},
 		receive: receiveAEAD,
-		replay:  &replayCache{senders: make(map[[noncePrefixSize]byte]*replayState, maxReplaySenders)},
+		// ai-generated: allocate the shared replay cache.
+		replay: &replayCache{senders: make(map[[noncePrefixSize]byte]*replayState, maxReplaySenders)},
 	}
 	if _, err := rand.Read(keys.send.prefix[:]); err != nil {
 		return nil, fmt.Errorf("seed sender nonce prefix: %w", err)
@@ -195,6 +198,8 @@ func newKeySetForRole(clientKey, serverKey [chacha20poly1305.KeySize]byte, role 
 // control traffic (liveness pings, a peer's closing notification) while bulk
 // data flows. A prefix per connection keeps each window over a single ordered
 // sequence, where the window is doing the job it was sized for.
+//
+// ai-generated: this function and its doc comment.
 func (k *KeySet) SenderStream() (*KeySet, error) {
 	stream := &KeySet{
 		send:    sealState{aead: k.send.aead},

@@ -182,6 +182,8 @@ func (c *Conn) sendDeadline() time.Duration {
 // unrelated delivery orders through a single replay window and the slower
 // conn's records get dropped as too old; see [crypto.KeySet.SenderStream].
 // Falling back to the parent set on failure keeps the conn usable.
+//
+// ai-generated: this function and its doc comment.
 func senderStream(keys *crypto.KeySet) *crypto.KeySet {
 	stream, err := keys.SenderStream()
 	if err != nil {
@@ -195,8 +197,9 @@ func senderStream(keys *crypto.KeySet) *crypto.KeySet {
 // transport's OnData callback before this conn is used.
 func New(ln transport.Transport, keys *crypto.KeySet) *Conn {
 	return &Conn{
-		ln:      ln,
-		send:    ln.Send,
+		ln:   ln,
+		send: ln.Send,
+		// ai-generated: seal under a per-connection sender stream.
 		keys:    senderStream(keys),
 		aad:     []byte(dataRecordAAD),
 		in:      make(chan *[]byte, inboundQueue),
@@ -216,6 +219,7 @@ func NewControl(ln transport.Transport, keys *crypto.KeySet) *Conn {
 		ln:      ln,
 		send:    cp.ControlSend,
 		canSend: cp.ControlCanSend,
+		// ai-generated: seal under a per-connection sender stream.
 		keys:    senderStream(keys),
 		aad:     []byte(controlRecordAAD),
 		in:      make(chan *[]byte, inboundQueue),
@@ -232,6 +236,7 @@ func NewPeer(ln transport.PeerTransport, keys *crypto.KeySet, peerID string) *Co
 		send: func(data []byte) error {
 			return ln.SendTo(peerID, data)
 		},
+		// ai-generated: seal under a per-connection sender stream.
 		keys:    senderStream(keys),
 		aad:     []byte(dataRecordAAD),
 		in:      make(chan *[]byte, inboundQueue),
@@ -260,6 +265,7 @@ func NewPeerControlUnbound(ln transport.Transport, keys *crypto.KeySet, peerID s
 		canSend: func() bool {
 			return cp.ControlPeerCanSend(peerID)
 		},
+		// ai-generated: seal under a per-connection sender stream.
 		keys:    senderStream(keys),
 		aad:     []byte(controlRecordAAD),
 		in:      make(chan *[]byte, inboundQueue),

@@ -66,7 +66,8 @@ type Runtime struct {
 	nextGeneration uint64
 	current        *runGeneration
 	runner         clientRunner
-	listener       SessionListener
+	// ai-generated: mobile session event: tell the host which room a session opened on.
+	listener SessionListener
 }
 
 // New returns an idle Runtime with documented mobile defaults.
@@ -118,6 +119,7 @@ func (r *Runtime) Start() error {
 	return nil
 }
 
+// ai-generated: run the client under the supervisor over the failover room list.
 // Failover across rooms happens inside one generation, the way the desktop
 // client does it under its supervisor: when the room a session is in ends -
 // the server retired it, or it died - the next room in the list is tried, and
@@ -138,6 +140,7 @@ const failoverMaxCycles = 1
 var failoverRetryDelay = 2 * time.Second
 
 func (r *Runtime) run(ctx context.Context, gen *runGeneration) {
+	// ai-generated: mobile failover room list, walked by the supervisor.
 	onReady := func(string) { r.markReady(gen) }
 	err := supervisor.Run(ctx, supervisor.Config{
 		Profiles:   r.profilesSnapshot(),
@@ -160,6 +163,8 @@ func (r *Runtime) run(ctx context.Context, gen *runGeneration) {
 // first, then the failover extras, each a profile carrying only its room. Read
 // under the lock, so a host app extending the list during a live session is
 // seen at the next hop rather than the next Start.
+//
+// ai-generated: this function and its doc comment.
 func (r *Runtime) profilesSnapshot() []supervisor.Profile {
 	r.mu.Lock()
 	rooms := r.defaults.rooms()

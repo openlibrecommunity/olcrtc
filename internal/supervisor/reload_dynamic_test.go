@@ -1,3 +1,4 @@
+// ai-generated: supervisor profile reload on every failover advance.
 package supervisor
 
 import (
@@ -14,6 +15,8 @@ import (
 // room it just left drops out of the list, it lands on the new head, so the
 // sequence of rooms it runs is R1,R2,R3,... even though each was only added to
 // the list after the previous one had already started.
+//
+// ai-generated: this function and its doc comment.
 func TestRunDynamicReloadFollowsRollingWindow(t *testing.T) {
 	prof := func(name string) Profile {
 		return Profile{Name: name, Config: session.Config{RoomID: name}}

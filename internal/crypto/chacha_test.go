@@ -324,6 +324,8 @@ func BenchmarkRecordRoundTrip(b *testing.B) {
 // counters late - which is the load that broke a shared sender stream in the
 // field: control pings and close notifications were dropped as too old while
 // bulk data flowed, and the link died of missed pongs.
+//
+// ai-generated: this function and its doc comment.
 func TestSenderStreamSurvivesBusyPeerStream(t *testing.T) {
 	client, server := newKeyPair(t)
 	data, err := client.SenderStream()
@@ -357,6 +359,8 @@ func TestSenderStreamSurvivesBusyPeerStream(t *testing.T) {
 // The companion to the test above: the window is per sender prefix, so sealing
 // both planes from one stream is what makes the delayed record unopenable. This
 // is why every muxconn takes its own SenderStream.
+//
+// ai-generated: this function and its doc comment.
 func TestSharedSenderStreamDropsDelayedRecord(t *testing.T) {
 	client, server := newKeyPair(t)
 	delayed, err := client.Seal([]byte("ping"), []byte(testControlAAD))
@@ -378,6 +382,7 @@ func TestSharedSenderStreamDropsDelayedRecord(t *testing.T) {
 	}
 }
 
+// ai-generated: this function.
 func TestSenderStreamKeepsReceiveStateShared(t *testing.T) {
 	client, server := newKeyPair(t)
 	stream, err := client.SenderStream()

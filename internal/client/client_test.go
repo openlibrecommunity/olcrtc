@@ -340,6 +340,7 @@ func TestSocks5RequestRejectsCommandAndAddressType(t *testing.T) {
 		t.Fatalf("Write() error = %v", err)
 	}
 
+	// ai-generated: client failover: graceful close, exhausted handshakes, ipv6 latch, socks replies.
 	// An unsupported command is refused with a reply, not by hanging up, so the
 	// caller has to drain it: net.Pipe is unbuffered and the write would block.
 	reply := make([]byte, 10)
@@ -1067,6 +1068,7 @@ func TestClientLinkAccessIsRaceFree(t *testing.T) {
 	wg.Wait()
 }
 
+// ai-generated: this function.
 func TestNoteConnectFailureLatchesMissingIPv6(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -1121,6 +1123,8 @@ func TestNoteConnectFailureLatchesMissingIPv6(t *testing.T) {
 // itself: the point of the latch is that no tunnel stream is spent on it. With
 // no session installed, reaching the tunnel path would instead park the request
 // on the session-ready wait, so an immediate reply is what proves the shortcut.
+//
+// ai-generated: this function and its doc comment.
 func TestHandleSocks5RefusesIPv6LocallyWhenExitHasNone(t *testing.T) {
 	c := &Client{sessionReady: make(chan struct{})}
 	c.peerNoIPv6.Store(true)

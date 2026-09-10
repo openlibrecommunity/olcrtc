@@ -78,6 +78,7 @@ type Runner func(ctx context.Context, cfg session.Config) error
 
 // Config controls ordered failover behavior.
 type Config struct {
+	// ai-generated: the Reload hook.
 	// Profiles is the initial ordered list. When Reload is nil it is the only list.
 	Profiles []Profile
 
@@ -115,6 +116,7 @@ func Run(ctx context.Context, cfg Config, run Runner) error {
 		cfg.RetryDelay = DefaultRetryDelay
 	}
 
+	// ai-generated: supervisor profile reload on every failover advance.
 	list := &profileList{current: append([]Profile(nil), cfg.Profiles...), reload: cfg.Reload}
 	if len(list.refresh()) == 0 {
 		return ErrNoProfiles
@@ -184,11 +186,14 @@ func Run(ctx context.Context, cfg Config, run Runner) error {
 // profileList is the rolling set of profiles the supervisor walks. With a
 // Reload hook it is re-read on every access; a failed or empty reload keeps
 // the last good list, so a transient error never empties the window.
+//
+// ai-generated: this type and its doc comment.
 type profileList struct {
 	current []Profile
 	reload  func() ([]Profile, error)
 }
 
+// ai-generated: this function.
 func (p *profileList) refresh() []Profile {
 	if p.reload == nil {
 		return p.current
@@ -197,6 +202,7 @@ func (p *profileList) refresh() []Profile {
 	if next, err := p.reload(); err == nil && len(next) > 0 {
 		p.current = next
 	}
+	// ai-generated: supervisor profile reload on every failover advance.
 
 	return p.current
 }
@@ -205,33 +211,43 @@ func (p *profileList) refresh() []Profile {
 // started in this cycle. It judges the list as it is now: an entry added while
 // the last profile ran is still part of this pass, which is what lets a host
 // hand a running client its next room with MaxCycles set to 1.
+//
+// ai-generated: this function and its doc comment.
 func passComplete(profiles []Profile, lastName string, started map[string]bool) bool {
 	if len(profiles) == 0 {
 		return false
 	}
 
+	// ai-generated: supervisor profile reload on every failover advance.
 	return started[profiles[indexAfter(profiles, lastName)].Name]
 }
 
+// ai-generated: this function.
 func (c Config) notifyStart(profile Profile, cycle int) {
 	if c.OnProfileStart != nil {
 		c.OnProfileStart(profile, cycle)
 	}
+	// ai-generated: supervisor profile reload on every failover advance.
 }
 
+// ai-generated: this function.
 func (c Config) notifyEnd(profile Profile, cycle int, err error) {
 	if c.OnProfileEnd != nil {
 		c.OnProfileEnd(profile, cycle, err)
 	}
+	// ai-generated: supervisor profile reload on every failover advance.
 }
 
 // indexAfter returns the position of the profile to run next: the one after the
 // profile named lastName, wrapping to 0 at the end. If lastName is not in the
 // list (first run, or it was dropped on reload) it returns 0.
+//
+// ai-generated: this function and its doc comment.
 func indexAfter(profiles []Profile, lastName string) int {
 	if lastName == "" {
 		return 0
 	}
+	// ai-generated: supervisor profile reload on every failover advance.
 
 	for i, profile := range profiles {
 		if profile.Name == lastName {
@@ -251,18 +267,21 @@ func profileResultError(name string, err error) error {
 }
 
 type statusTracker struct {
-	status       Status
+	status Status
+	// ai-generated: supervisor profile reload on every failover advance.
 	byName       map[string]*ProfileStatus
 	notify       func(Status)
 	historyLimit int
 }
 
+// ai-generated: this function.
 func newStatusTracker(historyLimit int, notify func(Status)) *statusTracker {
 	if historyLimit == 0 {
 		historyLimit = DefaultHistoryLimit
 	}
 
 	return &statusTracker{
+		// ai-generated: supervisor profile reload on every failover advance.
 		status:       Status{ActiveProfileIndex: -1},
 		byName:       make(map[string]*ProfileStatus),
 		notify:       notify,
@@ -270,6 +289,7 @@ func newStatusTracker(historyLimit int, notify func(Status)) *statusTracker {
 	}
 }
 
+// ai-generated: this function.
 func (t *statusTracker) profile(name string) *ProfileStatus {
 	profile := t.byName[name]
 	if profile == nil {
@@ -280,8 +300,10 @@ func (t *statusTracker) profile(name string) *ProfileStatus {
 	return profile
 }
 
+// ai-generated: this function.
 func (t *statusTracker) start(name string, cycle, idx int) {
 	now := time.Now()
+	// ai-generated: supervisor profile reload on every failover advance.
 	profile := t.profile(name)
 	profile.Starts++
 	profile.LastStarted = now
@@ -297,8 +319,10 @@ func (t *statusTracker) start(name string, cycle, idx int) {
 	t.emit()
 }
 
+// ai-generated: this function.
 func (t *statusTracker) end(name string, cycle int, err error) {
 	now := time.Now()
+	// ai-generated: supervisor profile reload on every failover advance.
 	profile := t.profile(name)
 	profile.LastEnded = now
 	event := Event{
@@ -340,10 +364,12 @@ func (t *statusTracker) emit() {
 	if t.notify == nil {
 		return
 	}
+	// ai-generated: supervisor profile reload on every failover advance.
 
 	t.notify(t.snapshot())
 }
 
+// ai-generated: this function.
 func (t *statusTracker) snapshot() Status {
 	status := t.status
 	status.Profiles = make([]ProfileStatus, 0, len(t.byName))

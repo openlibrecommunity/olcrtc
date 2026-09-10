@@ -24,6 +24,7 @@ import (
 
 const connectCommand = "connect"
 
+// ai-generated: graceful close: notify the peer before teardown and surface send failures.
 // gracefulCloseTimeout bounds how long shutdown waits for the peer close
 // notifications to reach the wire before it tears the transport down anyway.
 // One peer costs a write plus a short flush wait, so this only has to cover a
@@ -125,6 +126,7 @@ type Config struct {
 func Run(ctx context.Context, cfg Config) error {
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	// ai-generated: graceful close: notify the peer before teardown and surface send failures.
 	// The link and the control loops run on their own context, cancelled only
 	// once the goodbyes are out. control.Run closes its stream as soon as its
 	// context is done, so hanging the control loops off runCtx meant the signal

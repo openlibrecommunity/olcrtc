@@ -99,6 +99,7 @@ func (c *Client) bringUpLink(ctx context.Context, cfg Config, cancel context.Can
 	c.sessMu.Unlock()
 	c.signalSessionReady()
 	c.health.RecordSession(sessionID)
+	// ai-generated: mobile session event: tell the host which room a session opened on.
 	c.notifySessionOpen(sessionID)
 	c.startControlLoop(ctx, cfg, cancel, control)
 	return nil
@@ -287,6 +288,7 @@ func (c *Client) retryHandshake(ctx context.Context, cfg Config, cancel context.
 			return
 		}
 		if maxAttempts > 0 && attempt >= maxAttempts {
+			// ai-generated: end the session when handshake attempts are exhausted so the supervisor fails over.
 			// The current room is unreachable (its srv was torn down by a rotation).
 			// A killed-srv rotation looks like a peer-gone / liveness death, NOT a
 			// "conference ended", so SetEndedCallback never fires and the session
@@ -379,6 +381,7 @@ func (c *Client) tryReopenSession(
 	c.sessMu.Unlock()
 	c.signalSessionReady()
 	c.health.RecordSession(sessionID)
+	// ai-generated: end the session when handshake attempts are exhausted so the supervisor fails over.
 	c.notifySessionOpen(sessionID)
 	c.startControlLoop(ctx, cfg, cancel, control)
 	return true
@@ -386,6 +389,8 @@ func (c *Client) tryReopenSession(
 
 // notifySessionOpen reports an established session to the host, when it asked
 // to hear about them. Both the initial connect and every reconnect land here.
+//
+// ai-generated: this function and its doc comment.
 func (c *Client) notifySessionOpen(sessionID string) {
 	if c.onSessionOpen != nil {
 		c.onSessionOpen(sessionID)
@@ -393,6 +398,7 @@ func (c *Client) notifySessionOpen(sessionID string) {
 }
 
 func (c *Client) installPairLocked(pair *tunnelcore.SessionPair) {
+	// ai-generated: client failover: graceful close, exhausted handshakes, ipv6 latch, socks replies.
 	// A new session may be a different exit, so re-probe its IPv6 support.
 	c.peerNoIPv6.Store(false)
 	c.pair = pair

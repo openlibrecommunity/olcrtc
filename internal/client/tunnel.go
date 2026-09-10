@@ -33,6 +33,7 @@ func (c *Client) tunnel(
 	logger.Infof("sid=%d tunnel to %s:%d", stream.ID(), targetAddr, targetPort)
 	if err := c.sendConnectRequest(stream, targetAddr, targetPort); err != nil {
 		logger.Warnf("sid=%d connect failed: %v", stream.ID(), err)
+		// ai-generated: note connect failures to latch a missing ipv6 exit.
 		c.noteConnectFailure(err, targetAddr)
 		_, _ = conn.Write(replyForConnectError(err, targetAddr))
 		return
@@ -70,6 +71,8 @@ func (c *Client) sendConnectRequest(stream *smux.Stream, targetAddr string, targ
 // noteConnectFailure latches the exit's lack of IPv6 the first time it refuses
 // an IPv6 literal as unreachable, so the rest of the session stops spending
 // tunnel streams on address family the exit cannot route at all.
+//
+// ai-generated: this function and its doc comment.
 func (c *Client) noteConnectFailure(err error, targetAddr string) {
 	var ackErr *connectAckError
 	if !errors.As(err, &ackErr) || ackErr.code != socksRepHostUnreachable {

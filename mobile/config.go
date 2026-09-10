@@ -46,6 +46,7 @@ const (
 )
 
 type runtimeConfig struct {
+	// ai-generated: failover rooms in the runtime config.
 	provider  string
 	transport string
 	roomURL   string
@@ -139,6 +140,8 @@ func (r *Runtime) SetRoom(roomURL string) error {
 // `##rooms` subscription header. Safe to call while running: the supervisor
 // re-reads the list at every hop, which is how a server hands a connected
 // client its next room without a restart.
+//
+// ai-generated: this function and its doc comment.
 func (r *Runtime) AddFailoverRoom(roomURL string) error {
 	roomURL = strings.TrimSpace(roomURL)
 	if roomURL == "" {
@@ -154,6 +157,8 @@ func (r *Runtime) AddFailoverRoom(roomURL string) error {
 }
 
 // ClearFailoverRooms drops every extra room, keeping the primary.
+//
+// ai-generated: this function and its doc comment.
 func (r *Runtime) ClearFailoverRooms() {
 	r.mu.Lock()
 	r.defaults.failoverRooms = nil
@@ -163,6 +168,8 @@ func (r *Runtime) ClearFailoverRooms() {
 // rooms is the ordered, de-duplicated room list: the primary, then the extras.
 // The primary is always present, so a configuration with no room at all (the
 // "none" provider) still yields exactly one profile, as it did before failover.
+//
+// ai-generated: this function and its doc comment.
 func (cfg runtimeConfig) rooms() []string {
 	out := make([]string, 0, 1+len(cfg.failoverRooms))
 	out = append(out, cfg.roomURL)
@@ -175,6 +182,7 @@ func (cfg runtimeConfig) rooms() []string {
 	return out
 }
 
+// ai-generated: this function.
 func containsRoom(rooms []string, room string) bool {
 	for _, candidate := range rooms {
 		if candidate == room {
