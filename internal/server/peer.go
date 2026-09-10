@@ -405,7 +405,17 @@ func (s *Server) startPeerControlLoop(ctx context.Context, peer *peerSession, st
 		OnDeath:   func(error) { s.removePeer(peer, "liveness") },
 	}
 	s.goTracked(func() {
-		defer func() { _ = stream.Close() }()
+		defer func() {
+			// A cancelled control context means teardown is already under way,
+			// and closePeerSession owns this stream from that point: it still
+			// has to write the graceful close onto it before closing it itself.
+			// Closing here first turned that write into io.ErrClosedPipe, so the
+			// peer was never told we were leaving and had to discover the
+			// retired room the slow way, through missed liveness pongs.
+			if controlCtx.Err() == nil {
+				_ = stream.Close()
+			}
+		}()
 		runner.Run(controlCtx, stream)
 	})
 }
@@ -508,6 +518,14 @@ func (s *Server) closePeerSession(peer *peerSession, reason string) {
 	peer.closeOnce.Do(func() {
 		teardown := peer.closeSnapshot()
 		peer.signalReady()
+		// Logged either way: on a rotation this frame is what moves the client
+		// onto its warm standby at once, and "was it even sent?" is otherwise
+		// invisible from the server side.
+		if teardown.controlStrm == nil {
+			logger.Infof("peer close: device=%s reason=%s no control stream to notify on", peer.deviceID, reason)
+		} else {
+			logger.Infof("peer close: device=%s reason=%s - sending control close", peer.deviceID, reason)
+		}
 		tunnelcore.NotifyControlClose(teardown.controlStrm)
 		if teardown.controlStop != nil {
 			teardown.controlStop()

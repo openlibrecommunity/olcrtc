@@ -9,6 +9,7 @@ import (
 	"github.com/xtaci/smux"
 
 	"github.com/openlibrecommunity/olcrtc/internal/crypto"
+	"github.com/openlibrecommunity/olcrtc/internal/logger"
 	"github.com/openlibrecommunity/olcrtc/internal/muxconn"
 	"github.com/openlibrecommunity/olcrtc/internal/protect"
 	"github.com/openlibrecommunity/olcrtc/internal/runtime"
@@ -53,12 +54,19 @@ func ResetPeer(tr transport.Transport) {
 }
 
 // NotifyControlClose sends a bounded best-effort graceful close notification.
+//
+// Best-effort, but not silent: this frame is what lets a peer fail over the
+// instant we leave instead of waiting out its liveness window, so a failure to
+// deliver it is the difference between a seamless handover and a minute of dead
+// tunnel. Log it rather than swallowing it.
 func NotifyControlClose(stream *smux.Stream) {
 	if stream == nil {
 		return
 	}
 	_ = stream.SetWriteDeadline(time.Now().Add(2 * time.Second))
-	if err := SendControlClose(stream); err == nil {
+	if err := SendControlClose(stream); err != nil {
+		logger.Warnf("control close NOT delivered: %v", err)
+	} else {
 		time.Sleep(200 * time.Millisecond)
 	}
 	_ = stream.SetWriteDeadline(time.Time{})
