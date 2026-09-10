@@ -50,6 +50,9 @@ type loadedConfig struct {
 	failover failoverConfig
 	dataDir  string
 	debug    bool
+	// reload re-reads the config file for the current failover profiles. It lets
+	// the supervisor pick up rooms added while a session was live (dynamic list).
+	reload func() ([]supervisor.Profile, error)
 }
 
 type failoverConfig struct {
@@ -126,7 +129,41 @@ func loadConfig(path string) (loadedConfig, error) {
 		failover: failover,
 		dataDir:  resolveDataDir(path, file.Data),
 		debug:    file.Debug,
+		reload:   func() ([]supervisor.Profile, error) { return loadProfiles(path) },
 	}, nil
+}
+
+// loadProfiles re-reads the config file and returns the currently configured
+// failover profiles, applied and validated. Invalid profiles are skipped so one
+// bad entry does not stall a reload. Used as the supervisor's dynamic Reload
+// hook: rooms written to the config while a session was live are picked up the
+// instant that session ends, without restarting the process.
+func loadProfiles(path string) ([]supervisor.Profile, error) {
+	file, err := configpkg.Load(path)
+	if err != nil {
+		return nil, fmt.Errorf("load config: %w", err)
+	}
+
+	base := configpkg.Apply(file)
+
+	profiles := make([]supervisor.Profile, 0, len(file.Profiles))
+	for i, profile := range file.Profiles {
+		name := profile.Name
+		if name == "" {
+			name = fmt.Sprintf("profile-%d", i+1)
+		}
+
+		scfg := session.ApplyDefaults(configpkg.ApplyProfile(base, profile))
+		if err := session.Validate(scfg); err != nil {
+			logger.Warnf("skipping invalid failover profile %q on reload: %v", name, err)
+
+			continue
+		}
+
+		profiles = append(profiles, supervisor.Profile{Name: name, Config: scfg})
+	}
+
+	return profiles, nil
 }
 
 func parseFailoverConfig(f configpkg.Failover) (failoverConfig, error) {
@@ -159,7 +196,7 @@ func runWithConfig(cfg loadedConfig) error {
 
 	if len(cfg.profiles) > 0 {
 		profiles := prepareProfiles(cfg.profiles)
-		return runFailoverSessionMode(cfg.dataDir, profiles, cfg.failover)
+		return runFailoverSessionMode(cfg.dataDir, profiles, cfg.failover, cfg.reload)
 	}
 
 	return runSessionMode(cfg.dataDir, scfg)
@@ -190,7 +227,12 @@ func runSessionMode(dataDir string, scfg session.Config) error {
 	})
 }
 
-func runFailoverSessionMode(dataDir string, profiles []supervisor.Profile, failover failoverConfig) error {
+func runFailoverSessionMode(
+	dataDir string,
+	profiles []supervisor.Profile,
+	failover failoverConfig,
+	reload func() ([]supervisor.Profile, error),
+) error {
 	for _, profile := range profiles {
 		if err := session.Validate(profile.Config); err != nil {
 			return fmt.Errorf("validate profile %q: %w", profile.Name, err)
@@ -204,6 +246,7 @@ func runFailoverSessionMode(dataDir string, profiles []supervisor.Profile, failo
 	return runManaged(func(ctx context.Context) error {
 		return supervisor.Run(ctx, supervisor.Config{
 			Profiles:   profiles,
+			Reload:     reload,
 			RetryDelay: failover.retryDelay,
 			MaxCycles:  failover.maxCycles,
 			OnProfileStart: func(profile supervisor.Profile, cycle int) {
