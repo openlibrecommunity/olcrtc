@@ -66,6 +66,7 @@ type Runtime struct {
 	nextGeneration uint64
 	current        *runGeneration
 	runner         clientRunner
+	listener       SessionListener
 }
 
 // New returns an idle Runtime with documented mobile defaults.
@@ -148,6 +149,7 @@ func (r *Runtime) run(ctx context.Context, gen *runGeneration) {
 		// generation's configuration snapshot, exactly as before failover.
 		cfg := gen.cfg
 		cfg.RoomURL = profile.RoomID
+		cfg.OnSessionOpen = func(sessionID string) { r.notifySessionOpened(gen, profile.RoomID, sessionID) }
 		return r.runner(ctx, cfg, onReady)
 	})
 	gen.cancel()
