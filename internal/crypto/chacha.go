@@ -30,7 +30,11 @@ const (
 	noncePrefixSize     = chacha20poly1305.NonceSizeX - 8
 	recordHeaderSize    = len(recordMagic) + 8 + noncePrefixSize
 	replayWindowSize    = 64
-	maxReplaySenders    = 256
+
+	// maxReplaySenders bounds the per-prefix replay states kept alive. Every
+	// connection seals under its own prefix (see SenderStream), so one peer
+	// accounts for several entries and a busy server for many more.
+	maxReplaySenders = 1024
 
 	// WireOverhead is magic, counter, sender prefix, and authentication tag.
 	WireOverhead = recordHeaderSize + chacha20poly1305.Overhead
@@ -115,11 +119,12 @@ type replayCache struct {
 
 // KeySet owns one directional sender and shared receive replay state.
 // It is safe for concurrent use and should be reused across data, control,
-// peer, and reconnect muxconn instances for one process role.
+// peer, and reconnect muxconn instances for one process role - but each such
+// connection must seal under its own sender stream, see [KeySet.SenderStream].
 type KeySet struct {
 	send    sealState
 	receive cipher.AEAD
-	replay  replayCache
+	replay  *replayCache
 }
 
 // NewKeySet derives directional v2 keys from a 32-byte PSK and selects them by role.
@@ -167,12 +172,39 @@ func newKeySetForRole(clientKey, serverKey [chacha20poly1305.KeySize]byte, role 
 	keys := &KeySet{
 		send:    sealState{aead: sendAEAD},
 		receive: receiveAEAD,
-		replay:  replayCache{senders: make(map[[noncePrefixSize]byte]*replayState, maxReplaySenders)},
+		replay:  &replayCache{senders: make(map[[noncePrefixSize]byte]*replayState, maxReplaySenders)},
 	}
 	if _, err := rand.Read(keys.send.prefix[:]); err != nil {
 		return nil, fmt.Errorf("seed sender nonce prefix: %w", err)
 	}
 	return keys, nil
+}
+
+// SenderStream returns a KeySet that seals with the same directional key but
+// under its own nonce prefix and counter, sharing this set's receive key and
+// replay state.
+//
+// Every connection that seals must have one. The replay window is per sender
+// prefix and only replayWindowSize records deep, so records sealed under one
+// prefix have to reach the peer roughly in counter order to be accepted.
+// Connections riding independent transports - the data plane and the control
+// plane, or one peer and the next - give no such guarantee: they draw from a
+// shared counter but are queued, retransmitted and delivered separately, so
+// under load the quiet one falls more than a window behind the busy one's
+// counter and its records are discarded as ErrReplayTooOld. That silently eats
+// control traffic (liveness pings, a peer's closing notification) while bulk
+// data flows. A prefix per connection keeps each window over a single ordered
+// sequence, where the window is doing the job it was sized for.
+func (k *KeySet) SenderStream() (*KeySet, error) {
+	stream := &KeySet{
+		send:    sealState{aead: k.send.aead},
+		receive: k.receive,
+		replay:  k.replay,
+	}
+	if _, err := rand.Read(stream.send.prefix[:]); err != nil {
+		return nil, fmt.Errorf("seed sender stream nonce prefix: %w", err)
+	}
+	return stream, nil
 }
 
 // Seal allocates and seals one v2 record with aad.

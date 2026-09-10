@@ -318,3 +318,90 @@ func BenchmarkRecordRoundTrip(b *testing.B) {
 		}
 	}
 }
+
+// A quiet connection must survive a busy one running far ahead of it. The two
+// ride independent transports, so the quiet one's record can arrive many
+// counters late - which is the load that broke a shared sender stream in the
+// field: control pings and close notifications were dropped as too old while
+// bulk data flowed, and the link died of missed pongs.
+func TestSenderStreamSurvivesBusyPeerStream(t *testing.T) {
+	client, server := newKeyPair(t)
+	data, err := client.SenderStream()
+	if err != nil {
+		t.Fatalf("SenderStream(data) error = %v", err)
+	}
+	control, err := client.SenderStream()
+	if err != nil {
+		t.Fatalf("SenderStream(control) error = %v", err)
+	}
+
+	delayed, err := control.Seal([]byte("ping"), []byte(testControlAAD))
+	if err != nil {
+		t.Fatalf("Seal(control) error = %v", err)
+	}
+	for i := range replayWindowSize * 4 {
+		record, sealErr := data.Seal([]byte("bulk"), []byte(testDataAAD))
+		if sealErr != nil {
+			t.Fatalf("Seal(data %d) error = %v", i, sealErr)
+		}
+		if _, openErr := server.Open(record, []byte(testDataAAD)); openErr != nil {
+			t.Fatalf("Open(data %d) error = %v", i, openErr)
+		}
+	}
+
+	if _, err := server.Open(delayed, []byte(testControlAAD)); err != nil {
+		t.Fatalf("Open(delayed control) error = %v, want it accepted", err)
+	}
+}
+
+// The companion to the test above: the window is per sender prefix, so sealing
+// both planes from one stream is what makes the delayed record unopenable. This
+// is why every muxconn takes its own SenderStream.
+func TestSharedSenderStreamDropsDelayedRecord(t *testing.T) {
+	client, server := newKeyPair(t)
+	delayed, err := client.Seal([]byte("ping"), []byte(testControlAAD))
+	if err != nil {
+		t.Fatalf("Seal(control) error = %v", err)
+	}
+	for i := range replayWindowSize * 4 {
+		record, sealErr := client.Seal([]byte("bulk"), []byte(testDataAAD))
+		if sealErr != nil {
+			t.Fatalf("Seal(data %d) error = %v", i, sealErr)
+		}
+		if _, openErr := server.Open(record, []byte(testDataAAD)); openErr != nil {
+			t.Fatalf("Open(data %d) error = %v", i, openErr)
+		}
+	}
+
+	if _, err := server.Open(delayed, []byte(testControlAAD)); !errors.Is(err, ErrReplayTooOld) {
+		t.Fatalf("Open(delayed control) error = %v, want %v", err, ErrReplayTooOld)
+	}
+}
+
+func TestSenderStreamKeepsReceiveStateShared(t *testing.T) {
+	client, server := newKeyPair(t)
+	stream, err := client.SenderStream()
+	if err != nil {
+		t.Fatalf("SenderStream() error = %v", err)
+	}
+	if stream.send.prefix == client.send.prefix {
+		t.Fatal("sender stream reused the parent nonce prefix")
+	}
+	if stream.replay != client.replay {
+		t.Fatal("sender stream did not share the parent replay state")
+	}
+	record, err := stream.Seal([]byte("hello"), []byte(testDataAAD))
+	if err != nil {
+		t.Fatalf("Seal() error = %v", err)
+	}
+	plaintext, err := server.Open(record, []byte(testDataAAD))
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	if !bytes.Equal(plaintext, []byte("hello")) {
+		t.Fatalf("plaintext = %q, want %q", plaintext, "hello")
+	}
+	if _, err := server.Open(record, []byte(testDataAAD)); !errors.Is(err, ErrReplayDuplicate) {
+		t.Fatalf("replayed record error = %v, want %v", err, ErrReplayDuplicate)
+	}
+}
