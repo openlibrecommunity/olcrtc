@@ -211,7 +211,7 @@ func TestReplayStateUsesBoundedLRU(t *testing.T) {
 		t.Fatalf("sender states = %d, want %d", len(server.replay.senders), maxReplaySenders)
 	}
 	var first [noncePrefixSize]byte
-	if _, ok := server.replay.senders[first]; ok {
+	if _, ok := server.replay.senders[replayKey{prefix: first, aad: aadTag([]byte(testDataAAD))}]; ok {
 		t.Fatal("least-recently-used sender was not evicted")
 	}
 }
@@ -315,6 +315,116 @@ func BenchmarkRecordRoundTrip(b *testing.B) {
 		}
 		if _, err := server.Open(record, aad); err != nil {
 			b.Fatalf("Open() error = %v", err)
+		}
+	}
+}
+
+func TestOpenKeepsIndependentWindowsPerAAD(t *testing.T) {
+	client, server := newKeyPair(t)
+	control, err := client.Seal([]byte("control"), []byte(testControlAAD))
+	if err != nil {
+		t.Fatalf("Seal(control) error = %v", err)
+	}
+	for i := range replayWindowSize * 2 {
+		data, sealErr := client.Seal([]byte("data"), []byte(testDataAAD))
+		if sealErr != nil {
+			t.Fatalf("Seal(data %d) error = %v", i, sealErr)
+		}
+		if _, openErr := server.Open(data, []byte(testDataAAD)); openErr != nil {
+			t.Fatalf("Open(data %d) error = %v", i, openErr)
+		}
+	}
+	if _, err := server.Open(control, []byte(testControlAAD)); err != nil {
+		t.Fatalf("Open(control) after %d data records error = %v", replayWindowSize*2, err)
+	}
+}
+
+// A server seals the data records for every peer from one sender prefix and one
+// counter. That is fine: the replay window lives on the receiver, and each peer
+// only ever sees its own records, in order, with counter gaps where the other
+// peers' traffic went. Gaps never trip the window; only a record older than the
+// highest one this receiver already accepted does.
+//
+// ai-generated: this test function and its doc comment.
+func TestPeersSharingSenderPrefixKeepIndependentWindows(t *testing.T) {
+	const busyRecords = replayWindowSize * 8
+	server, err := NewKeySet([]byte(testPSK), Server)
+	if err != nil {
+		t.Fatalf("NewKeySet(server) error = %v", err)
+	}
+	peerA, err := NewKeySet([]byte(testPSK), Client)
+	if err != nil {
+		t.Fatalf("NewKeySet(peer a) error = %v", err)
+	}
+	peerB, err := NewKeySet([]byte(testPSK), Client)
+	if err != nil {
+		t.Fatalf("NewKeySet(peer b) error = %v", err)
+	}
+	for round := range 10 {
+		toA, sealErr := server.Seal([]byte("a"), []byte(testDataAAD))
+		if sealErr != nil {
+			t.Fatalf("Seal(a) error = %v", sealErr)
+		}
+		for i := range busyRecords {
+			toB, sealErr := server.Seal([]byte("b"), []byte(testDataAAD))
+			if sealErr != nil {
+				t.Fatalf("Seal(b %d) error = %v", i, sealErr)
+			}
+			if _, openErr := peerB.Open(toB, []byte(testDataAAD)); openErr != nil {
+				t.Fatalf("round %d Open(b %d) error = %v", round, i, openErr)
+			}
+		}
+		if _, openErr := peerA.Open(toA, []byte(testDataAAD)); openErr != nil {
+			t.Fatalf("round %d Open(a) after %d records to b error = %v", round, busyRecords, openErr)
+		}
+	}
+}
+
+// Both planes of every peer are sealed from the server's one prefix, and each
+// peer's control records are delivered independently of its data records. Each
+// peer therefore needs one window per plane, and nothing more: the other peers'
+// records never reach it.
+//
+// ai-generated: this test function and its doc comment.
+func TestPeersKeepIndependentWindowsPerPlane(t *testing.T) {
+	const busyRecords = replayWindowSize * 4
+	server, err := NewKeySet([]byte(testPSK), Server)
+	if err != nil {
+		t.Fatalf("NewKeySet(server) error = %v", err)
+	}
+	peers := make([]*KeySet, 3)
+	for i := range peers {
+		peers[i], err = NewKeySet([]byte(testPSK), Client)
+		if err != nil {
+			t.Fatalf("NewKeySet(peer %d) error = %v", i, err)
+		}
+	}
+	for round := range 5 {
+		// Every peer's control record is sealed first, then delayed behind
+		// every peer's bulk data.
+		controls := make([][]byte, len(peers))
+		for i := range peers {
+			controls[i], err = server.Seal([]byte("pong"), []byte(testControlAAD))
+			if err != nil {
+				t.Fatalf("Seal(control %d) error = %v", i, err)
+			}
+		}
+		for i, peer := range peers {
+			for n := range busyRecords {
+				data, sealErr := server.Seal([]byte("bulk"), []byte(testDataAAD))
+				if sealErr != nil {
+					t.Fatalf("Seal(data %d/%d) error = %v", i, n, sealErr)
+				}
+				if _, openErr := peer.Open(data, []byte(testDataAAD)); openErr != nil {
+					t.Fatalf("round %d peer %d Open(data %d) error = %v", round, i, n, openErr)
+				}
+			}
+		}
+		for i, peer := range peers {
+			if _, openErr := peer.Open(controls[i], []byte(testControlAAD)); openErr != nil {
+				t.Fatalf("round %d peer %d Open(control) after %d data records error = %v",
+					round, i, busyRecords*len(peers), openErr)
+			}
 		}
 	}
 }
