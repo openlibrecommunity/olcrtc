@@ -13,12 +13,15 @@ import (
 )
 
 const (
-	socksVersion            = 5
-	socksAddrIPv4           = 1
-	socksAddrDomain         = 3
-	socksAddrIPv6           = 4
-	socksRepSuccess         = 0
-	socksRepHostUnreachable = 4
+	// ai-generated: client failover: graceful close, exhausted handshakes, ipv6 latch, socks replies.
+	socksVersion                = 5
+	socksCmdConnect             = 1
+	socksAddrIPv4               = 1
+	socksAddrDomain             = 3
+	socksAddrIPv6               = 4
+	socksRepSuccess             = 0
+	socksRepHostUnreachable     = 4
+	socksRepCommandNotSupported = 7
 )
 
 const (
@@ -89,6 +92,11 @@ func (c *Client) handleSocks5(ctx context.Context, conn net.Conn) {
 		return
 	}
 	_ = conn.SetDeadline(time.Time{})
+	// ai-generated: refuse ipv6 targets locally while the exit is known to have no ipv6.
+	if c.peerNoIPv6.Load() && isIPv6Literal(targetAddr) {
+		_, _ = conn.Write(replyHostUnreachable(targetAddr))
+		return
+	}
 	const sessionReadyTimeout = 60 * time.Second
 	readyCtx, cancel := context.WithTimeout(ctx, sessionReadyTimeout)
 	defer cancel()
@@ -174,7 +182,13 @@ func (c *Client) socks5Request(conn net.Conn) (string, int, error) {
 	if _, err := io.ReadFull(conn, header); err != nil {
 		return "", 0, fmt.Errorf("read socks5 request: %w", err)
 	}
-	if header[1] != 1 {
+	// ai-generated: reply to unsupported commands and address types instead of hanging up.
+	if header[1] != socksCmdConnect {
+		// Answer instead of hanging up. The tunnel carries streams, not
+		// datagrams, so UDP ASSOCIATE is never going to work; a client that
+		// gets a proper refusal reports that and moves on, whereas a dropped
+		// connection reads as a broken proxy and invites a retry.
+		_, _ = conn.Write(socks5Reply(socksRepCommandNotSupported, ""))
 		return "", 0, fmt.Errorf("%w: %d", ErrUnsupportedSOCKSCommand, header[1])
 	}
 	addr, err := c.readSocks5Addr(conn, header[3])
@@ -238,4 +252,14 @@ func replySuccess(target string) []byte {
 
 func replyHostUnreachable(target string) []byte {
 	return socks5Reply(socksRepHostUnreachable, target)
+}
+
+// isIPv6Literal reports whether target is an IPv6 address literal. Domain names
+// are deliberately excluded: the exit resolves those itself and can pick an A
+// record, so short-circuiting them would break hosts that are reachable.
+//
+// ai-generated: this function and its doc comment.
+func isIPv6Literal(target string) bool {
+	ip := net.ParseIP(target)
+	return ip != nil && ip.To4() == nil
 }

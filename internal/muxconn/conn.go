@@ -177,13 +177,30 @@ func (c *Conn) sendDeadline() time.Duration {
 	return writeReadyTimeout
 }
 
+// senderStream gives this conn its own record stream off the shared key set.
+// Conns ride independent transports, so sealing them from one counter puts
+// unrelated delivery orders through a single replay window and the slower
+// conn's records get dropped as too old; see [crypto.KeySet.SenderStream].
+// Falling back to the parent set on failure keeps the conn usable.
+//
+// ai-generated: this function and its doc comment.
+func senderStream(keys *crypto.KeySet) *crypto.KeySet {
+	stream, err := keys.SenderStream()
+	if err != nil {
+		logger.Warnf("muxconn: no sender stream, sharing the parent record counter: %v", err)
+		return keys
+	}
+	return stream
+}
+
 // New wires a Conn over the given transport. Push must be set as the
 // transport's OnData callback before this conn is used.
 func New(ln transport.Transport, keys *crypto.KeySet) *Conn {
 	return &Conn{
-		ln:      ln,
-		send:    ln.Send,
-		keys:    keys,
+		ln:   ln,
+		send: ln.Send,
+		// ai-generated: seal under a per-connection sender stream.
+		keys:    senderStream(keys),
 		aad:     []byte(dataRecordAAD),
 		in:      make(chan *[]byte, inboundQueue),
 		closeCh: make(chan struct{}),
@@ -202,7 +219,8 @@ func NewControl(ln transport.Transport, keys *crypto.KeySet) *Conn {
 		ln:      ln,
 		send:    cp.ControlSend,
 		canSend: cp.ControlCanSend,
-		keys:    keys,
+		// ai-generated: seal under a per-connection sender stream.
+		keys:    senderStream(keys),
 		aad:     []byte(controlRecordAAD),
 		in:      make(chan *[]byte, inboundQueue),
 		closeCh: make(chan struct{}),
@@ -218,7 +236,8 @@ func NewPeer(ln transport.PeerTransport, keys *crypto.KeySet, peerID string) *Co
 		send: func(data []byte) error {
 			return ln.SendTo(peerID, data)
 		},
-		keys:    keys,
+		// ai-generated: seal under a per-connection sender stream.
+		keys:    senderStream(keys),
 		aad:     []byte(dataRecordAAD),
 		in:      make(chan *[]byte, inboundQueue),
 		closeCh: make(chan struct{}),
@@ -246,7 +265,8 @@ func NewPeerControlUnbound(ln transport.Transport, keys *crypto.KeySet, peerID s
 		canSend: func() bool {
 			return cp.ControlPeerCanSend(peerID)
 		},
-		keys:    keys,
+		// ai-generated: seal under a per-connection sender stream.
+		keys:    senderStream(keys),
 		aad:     []byte(controlRecordAAD),
 		in:      make(chan *[]byte, inboundQueue),
 		closeCh: make(chan struct{}),
