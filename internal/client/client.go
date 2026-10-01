@@ -20,6 +20,7 @@ import (
 	"github.com/openlibrecommunity/olcrtc/internal/crypto"
 	"github.com/openlibrecommunity/olcrtc/internal/logger"
 	"github.com/openlibrecommunity/olcrtc/internal/muxconn"
+	"github.com/openlibrecommunity/olcrtc/internal/protect"
 	"github.com/openlibrecommunity/olcrtc/internal/runtime"
 	"github.com/openlibrecommunity/olcrtc/internal/transport"
 	"github.com/openlibrecommunity/olcrtc/internal/tunnelcore"
@@ -95,7 +96,7 @@ type Config struct {
 	KeyHex           string
 	LocalAddr        string
 	DNSServer        string
-	Resolver         *net.Resolver
+	Resolver         protect.Lookup
 	SOCKSUser        string
 	SOCKSPass        string
 	TransportOptions transport.Options

@@ -2,7 +2,6 @@ package goolom
 
 import (
 	"fmt"
-	"net"
 	"strings"
 	"time"
 
@@ -12,6 +11,7 @@ import (
 
 	"github.com/openlibrecommunity/olcrtc/internal/engine"
 	"github.com/openlibrecommunity/olcrtc/internal/logger"
+	"github.com/openlibrecommunity/olcrtc/internal/protect"
 )
 
 func (s *Session) setupPeerConnections(config webrtc.Configuration) error {
@@ -39,7 +39,7 @@ func (s *Session) setupPeerConnections(config webrtc.Configuration) error {
 }
 
 // newWebRTCAPI builds a pion API with IPv4-only ICE and default interceptors.
-func newWebRTCAPI(resolver *net.Resolver) (*webrtc.API, error) {
+func newWebRTCAPI(resolver protect.Lookup) (*webrtc.API, error) {
 	settingEngine := webrtc.SettingEngine{}
 	apply, err := engine.NewPionSettings(engine.PionSettingsOptions{
 		Resolver:         resolver,

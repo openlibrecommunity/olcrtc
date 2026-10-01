@@ -11,7 +11,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -57,7 +56,7 @@ type Session struct {
 	host       string
 	room       string
 	name       string
-	resolver   *net.Resolver
+	resolver   protect.Lookup
 	httpClient *http.Client
 
 	onData              func([]byte)

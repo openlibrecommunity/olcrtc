@@ -38,6 +38,14 @@ var (
 	sensitiveBearerRE = regexp.MustCompile(`(?i)(bearer\s+)[A-Za-z0-9._~+/=-]+`)
 )
 
+// ErrProtectorRejected reports that the host protector refused a socket.
+//
+// This used to surface as net.ErrClosed, which prints "use of closed network
+// connection" - a protector that fails only for AF_INET6 then reads as an
+// unrelated bug in whatever was dialing. The network is in the OpError, so the
+// message now names both the cause and the family it happened on.
+var ErrProtectorRejected = errors.New("socket protector rejected the socket")
+
 type protectorHolder struct {
 	protect func(int) bool
 }
@@ -67,7 +75,7 @@ func controlFunc(network, _ string, c syscall.RawConn) error {
 	var err error
 	controlErr := c.Control(func(fd uintptr) {
 		if !current.protect(int(fd)) {
-			err = &net.OpError{Op: "protect", Net: network, Err: net.ErrClosed}
+			err = &net.OpError{Op: "protect", Net: network, Err: ErrProtectorRejected}
 		}
 	})
 	if controlErr != nil {
@@ -76,46 +84,16 @@ func controlFunc(network, _ string, c syscall.RawConn) error {
 	return err
 }
 
-// newDialer returns a net.Dialer that protects each new socket.
-func newDialer() *net.Dialer {
-	return newDialerWithResolver(nil)
-}
-
-// newDialerWithResolver returns a protected dialer using resolver for DNS.
-func newDialerWithResolver(resolver *net.Resolver) *net.Dialer {
-	return &net.Dialer{
-		Timeout:   defaultDialTimeout,
-		KeepAlive: defaultKeepAlive,
-		Control:   controlFunc,
-		Resolver:  resolver,
-	}
-}
-
-// NewResolver returns a local Go resolver that sends queries to dnsServer.
-func NewResolver(dnsServer string) *net.Resolver {
-	if dnsServer == "" {
-		return nil
-	}
-	return &net.Resolver{
-		PreferGo: true,
-		Dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
-			dialer := net.Dialer{Timeout: 3 * time.Second, Control: controlFunc}
-			return dialer.DialContext(ctx, network, dnsServer)
-		},
-	}
-}
-
 // newTLSConfig returns the shared TLS policy for provider HTTP/WebSocket clients.
 func newTLSConfig() *tls.Config {
 	return &tls.Config{MinVersion: tls.VersionTLS12}
 }
 
 // newHTTPTransport returns an HTTP transport using protected sockets and sane timeouts.
-func newHTTPTransport(resolvers ...*net.Resolver) *http.Transport {
-	dialer := newDialerWithResolver(firstResolver(resolvers))
+func newHTTPTransport(lookups ...Lookup) *http.Transport {
 	return &http.Transport{
 		Proxy:                 http.ProxyFromEnvironment,
-		DialContext:           dialer.DialContext,
+		DialContext:           NewDialer(lookups...).DialContext,
 		TLSClientConfig:       newTLSConfig(),
 		ForceAttemptHTTP2:     true,
 		MaxIdleConns:          10,
@@ -126,9 +104,10 @@ func newHTTPTransport(resolvers ...*net.Resolver) *http.Transport {
 }
 
 // NewHTTPClient returns an http.Client using protected sockets with DNS retry.
-func NewHTTPClient(resolvers ...*net.Resolver) *http.Client {
+// Names resolve through the first non-nil lookup.
+func NewHTTPClient(lookups ...Lookup) *http.Client {
 	return &http.Client{
-		Transport: &retryTransport{base: newHTTPTransport(resolvers...)},
+		Transport: &retryTransport{base: newHTTPTransport(lookups...)},
 		Timeout:   defaultHTTPClientTimeout,
 	}
 }
@@ -205,6 +184,14 @@ func isRetriableError(err error) bool {
 	if errors.As(err, &dnsErr) {
 		return true
 	}
+	// No route is a statement about this instant, not about the host: the
+	// link is still coming up, the phone is mid-handover, or the socket was
+	// pinned to an interface that had nothing behind it. It used to be the one
+	// dial error that ended the request on the first try, which on a mobile
+	// carrier is the difference between connecting and not.
+	if errors.Is(err, syscall.EHOSTUNREACH) || errors.Is(err, syscall.ENETUNREACH) {
+		return true
+	}
 	var opErr *net.OpError
 	if errors.As(err, &opErr) {
 		return opErr.Timeout() || strings.Contains(opErr.Error(), "connection refused")
@@ -216,12 +203,12 @@ func isRetriableError(err error) bool {
 }
 
 // NewWebSocketDialer returns a WebSocket dialer using protected sockets and shared TLS policy.
-func NewWebSocketDialer(handshakeTimeout time.Duration, resolvers ...*net.Resolver) websocket.Dialer {
+func NewWebSocketDialer(handshakeTimeout time.Duration, lookups ...Lookup) websocket.Dialer {
 	if handshakeTimeout <= 0 {
 		handshakeTimeout = defaultWebSocketTimeout
 	}
 	return websocket.Dialer{
-		NetDialContext:   newDialerWithResolver(firstResolver(resolvers)).DialContext,
+		NetDialContext:   NewDialer(lookups...).DialContext,
 		Proxy:            http.ProxyFromEnvironment,
 		TLSClientConfig:  newTLSConfig(),
 		HandshakeTimeout: handshakeTimeout,
@@ -249,26 +236,15 @@ func redactSensitive(text string) string {
 
 // ProxyDialer implements golang.org/x/net/proxy.Dialer for pion ICE.
 type ProxyDialer struct {
-	resolver *net.Resolver
+	dialer *Dialer
 }
 
 // Dial connects to the address on the named network using a protected socket.
 func (d *ProxyDialer) Dial(network, addr string) (net.Conn, error) {
-	conn, err := newDialerWithResolver(d.resolver).Dial(network, addr)
-	if err != nil {
-		return nil, fmt.Errorf("dial failed: %w", err)
-	}
-	return conn, nil
+	return d.dialer.Dial(network, addr)
 }
 
 // NewProxyDialer returns a proxy.Dialer that protects ICE sockets.
-func NewProxyDialer(resolvers ...*net.Resolver) *ProxyDialer {
-	return &ProxyDialer{resolver: firstResolver(resolvers)}
-}
-
-func firstResolver(resolvers []*net.Resolver) *net.Resolver {
-	if len(resolvers) == 0 {
-		return nil
-	}
-	return resolvers[0]
+func NewProxyDialer(lookups ...Lookup) *ProxyDialer {
+	return &ProxyDialer{dialer: NewDialer(lookups...)}
 }

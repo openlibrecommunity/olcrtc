@@ -5,7 +5,6 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"fmt"
-	"net"
 	"strconv"
 	"time"
 
@@ -15,6 +14,7 @@ import (
 
 	"github.com/openlibrecommunity/olcrtc/internal/engine"
 	"github.com/openlibrecommunity/olcrtc/internal/logger"
+	"github.com/openlibrecommunity/olcrtc/internal/protect"
 )
 
 // waitForJingle waits for Jicofo's session-initiate after a peer joins.
@@ -113,7 +113,7 @@ func (s *Session) shouldRequestVideo() bool {
 }
 
 // newSettingEngine builds the pion settings shared with the other engines.
-func newSettingEngine(resolver *net.Resolver) (webrtc.SettingEngine, error) {
+func newSettingEngine(resolver protect.Lookup) (webrtc.SettingEngine, error) {
 	settings := webrtc.SettingEngine{}
 	apply, err := engine.NewPionSettings(engine.PionSettingsOptions{
 		Resolver:         resolver,
@@ -128,7 +128,7 @@ func newSettingEngine(resolver *net.Resolver) (webrtc.SettingEngine, error) {
 	return settings, nil
 }
 
-func newConferenceAPI(resolver *net.Resolver) (*webrtc.API, error) {
+func newConferenceAPI(resolver protect.Lookup) (*webrtc.API, error) {
 	settings, err := newSettingEngine(resolver)
 	if err != nil {
 		return nil, err

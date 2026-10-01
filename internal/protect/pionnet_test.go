@@ -9,8 +9,11 @@ import (
 	"reflect"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/pion/transport/v4"
+
+	"github.com/openlibrecommunity/olcrtc/internal/fakedns"
 )
 
 func TestIsTunInterface(t *testing.T) {
@@ -101,12 +104,19 @@ func TestControlFuncProtects(t *testing.T) {
 func TestCreateDialerUsesResolver(t *testing.T) {
 	resolver := &net.Resolver{PreferGo: true}
 	n := &ProtectedNet{resolver: resolver}
-	dialer, ok := n.CreateDialer(nil).(*protectedDialer)
+	dialer, ok := n.CreateDialer(nil).(resolvingDialer)
 	if !ok {
-		t.Fatalf("CreateDialer() type = %T, want *protectedDialer", n.CreateDialer(nil))
+		t.Fatalf("CreateDialer() type = %T, want resolvingDialer", n.CreateDialer(nil))
 	}
-	if dialer.dialer.Resolver != resolver {
-		t.Fatalf("CreateDialer().Resolver = %p, want %p", dialer.dialer.Resolver, resolver)
+	if dialer.lookup != resolver {
+		t.Fatalf("CreateDialer().lookup = %v, want %p", dialer.lookup, resolver)
+	}
+	if _, ok := dialer.dialer.(*protectedDialer); !ok {
+		t.Fatalf("resolvingDialer wraps %T, want *protectedDialer", dialer.dialer)
+	}
+	plain := &ProtectedNet{}
+	if _, ok := plain.CreateDialer(nil).(*protectedDialer); !ok {
+		t.Fatalf("CreateDialer() without a lookup = %T, want *protectedDialer", plain.CreateDialer(nil))
 	}
 }
 
@@ -306,5 +316,141 @@ func TestCreateDialerProtectsAndChainsControlContext(t *testing.T) {
 	}
 	if !callerControlContextRan {
 		t.Error("caller's ControlContext hook did not run (chain dropped it)")
+	}
+}
+
+const turnTestIP = "192.0.2.40"
+
+// Pion resolves its STUN and TURN servers through the Net it is handed, and
+// the shim used to leave that to Pion's standard net - the system resolver,
+// which inside an iOS packet tunnel is the tunnel's own, unserved until the
+// cores are up. Server names now go the way of every other protected lookup:
+// the configured servers first, the host's resolver behind them.
+func TestProtectedNetResolvesServerNamesThroughTheConfiguredServers(t *testing.T) {
+	dns, err := fakedns.Start(map[string]string{"turn.test": turnTestIP})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = dns.Close() }()
+
+	n, err := NewProtectedNet(NewResolver(dns.Addr))
+	if err != nil {
+		t.Fatal(err)
+	}
+	udp, err := n.ResolveUDPAddr("udp4", "turn.test:3478")
+	if err != nil {
+		t.Fatalf("ResolveUDPAddr() = %v", err)
+	}
+	if udp.IP.String() != turnTestIP || udp.Port != 3478 {
+		t.Fatalf("ResolveUDPAddr() = %v, want %s:3478", udp, turnTestIP)
+	}
+	tcp, err := n.ResolveTCPAddr("tcp", "turn.test:443")
+	if err != nil {
+		t.Fatalf("ResolveTCPAddr() = %v", err)
+	}
+	if tcp.IP.String() != turnTestIP || tcp.Port != 443 {
+		t.Fatalf("ResolveTCPAddr() = %v, want %s:443", tcp, turnTestIP)
+	}
+	if dns.Queries() == 0 {
+		t.Fatal("the configured server was never asked")
+	}
+}
+
+// A literal passes through untouched, zone and all: link-local candidates
+// carry one, and a lookup would have nothing to add.
+func TestProtectedNetKeepsALiteralAddressAsItIs(t *testing.T) {
+	n, err := NewProtectedNet(NewResolver("127.0.0.1:1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	literal, err := n.ResolveUDPAddr("udp", "[fe80::1%lo]:1")
+	if err != nil {
+		t.Fatalf("ResolveUDPAddr() of a literal = %v", err)
+	}
+	if literal.Zone != "lo" || literal.Port != 1 || literal.IP.String() != "fe80::1" {
+		t.Fatalf("ResolveUDPAddr() of a literal = %v, want fe80::1 with zone lo and port 1", literal)
+	}
+}
+
+// And when the configured servers are dark, the host's resolver answers for
+// Pion too - the same fallback the dialers have, not a lookup that dies with
+// the first silent server.
+func TestProtectedNetFallsBackToTheHostResolver(t *testing.T) {
+	silent, err := fakedns.StartSilent()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = silent.Close() }()
+	host, err := fakedns.Start(map[string]string{"turn.test": "127.0.0.1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = host.Close() }()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	pc, err := (&net.ListenConfig{}).ListenPacket(ctx, "udp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = pc.Close() }()
+	_, port, _ := net.SplitHostPort(pc.LocalAddr().String())
+
+	r := newTestResolver(t, silent.Addr, host)
+	n, err := NewProtectedNet(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn, err := n.Dial("udp", net.JoinHostPort("turn.test", port))
+	if err != nil {
+		t.Fatalf("Dial() = %v, want the host's resolver to answer", err)
+	}
+	_ = conn.Close()
+	direct, err := NewDialer(r).DialContext(ctx, "udp", net.JoinHostPort("turn.test", port))
+	if err != nil {
+		t.Fatalf("DialContext(udp) = %v, want the host's resolver to answer", err)
+	}
+	_ = direct.Close()
+}
+
+// The pion dialers used to be plain net.Dialers with a Control hook and nothing
+// else, so their name lookups went to the system resolver. Inside an iOS packet
+// tunnel that resolver is the tunnel's own, which nothing is serving yet when
+// the carrier is being dialed - a self-hosted Jitsi host, never in the phone's
+// DNS cache, failed with "lookup meet.example: no such host" (olcbox#13).
+func TestProtectedNetDialResolvesThroughTheConfiguredServer(t *testing.T) {
+	carrier, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = carrier.Close() }()
+	go func() {
+		for {
+			c, acceptErr := carrier.Accept()
+			if acceptErr != nil {
+				return
+			}
+			_ = c.Close()
+		}
+	}()
+
+	dns, err := fakedns.Start(map[string]string{"carrier.test": "127.0.0.1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = dns.Close() }()
+
+	pnet, err := NewProtectedNet(NewResolver(dns.Addr))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, port, _ := net.SplitHostPort(carrier.Addr().String())
+	conn, err := pnet.Dial("tcp", net.JoinHostPort("carrier.test", port))
+	if err != nil {
+		t.Fatalf("Dial() = %v, want a connection resolved through %s", err, dns.Addr)
+	}
+	_ = conn.Close()
+	if dns.Queries() == 0 {
+		t.Fatal("the configured server was never asked")
 	}
 }

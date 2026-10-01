@@ -1,9 +1,8 @@
 package tunnelcore
 
 import (
-	"net"
-
 	"github.com/openlibrecommunity/olcrtc/internal/names"
+	"github.com/openlibrecommunity/olcrtc/internal/protect"
 	"github.com/openlibrecommunity/olcrtc/internal/transport"
 )
 
@@ -26,7 +25,7 @@ type LinkRoleConfig struct {
 	DeviceID            string
 	OnData              func([]byte)
 	OnPeerData          func(string, []byte)
-	Resolver            *net.Resolver
+	Resolver            protect.Lookup
 	ProxyAddr           string
 	ProxyPort           int
 	RequireTargetedPeer bool

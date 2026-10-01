@@ -46,7 +46,7 @@ const (
 // ProtectedNet implements pion's transport.Net with socket protection and
 // tunnel-interface filtering.
 type ProtectedNet struct {
-	resolver *net.Resolver
+	resolver Lookup
 }
 
 // NewProtectedNet builds a ProtectedNet with platform-specific interface
@@ -59,8 +59,8 @@ type ProtectedNet struct {
 // failures therefore surface from Interfaces(), not from here.
 //
 //nolint:unparam // error kept so the signature stays stable for the engine call sites
-func NewProtectedNet(resolvers ...*net.Resolver) (*ProtectedNet, error) {
-	return &ProtectedNet{resolver: firstResolver(resolvers)}, nil
+func NewProtectedNet(lookups ...Lookup) (*ProtectedNet, error) {
+	return &ProtectedNet{resolver: firstLookup(lookups)}, nil
 }
 
 // Interfaces returns system interfaces after filtering tunnel-style devices.
@@ -147,10 +147,12 @@ func (n *ProtectedNet) ListenUDP(network string, locAddr *net.UDPAddr) (transpor
 	return uc, nil
 }
 
-// Dial connects to the address on a protected socket.
+// Dial connects to the address on a protected socket. The name in it goes
+// the way of every other name here: through the session's lookup, so a TURN
+// or signalling host is never left to the system resolver, which inside an
+// iOS packet tunnel is the tunnel's own (olcbox#16).
 func (n *ProtectedNet) Dial(network, address string) (net.Conn, error) {
-	d := net.Dialer{Control: controlFunc, Resolver: n.resolver}
-	conn, err := d.Dial(network, address)
+	conn, err := NewDialer(n.resolver).DialContext(context.Background(), network, address)
 	if err != nil {
 		return nil, fmt.Errorf("dial %s %q: %w", network, address, err)
 	}
@@ -159,7 +161,7 @@ func (n *ProtectedNet) Dial(network, address string) (net.Conn, error) {
 
 // DialUDP connects to a UDP address on a protected socket.
 func (n *ProtectedNet) DialUDP(network string, laddr, raddr *net.UDPAddr) (transport.UDPConn, error) {
-	d := net.Dialer{Control: controlFunc, Resolver: n.resolver}
+	d := net.Dialer{Control: controlFunc}
 	if laddr != nil {
 		d.LocalAddr = laddr
 	}
@@ -178,7 +180,7 @@ func (n *ProtectedNet) DialUDP(network string, laddr, raddr *net.UDPAddr) (trans
 
 // DialTCP connects to a TCP address on a protected socket.
 func (n *ProtectedNet) DialTCP(network string, laddr, raddr *net.TCPAddr) (transport.TCPConn, error) {
-	d := net.Dialer{Control: controlFunc, Resolver: n.resolver}
+	d := net.Dialer{Control: controlFunc}
 	if laddr != nil {
 		d.LocalAddr = laddr
 	}
@@ -308,7 +310,7 @@ func (n *ProtectedNet) resolveHostPort(network, address string) (net.IPAddr, int
 	if err != nil {
 		return net.IPAddr{}, 0, fmt.Errorf("split host port: %w", err)
 	}
-	port, err := n.resolver.LookupPort(context.Background(), network, portText)
+	port, err := net.DefaultResolver.LookupPort(context.Background(), network, portText)
 	if err != nil {
 		return net.IPAddr{}, 0, fmt.Errorf("lookup port: %w", err)
 	}
@@ -325,7 +327,7 @@ func (n *ProtectedNet) resolveHostPort(network, address string) (net.IPAddr, int
 	return ip, port, nil
 }
 
-func lookupIPAddr(resolver *net.Resolver, network, host string) (net.IPAddr, error) {
+func lookupIPAddr(resolver Lookup, network, host string) (net.IPAddr, error) {
 	if host == "" {
 		return net.IPAddr{}, nil
 	}
@@ -387,15 +389,37 @@ func (n *ProtectedNet) CreateDialer(d *net.Dialer) transport.Dialer {
 	if d != nil {
 		dialer = *d
 	}
-	if dialer.Resolver == nil {
-		dialer.Resolver = n.resolver
-	}
 	if dialer.ControlContext != nil {
 		dialer.ControlContext = chainControlContext(dialer.ControlContext)
 	} else {
 		dialer.Control = chainControl(dialer.Control)
 	}
-	return &protectedDialer{dialer: dialer}
+	protected := &protectedDialer{dialer: dialer}
+	// Names resolve where the sockets are protected, not through the system
+	// resolver - see Dial. A resolver the caller chose is left alone.
+	if n.resolver != nil && dialer.Resolver == nil {
+		return resolvingDialer{lookup: n.resolver, dialer: protected}
+	}
+	return protected
+}
+
+// resolvingDialer resolves a name before the dialer underneath sees it, so
+// pion's TURN and STUN hosts go through the session's lookup.
+type resolvingDialer struct {
+	lookup Lookup
+	dialer transport.Dialer
+}
+
+func (d resolvingDialer) Dial(network, address string) (net.Conn, error) {
+	literal, err := resolveAddress(context.Background(), d.lookup, network, address)
+	if err != nil {
+		return nil, fmt.Errorf("dial %s %q: %w", network, address, err)
+	}
+	conn, err := d.dialer.Dial(network, literal)
+	if err != nil {
+		return nil, fmt.Errorf("dial %s %q: %w", network, address, err)
+	}
+	return conn, nil
 }
 
 // CreateListenConfig returns a listen config that protects each fd. It copies
