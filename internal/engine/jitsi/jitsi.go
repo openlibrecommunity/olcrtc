@@ -30,13 +30,22 @@ const (
 	defaultNick       = "olcrtc"
 	credentialKeyRoom = "room"
 	maxReconnects     = 5
+	// defaultSendQueueSize bounds what waits for the bridge, per destination.
+	// At the ~5 Mbit/s a JVB relay carries, 32 frames of 16 KB is under a
+	// second of queue. Control pings and pongs share this path with bulk
+	// data, and a pong that waits longer than the liveness timeout is a
+	// session torn down. 5000 was minutes of queue, and a full queue was an
+	// error that closed smux at once (olcbox #15).
+	defaultSendQueueSize = 32
+	// peerQueueIdle is how long an untouched per-peer queue lives. Peer IDs
+	// are data epochs, so a client that reconnects arrives under a new one;
+	// on a server that runs for days the map would otherwise only grow.
+	peerQueueIdle = time.Minute
 )
 
 var (
 	// ErrSessionClosed is returned when an operation is attempted on a closed session.
 	ErrSessionClosed = errors.New("jitsi session closed")
-	// ErrSendQueueFull is returned when the outbound queue cannot accept more data.
-	ErrSendQueueFull = errors.New("jitsi send queue full")
 	// ErrBridgeNotReady is returned when send is attempted before the bridge is open.
 	ErrBridgeNotReady = errors.New("jitsi bridge not ready")
 	// ErrSendTooLarge is returned when a payload exceeds the JVB message limit.
@@ -73,12 +82,17 @@ type Session struct {
 	pcCancel      context.CancelFunc
 	trickleCancel context.CancelFunc
 
-	sendQueue     chan []byte
-	peerSendQueue chan bridgeOutbound
-	bridgeReady   atomic.Bool
-	bridgeGen     atomic.Uint64
-	closed        atomic.Bool
-	reconnecting  atomic.Bool
+	sendQueue chan []byte
+	// peerQueues holds one bounded queue per addressed peer, so a client that
+	// cannot drain its share does not hold the room's other clients behind
+	// it. peerWake is buffered(1): "some peer queue has data".
+	peerQueueMu  sync.Mutex
+	peerQueues   map[string]*peerQueue
+	peerWake     chan struct{}
+	bridgeReady  atomic.Bool
+	bridgeGen    atomic.Uint64
+	closed       atomic.Bool
+	reconnecting atomic.Bool
 
 	goMu sync.Mutex
 	// recvMu admits one recvLoop at a time; see recvLoop.
@@ -98,6 +112,15 @@ type Session struct {
 	cancel   context.CancelFunc
 	runCtx   context.Context //nolint:containedctx // engine owns supervisor lifetime
 	wg       sync.WaitGroup
+}
+
+// peerQueue is one peer's share of the bridge, with the bookkeeping that
+// lets it be dropped safely: refs counts senders that hold the channel and
+// may still push into it, lastUsed is when it last took a frame.
+type peerQueue struct {
+	ch       chan []byte
+	refs     int
+	lastUsed time.Time
 }
 
 // New creates a Jitsi engine session.
@@ -128,8 +151,9 @@ func New(_ context.Context, cfg engine.Config) (engine.Session, error) {
 		onData:              cfg.OnData,
 		onPeerData:          cfg.OnPeerData,
 		requireTargetedPeer: cfg.RequireTargetedPeer,
-		sendQueue:           make(chan []byte, engine.DefaultSendQueueSize),
-		peerSendQueue:       make(chan bridgeOutbound, engine.DefaultSendQueueSize),
+		sendQueue:           make(chan []byte, defaultSendQueueSize),
+		peerQueues:          make(map[string]*peerQueue),
+		peerWake:            make(chan struct{}, 1),
 		peerEpochs:          make(map[string]uint32),
 		jSessReady:          make(chan struct{}),
 		done:                make(chan struct{}),

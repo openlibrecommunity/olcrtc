@@ -27,11 +27,6 @@ const (
 
 var bridgeMagic = [4]byte{'O', 'L', 'R', '1'} //nolint:gochecknoglobals // wire protocol constant
 
-type bridgeOutbound struct {
-	to   string
-	data []byte
-}
-
 func (s *Session) openBridgeWS(ctx context.Context, jSess *j.Session) error {
 	return s.openBridge(ctx, jSess, "", "colibri-ws", jSess.OpenBridge)
 }
@@ -60,7 +55,7 @@ func (s *Session) openBridge(
 	return nil
 }
 
-// Send queues a broadcast bridge frame without blocking.
+// Send queues a broadcast bridge frame, waiting for room in the queue.
 func (s *Session) Send(data []byte) error {
 	if s.closed.Load() {
 		return ErrSessionClosed
@@ -72,7 +67,7 @@ func (s *Session) Send(data []byte) error {
 	if err != nil {
 		return err
 	}
-	return enqueueBridgeFrame(s, s.sendQueue, framed, framed)
+	return s.enqueueBridgeFrame(framed)
 }
 
 // SendTo queues a bridge frame for a specific Jitsi endpoint.
@@ -90,27 +85,66 @@ func (s *Session) SendTo(peerID string, data []byte) error {
 	if err != nil {
 		return err
 	}
-	outbound := bridgeOutbound{to: peerID, data: framed}
-	return enqueueBridgeFrame(s, s.peerSendQueue, framed, outbound)
+	return s.enqueuePeerBridgeFrame(peerID, framed)
 }
 
-func enqueueBridgeFrame[T any](s *Session, queue chan<- T, framed []byte, value T) error {
-	if s.closed.Load() {
-		return ErrSessionClosed
-	}
-	if !s.bridgeReady.Load() {
-		return ErrBridgeNotReady
-	}
+// enqueueBridgeFrame queues a broadcast frame. A full queue is back-pressure
+// for smux, not a failure: the writer slows down, the session stays up, and
+// a control frame behind it waits at most one queue's worth.
+func (s *Session) enqueueBridgeFrame(framed []byte) error {
 	if len(framed) > bridgeMaxMessageSize {
 		return ErrSendTooLarge
 	}
 	select {
-	case queue <- value:
+	case s.sendQueue <- framed:
 		return nil
 	case <-s.done:
 		return ErrSessionClosed
+	}
+}
+
+// enqueuePeerBridgeFrame queues a frame on the peer's own queue and wakes
+// the sender.
+func (s *Session) enqueuePeerBridgeFrame(peerID string, framed []byte) error {
+	if len(framed) > bridgeMaxMessageSize {
+		return ErrSendTooLarge
+	}
+	pq := s.peerQueueFor(peerID)
+	defer s.releasePeerQueue(pq)
+	select {
+	case pq.ch <- framed:
+		s.wakePeerSender()
+		return nil
+	case <-s.done:
+		return ErrSessionClosed
+	}
+}
+
+// peerQueueFor returns the peer's queue with a reference held; the caller
+// releases it once its frame is in (or the session is gone).
+func (s *Session) peerQueueFor(peerID string) *peerQueue {
+	s.peerQueueMu.Lock()
+	defer s.peerQueueMu.Unlock()
+	pq := s.peerQueues[peerID]
+	if pq == nil {
+		pq = &peerQueue{ch: make(chan []byte, defaultSendQueueSize)}
+		s.peerQueues[peerID] = pq
+	}
+	pq.refs++
+	pq.lastUsed = time.Now()
+	return pq
+}
+
+func (s *Session) releasePeerQueue(pq *peerQueue) {
+	s.peerQueueMu.Lock()
+	pq.refs--
+	s.peerQueueMu.Unlock()
+}
+
+func (s *Session) wakePeerSender() {
+	select {
+	case s.peerWake <- struct{}{}:
 	default:
-		return ErrSendQueueFull
 	}
 }
 
@@ -124,11 +158,60 @@ func (s *Session) sendLoop() {
 				return
 			}
 			s.sendBridgeFrame("", data)
-		case frame, ok := <-s.peerSendQueue:
-			if !ok {
+		case <-s.peerWake:
+			s.drainPeerQueues()
+		}
+	}
+}
+
+// drainPeerQueues sends one frame per peer per pass, round-robin, until
+// every peer queue is empty, serving the broadcast queue between peers so a
+// busy room does not starve it. Queues nobody has touched for peerQueueIdle
+// and nobody holds are dropped at the end.
+func (s *Session) drainPeerQueues() {
+	for {
+		s.peerQueueMu.Lock()
+		peers := make([]string, 0, len(s.peerQueues))
+		queues := make([]*peerQueue, 0, len(s.peerQueues))
+		for id, pq := range s.peerQueues {
+			peers = append(peers, id)
+			queues = append(queues, pq)
+		}
+		s.peerQueueMu.Unlock()
+
+		progressed := false
+		for i, pq := range queues {
+			select {
+			case <-s.done:
 				return
+			default:
 			}
-			s.sendBridgeFrame(frame.to, frame.data)
+			select {
+			case data := <-pq.ch:
+				s.sendBridgeFrame(peers[i], data)
+				progressed = true
+			default:
+			}
+			select {
+			case data := <-s.sendQueue:
+				s.sendBridgeFrame("", data)
+			default:
+			}
+		}
+		if !progressed {
+			s.reapPeerQueues()
+			return
+		}
+	}
+}
+
+func (s *Session) reapPeerQueues() {
+	cutoff := time.Now().Add(-peerQueueIdle)
+	s.peerQueueMu.Lock()
+	defer s.peerQueueMu.Unlock()
+	for id, pq := range s.peerQueues {
+		if pq.refs == 0 && len(pq.ch) == 0 && pq.lastUsed.Before(cutoff) {
+			delete(s.peerQueues, id)
 		}
 	}
 }

@@ -205,11 +205,26 @@ func (s *Session) finishReconnect(jSess *j.Session, mode string) {
 	logger.Infof("jitsi: reconnected %s/%s (%s); colibri-ws=%s", s.host, s.room, mode, jSess.ColibriWS)
 }
 
+// drainSendQueue empties every queue in place. In place matters: a sender
+// blocked on a full queue holds that very channel, and only room in it (or
+// the session ending) lets the sender go.
 func (s *Session) drainSendQueue() {
+	drain(s.sendQueue)
+	s.peerQueueMu.Lock()
+	queues := make([]*peerQueue, 0, len(s.peerQueues))
+	for _, pq := range s.peerQueues {
+		queues = append(queues, pq)
+	}
+	s.peerQueueMu.Unlock()
+	for _, pq := range queues {
+		drain(pq.ch)
+	}
+}
+
+func drain(ch <-chan []byte) {
 	for {
 		select {
-		case <-s.sendQueue:
-		case <-s.peerSendQueue:
+		case <-ch:
 		default:
 			return
 		}
