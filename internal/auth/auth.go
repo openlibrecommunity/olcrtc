@@ -15,9 +15,10 @@ package auth
 import (
 	"context"
 	"errors"
-	"net"
 	"slices"
 	"sync"
+
+	"github.com/openlibrecommunity/olcrtc/internal/protect"
 )
 
 var (
@@ -52,7 +53,7 @@ type Config struct {
 	Token string
 	// DNSServer / ProxyAddr / ProxyPort are network knobs for outbound HTTP.
 	DNSServer string
-	Resolver  *net.Resolver
+	Resolver  protect.Lookup
 	ProxyAddr string
 	ProxyPort int
 }

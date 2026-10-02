@@ -19,6 +19,7 @@ import (
 	"github.com/openlibrecommunity/olcrtc/internal/framing"
 	"github.com/openlibrecommunity/olcrtc/internal/handshake"
 	"github.com/openlibrecommunity/olcrtc/internal/muxconn"
+	"github.com/openlibrecommunity/olcrtc/internal/protect"
 	"github.com/openlibrecommunity/olcrtc/internal/runtime"
 	"github.com/openlibrecommunity/olcrtc/internal/transport"
 	"github.com/openlibrecommunity/olcrtc/internal/tunnelcore"
@@ -258,9 +259,16 @@ func TestSocks5ConnectErrors(t *testing.T) {
 }
 
 func TestSetupResolver(t *testing.T) {
-	resolver := tunnelcore.Resolver(nil, "127.0.0.1:53")
-	if resolver == nil || !resolver.PreferGo || resolver.Dial == nil {
-		t.Fatalf("Resolver() = %+v", resolver)
+	resolver, ok := tunnelcore.Resolver(nil, "127.0.0.1:53").(*protect.Resolver)
+	if !ok || resolver == nil {
+		t.Fatalf("Resolver() = %T, want *protect.Resolver", resolver)
+	}
+	if servers := resolver.Servers(); len(servers) == 0 || servers[0] != "127.0.0.1:53" {
+		t.Fatalf("Resolver().Servers() = %v, want the configured server first", servers)
+	}
+	custom := &net.Resolver{PreferGo: true}
+	if got := tunnelcore.Resolver(custom, "127.0.0.1:53"); got != custom {
+		t.Fatalf("Resolver(custom) = %v, want the custom lookup kept", got)
 	}
 }
 
@@ -334,7 +342,7 @@ func TestDialWithoutProxy(t *testing.T) {
 		t.Fatalf("listener addr type = %T, want *net.TCPAddr", ln.Addr())
 	}
 	s := &Server{resolver: net.DefaultResolver}
-	conn, err := s.dial(ConnectRequest{Addr: testConnectAddr, Port: tcpAddr.Port})
+	conn, err := s.dial(context.Background(), ConnectRequest{Addr: testConnectAddr, Port: tcpAddr.Port})
 	if err != nil {
 		t.Fatalf("dial() error = %v", err)
 	}
@@ -344,7 +352,7 @@ func TestDialWithoutProxy(t *testing.T) {
 
 func TestDialProxyError(t *testing.T) {
 	s := &Server{socksProxyAddr: testConnectAddr, socksProxyPort: 1}
-	if _, err := s.dial(ConnectRequest{Addr: "example.com", Port: 443}); err == nil || !strings.Contains(err.Error(), "failed to dial proxy") {
+	if _, err := s.dial(context.Background(), ConnectRequest{Addr: "example.com", Port: 443}); err == nil || !strings.Contains(err.Error(), "failed to dial proxy") {
 		t.Fatalf("dial() error = %v", err)
 	}
 }

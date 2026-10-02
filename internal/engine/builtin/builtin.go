@@ -9,7 +9,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net"
 	"slices"
 	"sync"
 
@@ -21,6 +20,7 @@ import (
 	"github.com/openlibrecommunity/olcrtc/internal/engine/goolom"
 	engineJitsi "github.com/openlibrecommunity/olcrtc/internal/engine/jitsi"
 	"github.com/openlibrecommunity/olcrtc/internal/engine/livekit"
+	"github.com/openlibrecommunity/olcrtc/internal/protect"
 )
 
 // defaultDirectEngine is used by the "none" provider when the config does not
@@ -42,7 +42,7 @@ type Config struct {
 	OnData              func([]byte)
 	OnPeerData          func(peerID string, data []byte)
 	DNSServer           string
-	Resolver            *net.Resolver
+	Resolver            protect.Lookup
 	ProxyAddr           string
 	ProxyPort           int
 	RequireTargetedPeer bool
