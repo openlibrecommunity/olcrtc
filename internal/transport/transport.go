@@ -109,6 +109,13 @@ type PeerReadyTransport interface {
 	WaitForPeer(ctx context.Context) error
 }
 
+// PeerObserver is implemented by transports that can say whether any remote
+// participant has sent a well-formed frame yet, authenticated or not. The
+// client uses it to tell an empty room from a peer that does not answer.
+type PeerObserver interface {
+	PeerSeen() bool
+}
+
 // PeerIdentity is implemented by transports that authenticate a routing peer
 // through the encrypted handshake before accepting its data-plane frames.
 type PeerIdentity interface {

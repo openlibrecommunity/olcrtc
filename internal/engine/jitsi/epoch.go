@@ -215,6 +215,17 @@ func (s *Session) resetPeerEpochs() {
 	s.peerEpochMu.Unlock()
 }
 
+// PeerSeen implements transport.PeerObserver: a peer epoch is latched, or
+// the bridge lists another occupant of the room (the library already leaves
+// out our own nick and the focus).
+func (s *Session) PeerSeen() bool {
+	if s.peerEpoch.Load() != 0 {
+		return true
+	}
+	jSess := s.jSess.Load()
+	return jSess != nil && len(jSess.Endpoints()) > 0
+}
+
 // WaitForPeer blocks until the encrypted handshake has confirmed a peer epoch.
 func (s *Session) WaitForPeer(ctx context.Context) error {
 	const pollInterval = 50 * time.Millisecond

@@ -160,10 +160,13 @@ type Conn struct {
 	leftoverBuf *[]byte
 	leftover    []byte
 
-	// decrypt failure accounting for the rate-limited log in Push.
+	// decrypt failure accounting for the rate-limited log in Push, and by
+	// kind for the client's handshake classifier (see DecryptStats).
 	decryptFails  atomic.Uint64
 	decryptLogged atomic.Uint64
 	decryptLogAt  atomic.Int64
+	badMagic      atomic.Uint64
+	authFailed    atomic.Uint64
 
 	// writeTimeout overrides writeReadyTimeout. Zero means the default;
 	// only tests set it.
@@ -286,6 +289,12 @@ func (c *Conn) Push(ciphertext []byte) {
 // report. Frames from unrelated room participants are expected traffic, not
 // an error worth one line each.
 func (c *Conn) noteDecryptFailure(size int, err error) {
+	switch {
+	case errors.Is(err, crypto.ErrBadRecordMagic), errors.Is(err, crypto.ErrRecordTooShort):
+		c.badMagic.Add(1)
+	case errors.Is(err, crypto.ErrAuthentication):
+		c.authFailed.Add(1)
+	}
 	total := c.decryptFails.Add(1)
 	now := time.Now().UnixNano()
 	if total == 1 {
@@ -304,6 +313,19 @@ func (c *Conn) noteDecryptFailure(size int, err error) {
 	dropped := total - c.decryptLogged.Swap(total)
 	logger.Warnf("muxconn: decrypt failed for %d more frames in the last %s, latest len=%d: %v",
 		dropped, decryptLogInterval, size, err)
+}
+
+// DecryptStats counts inbound records this conn could not open, by kind: a
+// bad magic is a peer on a pre-v2 record layer, a failed authentication is a
+// peer on another key. The client's handshake classifier reads them.
+type DecryptStats struct {
+	BadMagic   uint64
+	AuthFailed uint64
+}
+
+// DecryptStats returns the failure counters so far.
+func (c *Conn) DecryptStats() DecryptStats {
+	return DecryptStats{BadMagic: c.badMagic.Load(), AuthFailed: c.authFailed.Load()}
 }
 
 // Read implements io.Reader. Blocks until at least one byte is available;
