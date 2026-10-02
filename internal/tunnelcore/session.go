@@ -34,11 +34,18 @@ type SessionPair struct {
 	ControlSession *smux.Session
 }
 
-// NewSessionPair builds data and optional isolated-control muxconn/smux sessions.
+// NewSessionPair builds data and optional isolated-control muxconn/smux sessions
+// over one key set.
 // If only the control session fails, the usable data pair is returned with the error.
 func NewSessionPair(tr transport.Transport, keys *crypto.KeySet, role SessionRole) (*SessionPair, error) {
-	dataConn := muxconn.New(tr, keys)
-	controlConn := muxconn.NewControl(tr, keys)
+	return NewSessionPairGrouped(tr, muxconn.PrePinned(keys, ""), role)
+}
+
+// NewSessionPairGrouped is NewSessionPair with both conns sharing one pin
+// group, so the key a peer's first record opens under serves both planes.
+func NewSessionPairGrouped(tr transport.Transport, group *muxconn.PinGroup, role SessionRole) (*SessionPair, error) {
+	dataConn := muxconn.NewGrouped(tr, group)
+	controlConn := muxconn.NewControlGrouped(tr, group)
 	return NewSessionPairWithConns(tr, dataConn, controlConn, role)
 }
 
@@ -82,7 +89,16 @@ func NewControlSession(
 	keys *crypto.KeySet,
 	role SessionRole,
 ) (*muxconn.Conn, *smux.Session, error) {
-	conn := muxconn.NewControl(tr, keys)
+	return NewControlSessionGrouped(tr, muxconn.PrePinned(keys, ""), role)
+}
+
+// NewControlSessionGrouped is NewControlSession over an explicit pin group.
+func NewControlSessionGrouped(
+	tr transport.Transport,
+	group *muxconn.PinGroup,
+	role SessionRole,
+) (*muxconn.Conn, *smux.Session, error) {
+	conn := muxconn.NewControlGrouped(tr, group)
 	if conn == nil {
 		return nil, nil, nil
 	}

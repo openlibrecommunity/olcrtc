@@ -155,6 +155,9 @@ type streamTransport struct {
 	linkUnhealthy     atomic.Bool
 
 	peerConfirmed atomic.Bool
+	// peerSeen records that any foreign epoch sent a well-formed frame with
+	// our binding token since the last plane restart (transport.PeerObserver).
+	peerSeen atomic.Bool
 
 	// shaper applies the optional traffic policy to the bulk data path only;
 	// the control plane must stay unpaced.
@@ -402,10 +405,15 @@ func (p *streamTransport) ResetPeer() {
 // arithmetic.
 func (p *streamTransport) restartPlanes() {
 	p.peerConfirmed.Store(false)
+	p.peerSeen.Store(false)
 	p.peerEpoch.Store(0)
 	p.data.restart(p.rotateEpochHeader())
 	p.control.restart(p.controlEpochHeader())
 }
+
+// PeerSeen implements transport.PeerObserver: a frame with our binding token
+// from a foreign epoch has arrived since the last plane restart.
+func (p *streamTransport) PeerSeen() bool { return p.peerSeen.Load() }
 
 // NotifyLinkHealth implements transport.LinkHealthObserver. The client wires
 // its control-plane liveness loop to this so the peer-restart watchdog has

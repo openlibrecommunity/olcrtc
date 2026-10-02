@@ -45,7 +45,10 @@ type peerStat struct {
 
 // peerSession holds one client's independently synchronized peer-routing state.
 type peerSession struct {
-	peerID        string
+	peerID string
+	// group is the peer's pin group: data and control conns share it, so
+	// the key the peer's first record opens under serves both planes.
+	group         *muxconn.PinGroup
 	sessionReady  chan struct{}
 	readyOnce     sync.Once
 	handshakeOnce sync.Once
@@ -62,8 +65,8 @@ type peerSession struct {
 	closed        bool
 }
 
-func newPeerSession(peerID string, needsControl bool) *peerSession {
-	peer := &peerSession{peerID: peerID}
+func newPeerSession(peerID string, needsControl bool, group *muxconn.PinGroup) *peerSession {
+	peer := &peerSession{peerID: peerID, group: group}
 	if needsControl {
 		peer.sessionReady = make(chan struct{})
 	}
@@ -203,9 +206,9 @@ func (s *Server) getOrCreatePeerControlSession(peerID string) *peerSession {
 			s.sessMu.Unlock()
 			return nil
 		}
-		peer = newPeerSession(peerID, true)
+		peer = newPeerSession(peerID, true, muxconn.NewPinGroup(s.ring))
 	}
-	conn := muxconn.NewPeerControlUnbound(s.ln, s.keys, peerID)
+	conn := muxconn.NewPeerControlUnboundGrouped(s.ln, peer.group, peerID)
 	if conn == nil {
 		s.sessMu.Unlock()
 		return nil
@@ -326,7 +329,11 @@ func (s *Server) getPeerSession(peerID string) *peerSession {
 		s.sessMu.Unlock()
 		return nil
 	}
-	conn := muxconn.NewPeer(s.peerLn, s.keys, peerID)
+	group := muxconn.NewPinGroup(s.ring)
+	if peer != nil {
+		group = peer.group
+	}
+	conn := muxconn.NewPeerGrouped(s.peerLn, group, peerID)
 	session, err := tunnelcore.NewSession(conn, tunnelcore.ServerRole, runtime.SmuxConfigFor(s.ln))
 	if err != nil {
 		s.sessMu.Unlock()
@@ -336,7 +343,7 @@ func (s *Server) getPeerSession(peerID string) *peerSession {
 	}
 	if peer == nil {
 		_, needsControl := s.ln.(transport.PeerControlPlane)
-		peer = newPeerSession(peerID, needsControl)
+		peer = newPeerSession(peerID, needsControl, group)
 		s.peerSessions[peerID] = peer
 	}
 	if !peer.attachData(conn, session) {

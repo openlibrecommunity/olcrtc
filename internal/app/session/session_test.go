@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"reflect"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -93,7 +94,7 @@ func TestApplyTransportDefaults(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := ApplyTransportDefaults(tt.in)
-			if got != tt.want {
+			if !sameConfig(got, tt.want) {
 				t.Fatalf("ApplyTransportDefaults() = %+v, want %+v", got, tt.want)
 			}
 		})
@@ -113,7 +114,7 @@ func TestApplyLivenessDefaults(t *testing.T) {
 	}
 
 	explicit := Config{LivenessInterval: "1s", LivenessTimeout: "500ms", LivenessFailures: 9}
-	if got := ApplyLivenessDefaults(explicit); got != explicit {
+	if got := ApplyLivenessDefaults(explicit); !sameConfig(got, explicit) {
 		t.Fatalf("ApplyLivenessDefaults() = %+v, want %+v", got, explicit)
 	}
 }
@@ -181,6 +182,13 @@ func TestPrepareRunConfigAppliesDefaultsThenValidates(t *testing.T) {
 	if err := Run(context.Background(), Config{}); !errors.Is(err, ErrModeRequired) {
 		t.Fatalf("Run(empty) error = %v, want %v", err, ErrModeRequired)
 	}
+}
+
+// sameConfig compares two configs. Config stopped being comparable when
+// KeysHex arrived; its resolver, which the deepequalerrors check objects to,
+// is nil in every literal these tests build.
+func sameConfig(a, b Config) bool {
+	return reflect.DeepEqual(a, b) //nolint:govet // deepequalerrors: the resolver is nil in tests
 }
 
 func TestValidate(t *testing.T) {
@@ -255,6 +263,39 @@ func TestValidate(t *testing.T) {
 				return cfg
 			}(),
 			want: ErrRoomIDRequired,
+		},
+		{
+			name: "srv accepts a key ring without a single key",
+			cfg: func() Config {
+				cfg := base
+				cfg.KeyHex = ""
+				cfg.KeysHex = []string{
+					"00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff",
+					"aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899",
+				}
+				return cfg
+			}(),
+		},
+		{
+			name: "cnc rejects a key ring",
+			cfg: func() Config {
+				cfg := base
+				cfg.Mode = ModeCnc
+				cfg.SOCKSHost = "127.0.0.1"
+				cfg.SOCKSPort = 1080
+				cfg.KeysHex = []string{"00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"}
+				return cfg
+			}(),
+			want: ErrKeysServerOnly,
+		},
+		{
+			name: "a malformed ring entry",
+			cfg: func() Config {
+				cfg := base
+				cfg.KeysHex = []string{"00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff", "zz"}
+				return cfg
+			}(),
+			want: ErrKeyInvalid,
 		},
 		{
 			name: "key required",

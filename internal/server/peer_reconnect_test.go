@@ -5,6 +5,8 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/openlibrecommunity/olcrtc/internal/crypto"
+	"github.com/openlibrecommunity/olcrtc/internal/muxconn"
 	"github.com/openlibrecommunity/olcrtc/internal/runtime"
 )
 
@@ -25,7 +27,7 @@ func (l *legacyControlRoutingStub) ControlCanSend() bool { return true }
 func reconnectTestServer(t *testing.T, link *peerRoutingStub) *Server {
 	t.Helper()
 	return &Server{
-		baseCtx: context.Background(), ln: link, peerLn: link, keys: newServerTestKeys(t),
+		baseCtx: context.Background(), ln: link, peerLn: link, ring: crypto.SingleEntry(newServerTestKeys(t), ""),
 		health: runtime.NewHealthTracker(nil), onClose: func(string, string) {},
 		peerSessions: make(map[string]*peerSession), peerStats: make(map[string]peerStat),
 		done: make(chan struct{}),
@@ -51,7 +53,7 @@ func TestPeerControlReconnectClearsPeersWithoutBroadcastPair(t *testing.T) {
 	s.ln, s.peerLn = link, link
 	oldSession, cleanup := mkServerSess(t)
 	defer cleanup()
-	peer := newPeerSession("peer-control", true)
+	peer := newPeerSession("peer-control", true, muxconn.PrePinned(newServerTestKeys(t), ""))
 	peer.session = oldSession
 	s.peerSessions[peer.peerID] = peer
 
@@ -80,7 +82,7 @@ func TestLegacyPeerReconnectReinstallsOnlySingletonControl(t *testing.T) {
 	defer cleanupPeer()
 	oldControlSession, cleanupControl := mkServerSess(t)
 	defer cleanupControl()
-	peer := newPeerSession("peer-legacy", false)
+	peer := newPeerSession("peer-legacy", false, muxconn.PrePinned(newServerTestKeys(t), ""))
 	peer.session = oldPeerSession
 	s.peerSessions[peer.peerID] = peer
 	s.controlSess = oldControlSession

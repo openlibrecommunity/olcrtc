@@ -76,6 +76,12 @@ func (p *streamTransport) sendTo(peerID string, data []byte) error {
 	return nil
 }
 
+// PeerSeen implements transport.PeerObserver when the engine can answer it.
+func (p *streamTransport) PeerSeen() bool {
+	observer, ok := p.session.(transport.PeerObserver)
+	return ok && observer.PeerSeen()
+}
+
 // SupportsPeerRouting reports whether this transport can address individual peers.
 func (p *streamTransport) SupportsPeerRouting() bool {
 	_, ok := p.session.(engine.PeerSession)

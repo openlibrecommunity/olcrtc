@@ -47,9 +47,12 @@ type Server struct {
 	baseCtx context.Context //nolint:containedctx // server-lifetime context for reconnect goroutines
 	ln      transport.Transport
 	peerLn  transport.PeerTransport
-	keys    *crypto.KeySet
-	pair    *tunnelcore.SessionPair
-	conn    *muxconn.Conn
+	// ring holds every key a peer may pair under; group is the pin group of
+	// the current single-link session generation (nil in peer routing).
+	ring  *crypto.KeyRing
+	group *muxconn.PinGroup
+	pair  *tunnelcore.SessionPair
+	conn  *muxconn.Conn
 
 	controlConn *muxconn.Conn
 	session     *smux.Session
@@ -87,11 +90,15 @@ type Server struct {
 
 // Config holds runtime configuration for [Run].
 type Config struct {
-	Transport        string
-	Provider         string
-	RoomURL          string
-	ChannelID        string
-	KeyHex           string
+	Transport string
+	Provider  string
+	RoomURL   string
+	ChannelID string
+	KeyHex    string
+	// Keys is a ring of 64-hex keys the server accepts a peer under; the key
+	// that opens a peer's first record is pinned for that peer. Empty means
+	// the single KeyHex.
+	Keys             []string
 	DNSServer        string
 	Resolver         *net.Resolver
 	SOCKSProxyAddr   string
@@ -116,9 +123,9 @@ type Config struct {
 func Run(ctx context.Context, cfg Config) error {
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	keys, err := tunnelcore.SetupKeySet(cfg.KeyHex, crypto.Server)
+	ring, err := setupRing(cfg)
 	if err != nil {
-		return fmt.Errorf("setup key set: %w", err)
+		return fmt.Errorf("setup key ring: %w", err)
 	}
 	hook := cfg.AuthHook
 	if hook == nil {
@@ -137,7 +144,7 @@ func Run(ctx context.Context, cfg Config) error {
 		onTraffic = func(string, string, uint64, uint64) {}
 	}
 	s := &Server{
-		keys: keys, authHook: hook, onOpen: onOpen, onClose: onClose, onTraffic: onTraffic,
+		ring: ring, authHook: hook, onOpen: onOpen, onClose: onClose, onTraffic: onTraffic,
 		dnsServer: cfg.DNSServer, resolver: tunnelcore.Resolver(cfg.Resolver, cfg.DNSServer),
 		socksProxyAddr: cfg.SOCKSProxyAddr, socksProxyPort: cfg.SOCKSProxyPort,
 		socksProxyUser: cfg.SOCKSProxyUser, socksProxyPass: cfg.SOCKSProxyPass,
@@ -158,4 +165,22 @@ func Run(ctx context.Context, cfg Config) error {
 	}()
 	s.serve(runCtx)
 	return nil
+}
+
+// setupRing builds the candidate ring: cfg.Keys when given, else the single
+// KeyHex as a one-entry ring so a stock config behaves as before.
+func setupRing(cfg Config) (*crypto.KeyRing, error) {
+	if len(cfg.Keys) == 0 {
+		keys, err := tunnelcore.SetupKeySet(cfg.KeyHex, crypto.Server)
+		if err != nil {
+			return nil, fmt.Errorf("single key: %w", err)
+		}
+		id, _ := crypto.KeyIDFromHex(cfg.KeyHex)
+		return crypto.SingleEntry(keys, id), nil
+	}
+	ring, err := crypto.NewKeyRing(cfg.Keys, crypto.Server)
+	if err != nil {
+		return nil, fmt.Errorf("build key ring: %w", err)
+	}
+	return ring, nil
 }

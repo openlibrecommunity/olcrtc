@@ -80,6 +80,7 @@ func (c *Client) bringUpLink(ctx context.Context, cfg Config, cancel context.Can
 	}
 	control, sessionID, peerID, err := openControlStream(ctx, pair.ControlSession, c.deviceID, c.claims)
 	if err != nil {
+		err = c.classifyHandshakeFailure(err, conn, controlConn)
 		_ = pair.Close()
 		return fmt.Errorf("handshake: %w", err)
 	}
@@ -346,7 +347,8 @@ func (c *Client) tryReopenSession(
 		ctx, pair.ControlSession, c.deviceID, c.claims, handshake.DefaultTimeout,
 	)
 	if err != nil {
-		logger.Warnf("handshake on reconnect failed (attempt %d): %v", attempt, err)
+		logger.Warnf("handshake on reconnect failed (attempt %d): %v", attempt,
+			c.classifyHandshakeFailure(err, conn, controlConn))
 		_ = pair.Close()
 		return false
 	}

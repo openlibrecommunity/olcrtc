@@ -831,3 +831,38 @@ func TestSeqLessWrapAround(t *testing.T) {
 		}
 	}
 }
+
+// PeerSeen tells the client's handshake classifier whether anyone is in the
+// room at all: a well-formed frame with our binding token from a foreign
+// epoch, authenticated or not, and nothing before a plane restart.
+func TestPeerSeenFollowsForeignFrames(t *testing.T) {
+	tr := &streamTransport{
+		stream:       &fakeVideoStream{canSend: true},
+		data:         newKCPPlane(16, nil),
+		control:      newKCPPlane(16, nil),
+		closeCh:      make(chan struct{}),
+		writerDone:   make(chan struct{}),
+		bindingToken: bindingToken("client"),
+		localEpoch:   0x100,
+	}
+	defer func() { _ = tr.Close() }()
+	if tr.PeerSeen() {
+		t.Fatal("PeerSeen() = true before any frame")
+	}
+	tr.handleIncomingFrame(mkPeerFrame(bindingToken("other"), 0x200, nil))
+	if tr.PeerSeen() {
+		t.Fatal("PeerSeen() = true after a frame with another room's token")
+	}
+	tr.handleIncomingFrame(mkPeerFrame(tr.bindingToken, tr.localEpoch, nil))
+	if tr.PeerSeen() {
+		t.Fatal("PeerSeen() = true after our own loopback")
+	}
+	tr.handleIncomingFrame(mkPeerFrame(tr.bindingToken, 0x200, nil))
+	if !tr.PeerSeen() {
+		t.Fatal("PeerSeen() = false after a foreign keepalive")
+	}
+	tr.restartPlanes()
+	if tr.PeerSeen() {
+		t.Fatal("PeerSeen() = true after the planes restarted")
+	}
+}

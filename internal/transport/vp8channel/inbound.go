@@ -22,6 +22,7 @@ func (p *streamTransport) handleIncomingFrame(frame []byte) {
 	if src == p.localEpochValue() || src == (p.localEpochValue()|controlEpochFlag) {
 		return // own loopback (data or control)
 	}
+	p.peerSeen.Store(true)
 	// Drop frames addressed to a different participant. dst==0 broadcasts are
 	// always accepted (bootstrap before the sender learns our epoch).
 	if !p.acceptsDst(dst) {

@@ -57,6 +57,7 @@ olcrtc /etc/olcrtc/client.yaml
 | `room.id` | ID/URL комнаты для выбранного провайдера |
 | `room.channel` | необязательный ID канала для peer-routing сценариев |
 | `crypto.key` / `crypto.key_file` | общий ключ: 64 hex-символа, напрямую или из файла |
+| `crypto.keys` / `crypto.keys_file` | только сервер: список ключей по 64 hex-символа, в YAML или по одному в строке файла; ключ, которым открылась первая запись клиента, закрепляется за этим клиентом |
 | `net.transport` | `datachannel`, `vp8channel`, `seichannel`, `videochannel` |
 | `net.dns` | DNS resolver в формате `host:port` |
 | `socks.host` / `socks.port` | локальный SOCKS5 listener в `mode: cnc` |
@@ -81,6 +82,15 @@ olcrtc /etc/olcrtc/client.yaml
 | `debug` | подробное логирование |
 
 `crypto.key_file` читается относительно YAML-файла. Нельзя одновременно задавать `crypto.key` и `crypto.key_file`.
+
+`crypto.keys` и `crypto.keys_file` (читается относительно YAML-файла, строки с `#` и пустые пропускаются) задают серверу кольцо ключей; их нельзя сочетать с `crypto.key`, `crypto.key_file` и друг с другом, а клиент (`mode: cnc`) всегда использует один `crypto.key`:
+
+```yaml
+crypto:
+  keys:
+    - "0011...eeff"   # ключ комнаты
+    - "aabb...8899"   # ключ отдельного пользователя
+```
 
 `mode: cnc` запрещает слушать не-loopback адрес (`0.0.0.0`, LAN IP и т.п.), если не заданы оба поля `socks.user` и `socks.pass`.
 

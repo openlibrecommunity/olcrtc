@@ -82,7 +82,7 @@ func runServer(
 ) error {
 	err := server.Run(ctx, server.Config{
 		Transport: cfg.Transport, Provider: cfg.Provider, RoomURL: roomURL, ChannelID: cfg.ChannelID,
-		KeyHex: cfg.KeyHex, DNSServer: cfg.DNSServer, Resolver: cfg.Resolver,
+		KeyHex: cfg.KeyHex, Keys: cfg.KeysHex, DNSServer: cfg.DNSServer, Resolver: cfg.Resolver,
 		SOCKSProxyAddr: cfg.SOCKSProxyAddr, SOCKSProxyPort: cfg.SOCKSProxyPort,
 		SOCKSProxyUser: cfg.SOCKSProxyUser, SOCKSProxyPass: cfg.SOCKSProxyPass,
 		TransportOptions: opts, Engine: cfg.Engine, URL: cfg.URL, Token: cfg.Token,

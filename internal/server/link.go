@@ -57,7 +57,8 @@ func (s *Server) bringUpLink(ctx context.Context, cfg Config, cancel context.Can
 }
 
 func (s *Server) installSession() {
-	pair, err := tunnelcore.NewSessionPair(s.ln, s.keys, tunnelcore.ServerRole)
+	group := muxconn.NewPinGroup(s.ring)
+	pair, err := tunnelcore.NewSessionPairGrouped(s.ln, group, tunnelcore.ServerRole)
 	if pair == nil {
 		logger.Warnf("smux server init failed: %v", err)
 		return
@@ -66,7 +67,7 @@ func (s *Server) installSession() {
 		logger.Warnf("control smux server init failed: %v", err)
 	}
 	s.sessMu.Lock()
-	s.installPairLocked(pair)
+	s.installPairLocked(pair, group)
 	s.sessMu.Unlock()
 	s.state.broadcast()
 	if pair.HasIsolatedControl() {
@@ -80,7 +81,8 @@ func (s *Server) installControlSession(ctx context.Context) {
 		s.installPeerControlPlane(peerControl)
 		return
 	}
-	conn, session, err := tunnelcore.NewControlSession(s.ln, s.keys, tunnelcore.ServerRole)
+	group := muxconn.NewPinGroup(s.ring)
+	conn, session, err := tunnelcore.NewControlSessionGrouped(s.ln, group, tunnelcore.ServerRole)
 	if err != nil {
 		logger.Warnf("control smux server init failed (peer-routing): %v", err)
 		return
@@ -89,6 +91,7 @@ func (s *Server) installControlSession(ctx context.Context) {
 		return
 	}
 	s.sessMu.Lock()
+	s.group = group
 	s.controlConn = conn
 	s.controlSess = session
 	s.sessMu.Unlock()
@@ -135,7 +138,10 @@ func (s *Server) reinstallSession(ctx context.Context, dead *smux.Session) {
 		}
 	}
 	s.sessMu.RUnlock()
-	replacement, err := tunnelcore.NewSessionPair(s.ln, s.keys, tunnelcore.ServerRole)
+	// A fresh group per generation: the peer that comes back may hold
+	// another key than the one that left.
+	group := muxconn.NewPinGroup(s.ring)
+	replacement, err := tunnelcore.NewSessionPairGrouped(s.ln, group, tunnelcore.ServerRole)
 	if replacement == nil {
 		logger.Warnf("smux server re-init failed: %v", err)
 		return
@@ -143,7 +149,7 @@ func (s *Server) reinstallSession(ctx context.Context, dead *smux.Session) {
 	if err != nil {
 		logger.Warnf("control smux server re-init failed: %v", err)
 	}
-	if !s.swapSession(dead, replacement) {
+	if !s.swapSession(dead, replacement, group) {
 		return
 	}
 	if replacement.HasIsolatedControl() {
@@ -182,7 +188,7 @@ func (s *Server) detachPeerRouting() peerRoutingTeardown {
 		peers: s.peerSessions, sessionID: s.sessionID,
 	}
 	s.peerSessions = make(map[string]*peerSession)
-	s.pair, s.conn, s.session = nil, nil, nil
+	s.pair, s.conn, s.session, s.group = nil, nil, nil, nil
 	s.controlConn, s.controlSess = nil, nil
 	s.controlStrm, s.controlStop = nil, nil
 	s.sessionID, s.deviceID = "", ""
@@ -219,7 +225,7 @@ func (s *Server) staleReinstall(dead *smux.Session) bool {
 	return dead != nil && dead != s.session && dead != s.controlSess
 }
 
-func (s *Server) swapSession(dead *smux.Session, replacement *tunnelcore.SessionPair) bool {
+func (s *Server) swapSession(dead *smux.Session, replacement *tunnelcore.SessionPair, group *muxconn.PinGroup) bool {
 	s.sessMu.Lock()
 	if s.peerLn != nil {
 		s.sessMu.Unlock()
@@ -237,7 +243,7 @@ func (s *Server) swapSession(dead *smux.Session, replacement *tunnelcore.Session
 	oldControl := s.controlStrm
 	oldControlStop := s.controlStop
 	oldSessionID := s.sessionID
-	s.installPairLocked(replacement)
+	s.installPairLocked(replacement, group)
 	s.controlStrm = nil
 	s.controlStop = nil
 	s.sessionID = ""
@@ -271,8 +277,9 @@ func closeServerPair(pair *tunnelcore.SessionPair, session, controlSession *smux
 	}
 }
 
-func (s *Server) installPairLocked(pair *tunnelcore.SessionPair) {
+func (s *Server) installPairLocked(pair *tunnelcore.SessionPair, group *muxconn.PinGroup) {
 	s.pair = pair
+	s.group = group
 	s.conn = pair.DataConn
 	s.session = pair.DataSession
 	s.controlConn = pair.ControlConn
@@ -296,7 +303,7 @@ func (s *Server) closeSession() {
 	oldSessionID := s.sessionID
 	s.peerSessions = make(map[string]*peerSession)
 	s.pair, s.session, s.controlSess = nil, nil, nil
-	s.conn, s.controlConn = nil, nil
+	s.conn, s.controlConn, s.group = nil, nil, nil
 	s.controlStrm, s.controlStop = nil, nil
 	s.sessionID, s.deviceID = "", ""
 	s.sessMu.Unlock()

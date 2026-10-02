@@ -57,6 +57,7 @@ Ready-made examples:
 | `room.id` | room ID/URL for the chosen provider |
 | `room.channel` | optional channel ID for peer-routing scenarios |
 | `crypto.key` / `crypto.key_file` | shared key: 64 hex chars, directly or from a file |
+| `crypto.keys` / `crypto.keys_file` | server only: a list of keys, each 64 hex chars, inline or one per line in a file; the key a client's first record authenticates under is pinned for that client |
 | `net.transport` | `datachannel`, `vp8channel`, `seichannel`, `videochannel` |
 | `net.dns` | DNS resolver in `host:port` form |
 | `socks.host` / `socks.port` | local SOCKS5 listener in `mode: cnc` |
@@ -81,6 +82,15 @@ Ready-made examples:
 | `debug` | verbose logging |
 
 `crypto.key_file` is read relative to the YAML file. You cannot set `crypto.key` and `crypto.key_file` at the same time.
+
+`crypto.keys` and `crypto.keys_file` (read relative to the YAML file, `#` comments and blank lines skipped) give a server a ring of keys; they cannot be combined with `crypto.key`, `crypto.key_file` or each other, and a client (`mode: cnc`) always uses a single `crypto.key`:
+
+```yaml
+crypto:
+  keys:
+    - "0011...eeff"   # the room key
+    - "aabb...8899"   # a per-user key
+```
 
 `mode: cnc` forbids listening on a non-loopback address (`0.0.0.0`, LAN IP etc.) unless both `socks.user` and `socks.pass` are set.
 

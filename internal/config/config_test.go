@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 
 	"github.com/openlibrecommunity/olcrtc/internal/app/session"
@@ -83,6 +84,13 @@ func requireLoadedFile(t *testing.T, f File) {
 	}
 }
 
+// sameConfig compares two session configs. The struct stopped being
+// comparable when KeysHex arrived; its resolver, which the deepequalerrors
+// check objects to, is nil in every literal these tests build.
+func sameConfig(a, b session.Config) bool {
+	return reflect.DeepEqual(a, b) //nolint:govet // deepequalerrors: the resolver is nil in tests
+}
+
 func requireAppliedConfig(t *testing.T, got session.Config) {
 	t.Helper()
 	want := session.Config{
@@ -106,7 +114,7 @@ func requireAppliedConfig(t *testing.T, got session.Config) {
 		TrafficMaxDelay:       "30ms",
 		Amount:                3,
 	}
-	if got != want {
+	if !sameConfig(got, want) {
 		t.Fatalf("Apply produced wrong config: %+v, want %+v", got, want)
 	}
 }
@@ -170,7 +178,7 @@ func TestApplyMapsEverySection(t *testing.T) {
 		MaxSessionDuration: "1h",
 	}
 
-	if got != want {
+	if !sameConfig(got, want) {
 		t.Fatalf("Apply() = %+v, want %+v", got, want)
 	}
 }
@@ -208,8 +216,70 @@ video:
 		file.Video.Bitrate != "5000k" || file.Video.HW != "nvenc" {
 		t.Fatalf("legacy fields = %#v", file)
 	}
-	if got := Apply(file); got != (session.Config{Mode: "cnc"}) {
+	if got := Apply(file); !sameConfig(got, session.Config{Mode: "cnc"}) {
 		t.Fatalf("Apply() mapped ignored legacy fields: %#v", got)
+	}
+}
+
+func TestLoadCryptoKeysListAndFile(t *testing.T) {
+	dir := t.TempDir()
+	ring := []string{
+		"0011223344556677889900112233445566778899001122334455667788990011",
+		"aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899",
+		"ffeeddccbbaa99887766554433221100ffeeddccbbaa99887766554433221100",
+	}
+
+	inline := filepath.Join(dir, "inline.yaml")
+	body := "mode: srv\ncrypto:\n  keys:\n    - " + ring[0] + "\n    - " + ring[1] + "\n    - " + ring[2] + "\n"
+	if err := os.WriteFile(inline, []byte(body), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	file, err := Load(inline)
+	if err != nil {
+		t.Fatalf("Load(inline) error = %v", err)
+	}
+	if got := Apply(file).KeysHex; !reflect.DeepEqual(got, ring) {
+		t.Fatalf("inline KeysHex = %v, want %v", got, ring)
+	}
+
+	keysFile := filepath.Join(dir, "keys.txt")
+	listing := "# the room key\n" + ring[0] + "\n\n  " + ring[1] + "  \n# a per-user key\n" + ring[2] + "\n"
+	if err = os.WriteFile(keysFile, []byte(listing), 0o600); err != nil {
+		t.Fatalf("write keys file: %v", err)
+	}
+	fromFile := filepath.Join(dir, "file.yaml")
+	if err = os.WriteFile(fromFile, []byte("mode: srv\ncrypto:\n  keys_file: keys.txt\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	file, err = Load(fromFile)
+	if err != nil {
+		t.Fatalf("Load(keys_file) error = %v", err)
+	}
+	if got := Apply(file).KeysHex; !reflect.DeepEqual(got, ring) {
+		t.Fatalf("keys_file KeysHex = %v, want %v", got, ring)
+	}
+	if file.Crypto.KeysFile != "" {
+		t.Fatalf("Load kept keys_file = %q after reading it", file.Crypto.KeysFile)
+	}
+}
+
+func TestLoadCryptoKeysConflicts(t *testing.T) {
+	const key = "0011223344556677889900112233445566778899001122334455667788990011"
+	bodies := map[string]string{
+		"keys+key":       "mode: srv\ncrypto:\n  key: " + key + "\n  keys:\n    - " + key + "\n",
+		"keys+key_file":  "mode: srv\ncrypto:\n  key_file: k\n  keys:\n    - " + key + "\n",
+		"keys+keys_file": "mode: srv\ncrypto:\n  keys_file: k\n  keys:\n    - " + key + "\n",
+	}
+	for name, body := range bodies {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "olcrtc.yaml")
+			if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+				t.Fatalf("write config: %v", err)
+			}
+			if _, err := Load(path); !errors.Is(err, ErrCryptoKeysConflict) {
+				t.Fatalf("Load() error = %v, want %v", err, ErrCryptoKeysConflict)
+			}
+		})
 	}
 }
 

@@ -30,6 +30,9 @@ var (
 	ErrCryptoKeyConflict = errors.New("crypto.key and crypto.key_file cannot both be set")
 	// ErrCryptoKeyFileEmpty is returned when crypto.key_file points to an empty file.
 	ErrCryptoKeyFileEmpty = errors.New("crypto key file is empty")
+	// ErrCryptoKeysConflict is returned when a key ring is combined with a single key or with itself.
+	ErrCryptoKeysConflict = errors.New(
+		"crypto.keys or crypto.keys_file cannot be combined with crypto.key, crypto.key_file or each other")
 )
 
 // Settings is the overridable part of the schema. The top-level file and every
@@ -93,10 +96,15 @@ type Room struct {
 	Channel string `yaml:"channel"`
 }
 
-// Crypto holds the shared secret used to authenticate and encrypt the tunnel.
+// Crypto holds the shared secret(s) used to authenticate and encrypt the tunnel.
 type Crypto struct {
 	Key     string `yaml:"key"`      // 64-char hex (32 bytes)
 	KeyFile string `yaml:"key_file"` // path to a file containing crypto.key
+	// Keys is a ring the server accepts peers under, one 64-hex key each.
+	// A client uses crypto.key. keys and keys_file cannot be combined with
+	// key or key_file.
+	Keys     []string `yaml:"keys"`
+	KeysFile string   `yaml:"keys_file"` // one key per line, # comments allowed
 }
 
 // Net groups network and transport selection.
@@ -216,23 +224,41 @@ func Load(path string) (File, error) {
 }
 
 func loadExternalSecrets(configPath string, file *File) error {
-	key, err := resolveKey(configPath, file.Crypto)
+	resolved, err := resolveCrypto(configPath, file.Crypto)
 	if err != nil {
 		return err
 	}
 
-	file.Crypto.Key = key
+	file.Crypto = resolved
 
 	for i := range file.Profiles {
-		key, err := resolveKey(configPath, file.Profiles[i].Crypto)
+		resolved, err := resolveCrypto(configPath, file.Profiles[i].Crypto)
 		if err != nil {
 			return fmt.Errorf("profiles[%d]: %w", i, err)
 		}
 
-		file.Profiles[i].Crypto.Key = key
+		file.Profiles[i].Crypto = resolved
 	}
 
 	return nil
+}
+
+// resolveCrypto reads the file-backed secrets so that after Load only Key
+// and Keys carry values.
+func resolveCrypto(configPath string, crypto Crypto) (Crypto, error) {
+	// The ring goes first: its conflict check must fire before a key_file
+	// named next to it is ever opened.
+	keys, err := resolveKeys(configPath, crypto)
+	if err != nil {
+		return Crypto{}, err
+	}
+
+	key, err := resolveKey(configPath, crypto)
+	if err != nil {
+		return Crypto{}, err
+	}
+
+	return Crypto{Key: key, Keys: keys}, nil
 }
 
 func resolveKey(configPath string, crypto Crypto) (string, error) {
@@ -245,6 +271,55 @@ func resolveKey(configPath string, crypto Crypto) (string, error) {
 	}
 
 	return readKeyFile(configPath, crypto.KeyFile)
+}
+
+// resolveKeys returns the ring: crypto.keys inline or crypto.keys_file, one
+// key per line. A ring excludes the single key and the two ring forms
+// exclude each other.
+func resolveKeys(configPath string, crypto Crypto) ([]string, error) {
+	hasRing := len(crypto.Keys) > 0 || crypto.KeysFile != ""
+	if !hasRing {
+		return nil, nil
+	}
+
+	hasSingle := crypto.Key != "" || crypto.KeyFile != ""
+	if hasSingle || (len(crypto.Keys) > 0 && crypto.KeysFile != "") {
+		return nil, ErrCryptoKeysConflict
+	}
+
+	if crypto.KeysFile == "" {
+		return crypto.Keys, nil
+	}
+
+	return readKeysFile(configPath, crypto.KeysFile)
+}
+
+// readKeysFile reads one key per line; blank lines and # comments are skipped.
+func readKeysFile(configPath, keysFile string) ([]string, error) {
+	keysPath := keysFile
+	if !filepath.IsAbs(keysPath) {
+		keysPath = filepath.Join(filepath.Dir(configPath), keysPath)
+	}
+
+	// #nosec G304 -- keys_file is an explicit path in the user's config file.
+	data, err := os.ReadFile(keysPath)
+	if err != nil {
+		return nil, fmt.Errorf("read crypto keys file %s: %w", keysPath, err)
+	}
+
+	var keys []string
+	for line := range strings.SplitSeq(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		keys = append(keys, line)
+	}
+	if len(keys) == 0 {
+		return nil, fmt.Errorf("%w: %s", ErrCryptoKeyFileEmpty, keysPath)
+	}
+
+	return keys, nil
 }
 
 func readKeyFile(configPath, keyFile string) (string, error) {
@@ -297,6 +372,9 @@ func ApplySettings(dst session.Config, s Settings) session.Config {
 	dst.RoomID = overlay(dst.RoomID, s.Room.ID)
 	dst.ChannelID = overlay(dst.ChannelID, s.Room.Channel)
 	dst.KeyHex = overlay(dst.KeyHex, s.Crypto.Key)
+	if len(s.Crypto.Keys) > 0 {
+		dst.KeysHex = s.Crypto.Keys
+	}
 
 	dst.SOCKSHost = overlay(dst.SOCKSHost, s.SOCKS.Host)
 	dst.SOCKSPort = overlay(dst.SOCKSPort, s.SOCKS.Port)

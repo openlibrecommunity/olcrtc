@@ -8,7 +8,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/openlibrecommunity/olcrtc/internal/crypto"
 	"github.com/openlibrecommunity/olcrtc/internal/handshake"
+	"github.com/openlibrecommunity/olcrtc/internal/muxconn"
 	"github.com/openlibrecommunity/olcrtc/internal/runtime"
 )
 
@@ -31,7 +33,7 @@ func newPeerLifecycleServer(t *testing.T) (*Server, func()) {
 	ctx, cancel := context.WithCancel(context.Background())
 	link := &peerControlRoutingStub{}
 	s := &Server{
-		baseCtx: ctx, ln: link, peerLn: link, keys: newServerTestKeys(t),
+		baseCtx: ctx, ln: link, peerLn: link, ring: crypto.SingleEntry(newServerTestKeys(t), ""),
 		authHook: defaultAuthHook, onOpen: func(string, string, map[string]any) {},
 		onClose: func(string, string) {}, health: runtime.NewHealthTracker(nil),
 		peerSessions: make(map[string]*peerSession), peerStats: make(map[string]peerStat),
@@ -116,7 +118,7 @@ func TestRejectedPeerHandshakeWakesServePeer(t *testing.T) {
 	controlServer, controlClient, cleanupControl := smuxPair(t)
 	defer cleanupControl()
 
-	peer := newPeerSession("peer-reject", true)
+	peer := newPeerSession("peer-reject", true, muxconn.PrePinned(newServerTestKeys(t), ""))
 	peer.session = dataServer
 	peer.controlSess = controlServer
 	s := &Server{

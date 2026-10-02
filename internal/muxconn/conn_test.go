@@ -427,3 +427,27 @@ func TestCloseMakesReadReturnEOF(t *testing.T) {
 		t.Fatal("Read() did not unblock after Close")
 	}
 }
+
+func TestDecryptStatsTellBadMagicFromAuthFailures(t *testing.T) {
+	clientKeys, _ := newTestKeyPair(t)
+	conn := New(&stubLink{canSend: true}, clientKeys)
+	defer func() { _ = conn.Close() }()
+
+	// Long enough to be a record, but not one: a pre-v2 peer.
+	conn.Push(make([]byte, cryptopkg.WireOverhead+8))
+	// A real v2 record under another PSK: a peer on another key.
+	stranger, err := cryptopkg.NewKeySet([]byte("zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"), cryptopkg.Server)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sealed, err := stranger.Seal([]byte("hello"), []byte(dataRecordAAD))
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn.Push(sealed)
+
+	got := conn.DecryptStats()
+	if got.BadMagic != 1 || got.AuthFailed != 1 {
+		t.Fatalf("DecryptStats = %+v, want BadMagic 1 AuthFailed 1", got)
+	}
+}
