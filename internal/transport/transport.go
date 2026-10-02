@@ -11,13 +11,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net"
 	"slices"
 	"sync"
 	"time"
 
 	"github.com/openlibrecommunity/olcrtc/internal/engine"
 	enginebuiltin "github.com/openlibrecommunity/olcrtc/internal/engine/builtin"
+	"github.com/openlibrecommunity/olcrtc/internal/protect"
 )
 
 // ErrTransportNotFound is returned when a requested transport is not registered.
@@ -202,7 +202,7 @@ type Config struct {
 	OnData        func([]byte)
 	OnPeerData    func(peerID string, data []byte)
 	DNSServer     string
-	Resolver      *net.Resolver
+	Resolver      protect.Lookup
 	ProxyAddr     string
 	ProxyPort     int
 

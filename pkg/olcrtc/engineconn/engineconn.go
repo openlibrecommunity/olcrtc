@@ -40,7 +40,7 @@ type Config struct {
 	Token         string
 	Name          string
 	DNSServer     string
-	Resolver      *net.Resolver
+	Resolver      protect.Lookup
 	ProxyAddr     string
 	ProxyPort     int
 }
@@ -79,7 +79,7 @@ func New(ctx context.Context, cfg Config) (*Session, error) {
 	return newDirect(ctx, cfg)
 }
 
-func resolverFor(cfg Config) *net.Resolver {
+func resolverFor(cfg Config) protect.Lookup {
 	if cfg.Resolver != nil {
 		return cfg.Resolver
 	}

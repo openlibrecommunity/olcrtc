@@ -142,9 +142,9 @@ func TestConcurrentSetClearAndDialControl(t *testing.T) {
 }
 
 func TestNewDialerAndHTTPClient(t *testing.T) {
-	dialer := newDialer()
+	dialer := NewDialer().netDialer()
 	if dialer.Timeout != 10*time.Second || dialer.KeepAlive != 30*time.Second || dialer.Control == nil {
-		t.Fatalf("newDialer() = %+v", dialer)
+		t.Fatalf("netDialer() = %+v", dialer)
 	}
 
 	client := NewHTTPClient()
@@ -164,17 +164,20 @@ func TestNewDialerAndHTTPClient(t *testing.T) {
 	}
 }
 
-func TestCustomResolverInjection(t *testing.T) {
+func TestLookupInjection(t *testing.T) {
 	resolver := &net.Resolver{PreferGo: true}
 
-	if got := newDialerWithResolver(resolver).Resolver; got != resolver {
-		t.Fatalf("newDialerWithResolver().Resolver = %p, want %p", got, resolver)
+	if got := NewDialer(resolver).lookup; got != resolver {
+		t.Fatalf("NewDialer().lookup = %v, want %p", got, resolver)
 	}
-	if got := newDialerWithResolver(nil).Resolver; got != nil {
-		t.Fatalf("newDialerWithResolver(nil).Resolver = %p, want nil", got)
+	if got := NewDialer(nil).lookup; got != nil {
+		t.Fatalf("NewDialer(nil).lookup = %v, want nil", got)
 	}
-	if got := NewProxyDialer(resolver).resolver; got != resolver {
-		t.Fatalf("NewProxyDialer().resolver = %p, want %p", got, resolver)
+	if got := NewDialer(nil, resolver).lookup; got != resolver {
+		t.Fatalf("NewDialer(nil, r).lookup = %v, want the first non-nil lookup", got)
+	}
+	if got := NewProxyDialer(resolver).dialer.lookup; got != resolver {
+		t.Fatalf("NewProxyDialer().dialer.lookup = %v, want %p", got, resolver)
 	}
 }
 

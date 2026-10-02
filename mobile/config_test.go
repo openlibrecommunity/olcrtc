@@ -160,3 +160,20 @@ func TestDebugAndProtectorProcessState(t *testing.T) {
 		t.Fatal("SetProtector(nil) did not clear process-wide protection")
 	}
 }
+
+func TestSetDNSTakesAListAndAppliesItToTheRuntimeResolver(t *testing.T) {
+	runtime := New()
+	if err := runtime.SetDNS("10.0.0.53, 10.0.0.54:53"); err != nil {
+		t.Fatalf("SetDNS() error = %v", err)
+	}
+	if err := runtime.SetDNS(""); err == nil {
+		t.Fatal("SetDNS(\"\") accepted an empty list")
+	}
+	if err := runtime.SetDNS("not a server:xyz"); err == nil {
+		t.Fatal("SetDNS accepted a bad entry")
+	}
+	got := runtime.defaults.dns.Servers()
+	if len(got) < 2 || got[0] != "10.0.0.53:53" || got[1] != "10.0.0.54:53" {
+		t.Fatalf("Servers() = %v, want the list in order with the default port filled in", got)
+	}
+}

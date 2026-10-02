@@ -13,7 +13,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -23,6 +22,7 @@ import (
 
 	"github.com/openlibrecommunity/olcrtc/internal/engine"
 	"github.com/openlibrecommunity/olcrtc/internal/logger"
+	"github.com/openlibrecommunity/olcrtc/internal/protect"
 )
 
 const (
@@ -106,7 +106,7 @@ type Session struct {
 	roomURL          string // referer for telemetry - opaque to the engine
 	telemetryReferer string
 	refresh          func(ctx context.Context) (engine.Credentials, error)
-	resolver         *net.Resolver
+	resolver         protect.Lookup
 
 	// wsMu owns ws: it serialises the writes (gorilla allows a single
 	// concurrent writer) and guards the pointer itself, which Connect

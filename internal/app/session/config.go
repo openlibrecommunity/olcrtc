@@ -3,9 +3,9 @@ package session
 
 import (
 	"errors"
-	"net"
 
 	enginebuiltin "github.com/openlibrecommunity/olcrtc/internal/engine/builtin"
+	"github.com/openlibrecommunity/olcrtc/internal/protect"
 	"github.com/openlibrecommunity/olcrtc/internal/transport"
 	"github.com/openlibrecommunity/olcrtc/internal/transport/datachannel"
 	"github.com/openlibrecommunity/olcrtc/internal/transport/seichannel"
@@ -141,7 +141,7 @@ type Config struct {
 	SOCKSUser             string
 	SOCKSPass             string
 	DNSServer             string
-	Resolver              *net.Resolver
+	Resolver              protect.Lookup
 	SOCKSProxyAddr        string
 	SOCKSProxyPort        int
 	SOCKSProxyUser        string

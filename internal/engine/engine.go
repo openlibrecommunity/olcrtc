@@ -11,11 +11,12 @@ package engine
 import (
 	"context"
 	"errors"
-	"net"
 	"slices"
 	"sync"
 
 	"github.com/pion/webrtc/v4"
+
+	"github.com/openlibrecommunity/olcrtc/internal/protect"
 )
 
 var (
@@ -50,7 +51,7 @@ type Config struct {
 	OnData     func([]byte)
 	OnPeerData func(peerID string, data []byte)
 	DNSServer  string
-	Resolver   *net.Resolver
+	Resolver   protect.Lookup
 	ProxyAddr  string
 	ProxyPort  int
 	// RequireTargetedPeer asks engines that multiplex room-wide messages to

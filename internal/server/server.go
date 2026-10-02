@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net"
 	"sync"
 	"sync/atomic"
 
@@ -15,6 +14,7 @@ import (
 	"github.com/openlibrecommunity/olcrtc/internal/crypto"
 	"github.com/openlibrecommunity/olcrtc/internal/handshake"
 	"github.com/openlibrecommunity/olcrtc/internal/muxconn"
+	"github.com/openlibrecommunity/olcrtc/internal/protect"
 	"github.com/openlibrecommunity/olcrtc/internal/runtime"
 	"github.com/openlibrecommunity/olcrtc/internal/transport"
 	"github.com/openlibrecommunity/olcrtc/internal/tunnelcore"
@@ -73,7 +73,7 @@ type Server struct {
 	sessionID     string
 
 	dnsServer      string
-	resolver       *net.Resolver
+	resolver       protect.Lookup
 	socksProxyAddr string
 	socksProxyPort int
 	socksProxyUser string
@@ -93,7 +93,7 @@ type Config struct {
 	ChannelID        string
 	KeyHex           string
 	DNSServer        string
-	Resolver         *net.Resolver
+	Resolver         protect.Lookup
 	SOCKSProxyAddr   string
 	SOCKSProxyPort   int
 	SOCKSProxyUser   string

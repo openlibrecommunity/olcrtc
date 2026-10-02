@@ -46,13 +46,16 @@ const (
 )
 
 type runtimeConfig struct {
-	provider      string
-	transport     string
-	roomURL       string
-	channelID     string
-	keyHex        string
-	dnsServer     string
-	resolver      *net.Resolver
+	provider  string
+	transport string
+	roomURL   string
+	channelID string
+	keyHex    string
+	dnsServer string
+	// resolver is an override handed in by SetResolver; dns is the runtime's
+	// own, which SetDNS steers and every run without an override uses.
+	resolver      protect.Lookup
+	dns           *protect.Resolver
 	socksHost     string
 	socksPort     int
 	socksUser     string
@@ -74,7 +77,7 @@ func defaultRuntimeConfig() runtimeConfig {
 	return runtimeConfig{
 		transport: defaultTransport,
 		dnsServer: defaultDNSServer,
-		resolver:  protect.NewResolver(defaultDNSServer),
+		dns:       protect.NewResolver(defaultDNSServer),
 		socksHost: defaultSOCKSHost,
 		socksPort: defaultSOCKSPort,
 		liveness: client.LivenessConfig{
@@ -147,24 +150,31 @@ func (r *Runtime) SetKey(keyHex string) error {
 	return nil
 }
 
-// SetDNS sets the protected DNS resolver used by this Runtime's future runs.
+// SetDNS sets the DNS servers this Runtime resolves names through: one
+// "host:port", or several separated by commas, semicolons or spaces, asked in
+// that order. The platform passes the resolvers of the network it stands on
+// first and a public operator behind them; the engine adds that operator's
+// IPv6 twin and the other public operators after it, and asks the host's own
+// resolver when none of them answers.
+//
+// A running generation follows the change at once: the platform calls this
+// when the network under the tunnel changes, and the next lookup should ask
+// that network's resolvers rather than the previous one's.
 func (r *Runtime) SetDNS(dnsServer string) error {
-	if err := validateHostPort(dnsServer); err != nil {
-		return fmt.Errorf("%w: DNS server: %w", ErrInvalidConfig, err)
+	if err := validateDNSServers(dnsServer); err != nil {
+		return err
 	}
 	r.mu.Lock()
 	r.defaults.dnsServer = dnsServer
-	r.defaults.resolver = protect.NewResolver(dnsServer)
+	r.defaults.dns.SetServers(dnsServer)
 	r.mu.Unlock()
 	return nil
 }
 
-// SetResolver overrides the resolver used by future runs. Nil restores the DNS resolver.
-func (r *Runtime) SetResolver(resolver *net.Resolver) {
+// SetResolver overrides the resolver used by future runs. Nil restores the
+// runtime's own DNS resolver.
+func (r *Runtime) SetResolver(resolver protect.Lookup) {
 	r.mu.Lock()
-	if resolver == nil {
-		resolver = protect.NewResolver(r.defaults.dnsServer)
-	}
 	r.defaults.resolver = resolver
 	r.mu.Unlock()
 }
@@ -331,10 +341,18 @@ func (cfg runtimeConfig) clientConfig() client.Config {
 		ProviderToken: cfg.providerToken, KeyHex: cfg.keyHex,
 		LocalAddr: net.JoinHostPort(cfg.socksHost, strconv.Itoa(cfg.socksPort)),
 		SOCKSUser: cfg.socksUser, SOCKSPass: cfg.socksPass,
-		DNSServer: cfg.dnsServer, Resolver: cfg.resolver,
+		DNSServer: cfg.dnsServer, Resolver: cfg.lookup(),
 		TransportOptions: cfg.transportOptions(), Liveness: cfg.liveness, Traffic: cfg.traffic,
 		DeviceID: cfg.deviceID, DeviceIDPath: cfg.deviceIDPath,
 	}
+}
+
+// lookup is what a run resolves names with: the override, else the runtime's own.
+func (cfg runtimeConfig) lookup() protect.Lookup {
+	if cfg.resolver != nil {
+		return cfg.resolver
+	}
+	return cfg.dns
 }
 
 func (cfg runtimeConfig) transportOptions() client.TransportOptions {
@@ -413,14 +431,32 @@ func validateKey(keyHex string) error {
 	return nil
 }
 
-func validateHostPort(address string) error {
-	host, portText, err := net.SplitHostPort(address)
+// validateDNSServers accepts the list shapes SetDNS documents and rejects an
+// empty list, a bad port or an empty host.
+func validateDNSServers(list string) error {
+	entries := protect.SplitDNSServers(list)
+	if len(entries) == 0 {
+		return fmt.Errorf("%w: DNS server is required", ErrInvalidConfig)
+	}
+	for _, entry := range entries {
+		if err := validateDNSEntry(entry); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateDNSEntry(entry string) error {
+	host, portText, err := net.SplitHostPort(entry)
 	if err != nil {
-		return fmt.Errorf("%w: split host and port: %w", ErrInvalidConfig, err)
+		host, portText = strings.Trim(entry, "[]"), "53"
+	}
+	if strings.TrimSpace(host) == "" {
+		return fmt.Errorf("%w: DNS server %q has no host", ErrInvalidConfig, entry)
 	}
 	port, err := strconv.Atoi(portText)
-	if err != nil || host == "" || port < 1 || port > 65535 {
-		return ErrInvalidConfig
+	if err != nil || port < 1 || port > 65535 {
+		return fmt.Errorf("%w: DNS server %q has a bad port", ErrInvalidConfig, entry)
 	}
 	return nil
 }

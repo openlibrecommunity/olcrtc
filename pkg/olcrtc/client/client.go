@@ -6,12 +6,12 @@ package client
 import (
 	"context"
 	"fmt"
-	"net"
 	"time"
 
 	"github.com/openlibrecommunity/olcrtc/internal/app/session"
 	internalclient "github.com/openlibrecommunity/olcrtc/internal/client"
 	"github.com/openlibrecommunity/olcrtc/internal/control"
+	"github.com/openlibrecommunity/olcrtc/internal/protect"
 	"github.com/openlibrecommunity/olcrtc/internal/transport"
 	"github.com/openlibrecommunity/olcrtc/internal/transport/seichannel"
 	"github.com/openlibrecommunity/olcrtc/internal/transport/videochannel"
@@ -90,7 +90,7 @@ type Config struct {
 	SOCKSUser        string
 	SOCKSPass        string
 	DNSServer        string
-	Resolver         *net.Resolver
+	Resolver         protect.Lookup
 	TransportOptions TransportOptions
 	Liveness         LivenessConfig
 	Traffic          TrafficConfig

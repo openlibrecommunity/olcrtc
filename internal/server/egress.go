@@ -11,6 +11,7 @@ import (
 	"github.com/xtaci/smux"
 
 	"github.com/openlibrecommunity/olcrtc/internal/logger"
+	"github.com/openlibrecommunity/olcrtc/internal/protect"
 	"github.com/openlibrecommunity/olcrtc/internal/tunnelcore"
 )
 
@@ -44,7 +45,7 @@ func (s *Server) dispatch(ctx context.Context, stream *smux.Stream, request Conn
 	addr := net.JoinHostPort(request.Addr, strconv.Itoa(request.Port))
 	logger.Infof("sid=%d connect %s", stream.ID(), addr)
 	started := time.Now()
-	conn, err := s.dial(request)
+	conn, err := s.dial(ctx, request)
 	elapsed := time.Since(started)
 	if err != nil {
 		logger.Infof("sid=%d dial %s failed (%v): %v", stream.ID(), addr, elapsed, err)
@@ -62,21 +63,21 @@ func (s *Server) dispatch(ctx context.Context, stream *smux.Stream, request Conn
 	}
 }
 
-func (s *Server) dial(request ConnectRequest) (net.Conn, error) {
+func (s *Server) dial(ctx context.Context, request ConnectRequest) (net.Conn, error) {
 	if err := request.validate(); err != nil {
 		return nil, err
 	}
 	addr := net.JoinHostPort(request.Addr, strconv.Itoa(request.Port))
-	dialer := &net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second, Resolver: s.resolver}
+	dialer := protect.NewDialer(s.resolver)
 	if s.socksProxyAddr == "" {
-		conn, err := dialer.Dial("tcp4", addr)
+		conn, err := dialer.DialContext(ctx, "tcp4", addr)
 		if err != nil {
 			return nil, fmt.Errorf("dial failed: %w", err)
 		}
 		return conn, nil
 	}
 	proxyAddr := net.JoinHostPort(s.socksProxyAddr, strconv.Itoa(s.socksProxyPort))
-	conn, err := dialer.Dial("tcp4", proxyAddr)
+	conn, err := dialer.DialContext(ctx, "tcp4", proxyAddr)
 	if err != nil {
 		return nil, fmt.Errorf("failed to dial proxy: %w", err)
 	}

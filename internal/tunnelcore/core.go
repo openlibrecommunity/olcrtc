@@ -3,7 +3,6 @@ package tunnelcore
 
 import (
 	"fmt"
-	"net"
 	"time"
 
 	"github.com/xtaci/smux"
@@ -31,7 +30,7 @@ func SetupKeySet(keyHex string, role crypto.Role) (*crypto.KeySet, error) {
 }
 
 // Resolver returns the supplied resolver or a protected resolver for dnsServer.
-func Resolver(resolver *net.Resolver, dnsServer string) *net.Resolver {
+func Resolver(resolver protect.Lookup, dnsServer string) protect.Lookup {
 	if resolver != nil {
 		return resolver
 	}

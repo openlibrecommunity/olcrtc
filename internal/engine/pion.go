@@ -14,7 +14,7 @@ import (
 
 // PionSettingsOptions describes per-engine SettingEngine differences.
 type PionSettingsOptions struct {
-	Resolver         *net.Resolver
+	Resolver         protect.Lookup
 	LoggerFactory    logging.LoggerFactory
 	IPv4Only         bool
 	ProxyDialer      bool
